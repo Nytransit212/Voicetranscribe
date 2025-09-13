@@ -1,11 +1,14 @@
 import numpy as np
 import json
-from typing import List, Dict, Any, Optional
-from collections import Counter
+from typing import List, Dict, Any, Optional, Set, Tuple, Union
+from collections import Counter, defaultdict
 import re
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import math
+from difflib import SequenceMatcher
+import string
+from scipy.sparse import spmatrix
 
 class ConfidenceScorer:
     """Calculates multi-dimensional confidence scores for transcript candidates"""
@@ -1801,28 +1804,229 @@ class ConfidenceScorer:
         return scores
     
     def _calculate_ngram_consensus(self, current_text: str, other_texts: List[str]) -> float:
-        """Calculate Jaccard similarity of 3-grams with other candidates"""
+        """Calculate enhanced multi-scale n-gram consensus with confidence weighting and fuzzy matching"""
         if not current_text or not other_texts:
             return 0.0
         
-        # Generate 3-grams
-        current_trigrams = set(self._get_ngrams(current_text, 3))
+        # Filter out empty texts
+        valid_other_texts = [text for text in other_texts if text.strip()]
+        if not valid_other_texts:
+            return 0.0
         
-        similarities = []
+        # Multi-scale n-gram analysis (1-grams through 4-grams)
+        ngram_weights = {1: 0.15, 2: 0.25, 3: 0.35, 4: 0.25}  # Higher weight for 3-grams
+        
+        total_score = 0.0
+        for n in range(1, 5):
+            ngram_score = self._calculate_weighted_ngram_consensus(
+                current_text, valid_other_texts, n
+            )
+            total_score += ngram_weights[n] * ngram_score
+        
+        return total_score
+    
+    def _calculate_weighted_ngram_consensus(self, current_text: str, other_texts: List[str], n: int) -> float:
+        """Calculate consensus for specific n-gram size with advanced weighting"""
+        # Extract n-grams with positional information
+        current_ngrams = self._extract_ngrams_with_positions(current_text, n)
+        
+        consensus_scores = []
+        
         for other_text in other_texts:
-            if not other_text:
+            other_ngrams = self._extract_ngrams_with_positions(other_text, n)
+            
+            # Calculate multi-dimensional similarity
+            exact_similarity = self._calculate_exact_ngram_similarity(current_ngrams, other_ngrams)
+            fuzzy_similarity = self._calculate_fuzzy_ngram_similarity(current_ngrams, other_ngrams)
+            positional_similarity = self._calculate_positional_ngram_similarity(current_ngrams, other_ngrams)
+            idf_weighted_similarity = self._calculate_idf_weighted_similarity(current_ngrams, other_ngrams, other_texts, n)
+            
+            # Combine similarities with weights
+            combined_similarity = (
+                0.40 * exact_similarity +
+                0.25 * fuzzy_similarity +
+                0.20 * positional_similarity +
+                0.15 * idf_weighted_similarity
+            )
+            
+            consensus_scores.append(combined_similarity)
+        
+        return float(np.mean(consensus_scores)) if consensus_scores else 0.0
+    
+    def _extract_ngrams_with_positions(self, text: str, n: int) -> Dict[str, List[int]]:
+        """Extract n-grams with their positions in the text"""
+        words = self._clean_text_for_ngrams(text)
+        ngram_positions = defaultdict(list)
+        
+        for i in range(len(words) - n + 1):
+            ngram = ' '.join(words[i:i+n])
+            ngram_positions[ngram].append(i)
+        
+        return dict(ngram_positions)
+    
+    def _clean_text_for_ngrams(self, text: str) -> List[str]:
+        """Clean and normalize text for n-gram analysis"""
+        # Convert to lowercase and remove excessive punctuation
+        text = text.lower()
+        # Keep basic punctuation that affects meaning
+        text = re.sub(r'[^\w\s\.\?\!\,\;\:]', ' ', text)
+        # Normalize whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        words = text.split()
+        # Remove very short artifacts but keep meaningful short words
+        meaningful_short = {'i', 'a', 'to', 'of', 'in', 'on', 'at', 'by', 'for', 'is', 'are', 'was', 'be', 'do', 'no', 'so', 'or', 'if'}
+        cleaned_words = [w for w in words if len(w) > 1 or w in meaningful_short]
+        
+        return cleaned_words
+    
+    def _calculate_exact_ngram_similarity(self, current_ngrams: Dict[str, List[int]], 
+                                        other_ngrams: Dict[str, List[int]]) -> float:
+        """Calculate exact n-gram overlap using Jaccard similarity"""
+        current_set = set(current_ngrams.keys())
+        other_set = set(other_ngrams.keys())
+        
+        if not current_set and not other_set:
+            return 1.0
+        
+        intersection = len(current_set & other_set)
+        union = len(current_set | other_set)
+        
+        return intersection / max(union, 1)
+    
+    def _calculate_fuzzy_ngram_similarity(self, current_ngrams: Dict[str, List[int]], 
+                                        other_ngrams: Dict[str, List[int]]) -> float:
+        """Calculate fuzzy n-gram similarity to handle minor variations"""
+        if not current_ngrams or not other_ngrams:
+            return 0.0
+        
+        current_list = list(current_ngrams.keys())
+        other_list = list(other_ngrams.keys())
+        
+        fuzzy_matches = 0
+        total_comparisons = 0
+        
+        # For each n-gram in current, find best fuzzy match in other
+        for current_ngram in current_list:
+            best_similarity = 0.0
+            for other_ngram in other_list:
+                similarity = self._calculate_string_similarity(current_ngram, other_ngram)
+                best_similarity = max(best_similarity, similarity)
+            
+            # Count as match if similarity is high enough
+            if best_similarity >= 0.8:  # 80% similarity threshold
+                fuzzy_matches += 1
+            total_comparisons += 1
+        
+        return fuzzy_matches / max(total_comparisons, 1)
+    
+    def _calculate_string_similarity(self, str1: str, str2: str) -> float:
+        """Calculate similarity between two strings using sequence matching"""
+        return SequenceMatcher(None, str1, str2).ratio()
+    
+    def _calculate_positional_ngram_similarity(self, current_ngrams: Dict[str, List[int]], 
+                                             other_ngrams: Dict[str, List[int]]) -> float:
+        """Calculate similarity considering positional alignment of n-grams"""
+        if not current_ngrams or not other_ngrams:
+            return 0.0
+        
+        position_aware_score = 0.0
+        total_weight = 0.0
+        
+        for ngram, current_positions in current_ngrams.items():
+            if ngram in other_ngrams:
+                other_positions = other_ngrams[ngram]
+                
+                # Calculate position alignment score
+                position_score = self._calculate_position_alignment(current_positions, other_positions)
+                
+                # Weight by frequency (more frequent n-grams get higher weight)
+                frequency_weight = math.sqrt(len(current_positions) * len(other_positions))
+                
+                position_aware_score += position_score * frequency_weight
+                total_weight += frequency_weight
+        
+        return position_aware_score / max(total_weight, 1)
+    
+    def _calculate_position_alignment(self, pos1: List[int], pos2: List[int]) -> float:
+        """Calculate how well positions align between two n-gram occurrence lists"""
+        if not pos1 or not pos2:
+            return 0.0
+        
+        # Normalize positions to [0, 1] range
+        max_pos1 = max(pos1)
+        max_pos2 = max(pos2)
+        
+        norm_pos1 = [p / max(max_pos1, 1) for p in pos1]
+        norm_pos2 = [p / max(max_pos2, 1) for p in pos2]
+        
+        # Find best alignment score
+        min_distance = float('inf')
+        for p1 in norm_pos1:
+            for p2 in norm_pos2:
+                distance = abs(p1 - p2)
+                min_distance = min(min_distance, distance)
+        
+        # Convert distance to similarity (closer positions = higher score)
+        if min_distance == float('inf'):
+            return 0.0
+        
+        return max(0.0, 1.0 - min_distance)
+    
+    def _calculate_idf_weighted_similarity(self, current_ngrams: Dict[str, List[int]], 
+                                         other_ngrams: Dict[str, List[int]], 
+                                         all_texts: List[str], n: int) -> float:
+        """Calculate IDF-weighted similarity to emphasize rare/important phrases"""
+        if not current_ngrams or not other_ngrams:
+            return 0.0
+        
+        # Calculate IDF scores for all n-grams
+        idf_scores = self._calculate_ngram_idf_scores(all_texts, n)
+        
+        weighted_intersection = 0.0
+        total_current_weight = 0.0
+        total_other_weight = 0.0
+        
+        # Calculate weighted scores
+        for ngram in current_ngrams:
+            idf_weight = idf_scores.get(ngram, 1.0)
+            current_weight = len(current_ngrams[ngram]) * idf_weight
+            total_current_weight += current_weight
+            
+            if ngram in other_ngrams:
+                other_weight = len(other_ngrams[ngram]) * idf_weight
+                weighted_intersection += min(current_weight, other_weight)
+        
+        for ngram in other_ngrams:
+            if ngram not in current_ngrams:
+                idf_weight = idf_scores.get(ngram, 1.0)
+                other_weight = len(other_ngrams[ngram]) * idf_weight
+                total_other_weight += other_weight
+        
+        total_weight = total_current_weight + total_other_weight
+        return (2 * weighted_intersection) / max(total_weight, 1)
+    
+    def _calculate_ngram_idf_scores(self, texts: List[str], n: int) -> Dict[str, float]:
+        """Calculate IDF scores for n-grams across all texts"""
+        # Count document frequency for each n-gram
+        ngram_doc_count = defaultdict(int)
+        total_docs = len(texts)
+        
+        for text in texts:
+            if not text.strip():
                 continue
             
-            other_trigrams = set(self._get_ngrams(other_text, 3))
-            
-            # Jaccard similarity
-            intersection = len(current_trigrams & other_trigrams)
-            union = len(current_trigrams | other_trigrams)
-            
-            similarity = intersection / max(union, 1)
-            similarities.append(similarity)
+            text_ngrams = set(self._get_ngrams(text, n))
+            for ngram in text_ngrams:
+                ngram_doc_count[ngram] += 1
         
-        return float(np.mean(similarities)) if similarities else 0.0
+        # Calculate IDF scores
+        idf_scores = {}
+        for ngram, doc_count in ngram_doc_count.items():
+            idf = math.log(total_docs / max(doc_count, 1))
+            idf_scores[ngram] = idf
+        
+        return idf_scores
     
     def _get_ngrams(self, text: str, n: int) -> List[str]:
         """Extract n-grams from text"""
@@ -1836,73 +2040,1191 @@ class ConfidenceScorer:
         return ngrams
     
     def _calculate_named_entity_consensus(self, current_text: str, other_texts: List[str]) -> float:
-        """Calculate agreement on named entities"""
-        # Simple heuristic: look for capitalized words
-        current_entities = set(self._extract_potential_entities(current_text))
+        """Calculate enhanced named entity consensus with advanced detection and categorization"""
+        if not current_text or not other_texts:
+            return 0.0
         
-        agreements = []
-        for other_text in other_texts:
-            if not other_text:
-                continue
-            
-            other_entities = set(self._extract_potential_entities(other_text))
-            
-            # Calculate F1 score
-            if not current_entities and not other_entities:
-                agreements.append(1.0)
-            elif not current_entities or not other_entities:
-                agreements.append(0.0)
-            else:
-                intersection = len(current_entities & other_entities)
-                precision = intersection / len(current_entities)
-                recall = intersection / len(other_entities)
-                
-                f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
-                agreements.append(f1)
+        # Filter out empty texts
+        valid_other_texts = [text for text in other_texts if text.strip()]
+        if not valid_other_texts:
+            return 0.0
         
-        return float(np.mean(agreements)) if agreements else 0.0
+        # Extract categorized entities from current text
+        current_entities = self._extract_categorized_entities(current_text)
+        
+        consensus_scores = []
+        
+        for other_text in valid_other_texts:
+            other_entities = self._extract_categorized_entities(other_text)
+            
+            # Calculate multi-dimensional entity consensus
+            exact_entity_score = self._calculate_exact_entity_consensus(current_entities, other_entities)
+            fuzzy_entity_score = self._calculate_fuzzy_entity_consensus(current_entities, other_entities)
+            category_consistency_score = self._calculate_category_consistency(current_entities, other_entities)
+            entity_density_score = self._calculate_entity_density_consistency(current_entities, other_entities, current_text, other_text)
+            
+            # Weighted combination of entity consensus dimensions
+            combined_score = (
+                0.35 * exact_entity_score +
+                0.30 * fuzzy_entity_score +
+                0.20 * category_consistency_score +
+                0.15 * entity_density_score
+            )
+            
+            consensus_scores.append(combined_score)
+        
+        return float(np.mean(consensus_scores)) if consensus_scores else 0.0
     
-    def _extract_potential_entities(self, text: str) -> List[str]:
-        """Extract potential named entities (simple heuristic)"""
-        words = text.split()
-        entities = []
+    def _extract_categorized_entities(self, text: str) -> Dict[str, Dict[str, Any]]:
+        """Extract and categorize named entities with confidence and context"""
+        entities = {}
         
-        for word in words:
-            # Simple heuristic: capitalized words > 2 chars
-            clean_word = re.sub(r'[^\w]', '', word)
-            if clean_word and len(clean_word) > 2 and clean_word[0].isupper():
-                entities.append(clean_word.lower())
+        # Extract different types of entities
+        person_entities = self._extract_person_entities(text)
+        place_entities = self._extract_place_entities(text)
+        organization_entities = self._extract_organization_entities(text)
+        date_time_entities = self._extract_datetime_entities(text)
+        number_entities = self._extract_number_entities(text)
+        technical_entities = self._extract_technical_entities(text)
+        
+        # Combine all entities with categories
+        entities.update(person_entities)
+        entities.update(place_entities)
+        entities.update(organization_entities)
+        entities.update(date_time_entities)
+        entities.update(number_entities)
+        entities.update(technical_entities)
         
         return entities
     
+    def _extract_person_entities(self, text: str) -> Dict[str, Dict[str, Any]]:
+        """Extract person name entities with enhanced patterns"""
+        entities = {}
+        words = text.split()
+        
+        # Common patterns for person names
+        name_patterns = [
+            # Title + Name patterns
+            r'\b(?:mr|ms|mrs|dr|prof|professor|sir|madam)\.?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+            # First + Last name patterns
+            r'\b([A-Z][a-z]{2,})\s+([A-Z][a-z]{2,})\b',
+            # Single names with name suffixes
+            r'\b([A-Z][a-z]{2,})\s+(?:jr|sr|iii?|iv)\b',
+        ]
+        
+        for pattern in name_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                entity_text = match.group().strip()
+                normalized = self._normalize_entity(entity_text)
+                
+                entities[normalized] = {
+                    'category': 'PERSON',
+                    'confidence': self._calculate_entity_confidence(entity_text, 'PERSON'),
+                    'original_form': entity_text,
+                    'position': match.start()
+                }
+        
+        # Additional heuristic: Isolated capitalized words that might be names
+        capitalized_words = re.findall(r'\b[A-Z][a-z]{2,}\b', text)
+        for word in capitalized_words:
+            if self._is_likely_person_name(word, text):
+                normalized = self._normalize_entity(word)
+                if normalized not in entities:
+                    entities[normalized] = {
+                        'category': 'PERSON',
+                        'confidence': 0.6,  # Lower confidence for heuristic matches
+                        'original_form': word,
+                        'position': text.lower().find(word.lower())
+                    }
+        
+        return entities
+    
+    def _extract_place_entities(self, text: str) -> Dict[str, Dict[str, Any]]:
+        """Extract place/location entities"""
+        entities = {}
+        
+        # Common place patterns
+        place_patterns = [
+            # City, State patterns
+            r'\b([A-Z][a-z]+),\s*([A-Z][A-Z]|[A-Z][a-z]+)\b',
+            # State/Country names
+            r'\b(?:in|from|to|at)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b',
+            # Street addresses
+            r'\b\d+\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:street|st|avenue|ave|road|rd|drive|dr|boulevard|blvd)\b',
+        ]
+        
+        # Known place suffixes and indicators
+        place_indicators = {
+            'city', 'town', 'village', 'county', 'state', 'country', 'street', 'avenue', 
+            'road', 'drive', 'boulevard', 'university', 'college', 'hospital', 'airport',
+            'center', 'building', 'tower', 'plaza', 'mall', 'park'
+        }
+        
+        for pattern in place_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                entity_text = match.group().strip()
+                normalized = self._normalize_entity(entity_text)
+                
+                entities[normalized] = {
+                    'category': 'PLACE',
+                    'confidence': self._calculate_entity_confidence(entity_text, 'PLACE'),
+                    'original_form': entity_text,
+                    'position': match.start()
+                }
+        
+        # Look for words near place indicators
+        words = text.split()
+        for i, word in enumerate(words):
+            if word.lower() in place_indicators and i > 0:
+                prev_word = words[i-1]
+                if prev_word and prev_word[0].isupper() and len(prev_word) > 2:
+                    normalized = self._normalize_entity(prev_word)
+                    if normalized not in entities:
+                        entities[normalized] = {
+                            'category': 'PLACE',
+                            'confidence': 0.7,
+                            'original_form': prev_word,
+                            'position': text.find(prev_word)
+                        }
+        
+        return entities
+    
+    def _extract_organization_entities(self, text: str) -> Dict[str, Dict[str, Any]]:
+        """Extract organization entities"""
+        entities = {}
+        
+        # Organization patterns
+        org_patterns = [
+            # Company suffixes
+            r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:inc|corp|corporation|llc|ltd|co|company)\b',
+            # University patterns  
+            r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:university|college|institute)\b',
+            # Agency patterns
+            r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:agency|department|bureau|commission)\b',
+        ]
+        
+        for pattern in org_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                entity_text = match.group().strip()
+                normalized = self._normalize_entity(entity_text)
+                
+                entities[normalized] = {
+                    'category': 'ORGANIZATION',
+                    'confidence': self._calculate_entity_confidence(entity_text, 'ORGANIZATION'),
+                    'original_form': entity_text,
+                    'position': match.start()
+                }
+        
+        return entities
+    
+    def _extract_datetime_entities(self, text: str) -> Dict[str, Dict[str, Any]]:
+        """Extract date and time entities"""
+        entities = {}
+        
+        # Date/time patterns
+        datetime_patterns = [
+            # Date patterns
+            r'\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}\b',
+            r'\b\d{1,2}/\d{1,2}/\d{2,4}\b',
+            r'\b\d{1,2}-\d{1,2}-\d{2,4}\b',
+            # Time patterns
+            r'\b\d{1,2}:\d{2}\s*(?:am|pm|AM|PM)?\b',
+            # Relative time
+            r'\b(?:yesterday|today|tomorrow|last\s+week|next\s+week|this\s+morning|this\s+afternoon)\b',
+        ]
+        
+        for pattern in datetime_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                entity_text = match.group().strip()
+                normalized = self._normalize_entity(entity_text)
+                
+                entities[normalized] = {
+                    'category': 'DATETIME',
+                    'confidence': 0.9,  # High confidence for pattern matches
+                    'original_form': entity_text,
+                    'position': match.start()
+                }
+        
+        return entities
+    
+    def _extract_number_entities(self, text: str) -> Dict[str, Dict[str, Any]]:
+        """Extract number entities (quantities, percentages, etc.)"""
+        entities = {}
+        
+        # Number patterns
+        number_patterns = [
+            # Percentages
+            r'\b\d+(?:\.\d+)?%\b',
+            # Currency
+            r'\$\d+(?:,\d{3})*(?:\.\d{2})?\b',
+            # Large numbers
+            r'\b\d{1,3}(?:,\d{3})+\b',
+            # Decimal numbers
+            r'\b\d+\.\d+\b',
+        ]
+        
+        for pattern in number_patterns:
+            matches = re.finditer(pattern, text)
+            for match in matches:
+                entity_text = match.group().strip()
+                normalized = self._normalize_entity(entity_text)
+                
+                entities[normalized] = {
+                    'category': 'NUMBER',
+                    'confidence': 0.95,  # Very high confidence for number patterns
+                    'original_form': entity_text,
+                    'position': match.start()
+                }
+        
+        return entities
+    
+    def _extract_technical_entities(self, text: str) -> Dict[str, Dict[str, Any]]:
+        """Extract technical terms and domain-specific entities"""
+        entities = {}
+        
+        # Technical patterns
+        technical_patterns = [
+            # Email addresses
+            r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b',
+            # URLs
+            r'\bwww\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b',
+            r'\bhttps?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?\b',
+            # Phone numbers
+            r'\b\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b',
+            # Product codes/model numbers
+            r'\b[A-Z0-9]{2,}-[A-Z0-9]{2,}\b',
+        ]
+        
+        for pattern in technical_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                entity_text = match.group().strip()
+                normalized = self._normalize_entity(entity_text)
+                
+                entities[normalized] = {
+                    'category': 'TECHNICAL',
+                    'confidence': 0.9,
+                    'original_form': entity_text,
+                    'position': match.start()
+                }
+        
+        return entities
+    
+    def _normalize_entity(self, entity: str) -> str:
+        """Normalize entity for comparison"""
+        # Remove punctuation and convert to lowercase
+        normalized = re.sub(r'[^\w\s]', '', entity.lower())
+        # Normalize whitespace
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        return normalized
+    
+    def _calculate_entity_confidence(self, entity: str, category: str) -> float:
+        """Calculate confidence score for an entity"""
+        base_confidence = 0.8
+        
+        # Adjust based on entity characteristics
+        if len(entity) < 3:
+            base_confidence -= 0.3
+        elif len(entity) > 20:
+            base_confidence -= 0.1
+        
+        # Category-specific adjustments
+        if category == 'PERSON':
+            # Names with titles get higher confidence
+            if re.search(r'\b(?:mr|ms|mrs|dr|prof)\b', entity.lower()):
+                base_confidence += 0.1
+        elif category == 'PLACE':
+            # Places with indicators get higher confidence
+            if re.search(r'\b(?:city|street|avenue|university)\b', entity.lower()):
+                base_confidence += 0.1
+        
+        return min(1.0, max(0.1, base_confidence))
+    
+    def _is_likely_person_name(self, word: str, context: str) -> bool:
+        """Heuristic to determine if a capitalized word is likely a person name"""
+        # Avoid common non-name capitalized words
+        non_names = {
+            'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+            'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 
+            'September', 'October', 'November', 'December', 'Internet', 'Google', 'Microsoft',
+            'Apple', 'Facebook', 'Twitter', 'LinkedIn', 'YouTube', 'Amazon', 'Netflix'
+        }
+        
+        if word in non_names:
+            return False
+        
+        # Check if word appears near name indicators
+        name_indicators = ['said', 'told', 'asked', 'replied', 'mentioned', 'according to']
+        for indicator in name_indicators:
+            if indicator in context.lower() and word in context:
+                return True
+        
+        # Names typically have certain length characteristics
+        if 3 <= len(word) <= 12:
+            return True
+        
+        return False
+    
+    def _calculate_exact_entity_consensus(self, current_entities: Dict[str, Dict[str, Any]], 
+                                        other_entities: Dict[str, Dict[str, Any]]) -> float:
+        """Calculate exact entity overlap consensus"""
+        if not current_entities and not other_entities:
+            return 1.0
+        
+        current_names = set(current_entities.keys())
+        other_names = set(other_entities.keys())
+        
+        intersection = len(current_names & other_names)
+        union = len(current_names | other_names)
+        
+        return intersection / max(union, 1)
+    
+    def _calculate_fuzzy_entity_consensus(self, current_entities: Dict[str, Dict[str, Any]], 
+                                        other_entities: Dict[str, Dict[str, Any]]) -> float:
+        """Calculate fuzzy entity matching consensus"""
+        if not current_entities or not other_entities:
+            return 0.0
+        
+        current_names = list(current_entities.keys())
+        other_names = list(other_entities.keys())
+        
+        fuzzy_matches = 0
+        total_entities = len(current_names)
+        
+        for current_name in current_names:
+            best_match_score = 0.0
+            for other_name in other_names:
+                # Use multiple similarity measures
+                sequence_sim = SequenceMatcher(None, current_name, other_name).ratio()
+                
+                # Handle common variations (plurals, abbreviations)
+                variation_sim = self._calculate_entity_variation_similarity(current_name, other_name)
+                
+                combined_sim = max(sequence_sim, variation_sim)
+                best_match_score = max(best_match_score, combined_sim)
+            
+            # Count as fuzzy match if similarity is high enough
+            if best_match_score >= 0.75:  # 75% similarity threshold
+                fuzzy_matches += 1
+        
+        return fuzzy_matches / max(total_entities, 1)
+    
+    def _calculate_entity_variation_similarity(self, name1: str, name2: str) -> float:
+        """Calculate similarity accounting for common name variations"""
+        # Handle common variations
+        variations = [
+            # Remove common suffixes
+            (r'\s+jr\.?$', ''),
+            (r'\s+sr\.?$', ''),
+            (r'\s+iii?$', ''),
+            # Handle abbreviations
+            (r'\b([A-Z])\w+', r'\1'),  # First letter abbreviations
+        ]
+        
+        name1_variants = [name1]
+        name2_variants = [name2]
+        
+        for pattern, replacement in variations:
+            name1_variant = re.sub(pattern, replacement, name1, flags=re.IGNORECASE)
+            name2_variant = re.sub(pattern, replacement, name2, flags=re.IGNORECASE)
+            
+            if name1_variant != name1:
+                name1_variants.append(name1_variant)
+            if name2_variant != name2:
+                name2_variants.append(name2_variant)
+        
+        # Find best similarity among all variants
+        best_similarity = 0.0
+        for var1 in name1_variants:
+            for var2 in name2_variants:
+                similarity = SequenceMatcher(None, var1, var2).ratio()
+                best_similarity = max(best_similarity, similarity)
+        
+        return best_similarity
+    
+    def _calculate_category_consistency(self, current_entities: Dict[str, Dict[str, Any]], 
+                                      other_entities: Dict[str, Dict[str, Any]]) -> float:
+        """Calculate consistency of entity categorization"""
+        if not current_entities or not other_entities:
+            return 0.0
+        
+        # Find entities that appear in both sets
+        common_entities = set(current_entities.keys()) & set(other_entities.keys())
+        
+        if not common_entities:
+            return 0.0
+        
+        category_matches = 0
+        for entity in common_entities:
+            current_category = current_entities[entity]['category']
+            other_category = other_entities[entity]['category']
+            
+            if current_category == other_category:
+                category_matches += 1
+        
+        return category_matches / len(common_entities)
+    
+    def _calculate_entity_density_consistency(self, current_entities: Dict[str, Dict[str, Any]], 
+                                            other_entities: Dict[str, Dict[str, Any]], 
+                                            current_text: str, other_text: str) -> float:
+        """Calculate consistency of entity density (entities per word ratio)"""
+        current_words = len(current_text.split())
+        other_words = len(other_text.split())
+        
+        if current_words == 0 or other_words == 0:
+            return 0.0
+        
+        current_density = len(current_entities) / current_words
+        other_density = len(other_entities) / other_words
+        
+        # Calculate similarity of densities
+        if current_density == 0 and other_density == 0:
+            return 1.0
+        
+        max_density = max(current_density, other_density)
+        min_density = min(current_density, other_density)
+        
+        if max_density == 0:
+            return 1.0
+        
+        return min_density / max_density
+    
     def _calculate_topic_coherence(self, candidate: Dict[str, Any]) -> float:
-        """Calculate topic coherence across segments"""
+        """Calculate enhanced topic coherence with multi-segment analysis and conversation flow"""
         segments = candidate.get('aligned_segments', [])
         if len(segments) < 2:
             return 0.8
         
-        # Extract text from segments
-        segment_texts = [seg.get('text', '') for seg in segments]
-        segment_texts = [text for text in segment_texts if text.strip()]
+        # Extract text and metadata from segments
+        segment_data = []
+        for seg in segments:
+            text = seg.get('text', '').strip()
+            if text:
+                segment_data.append({
+                    'text': text,
+                    'start': seg.get('start', 0),
+                    'end': seg.get('end', 0),
+                    'speaker_id': seg.get('speaker_id', 'unknown')
+                })
         
-        if len(segment_texts) < 2:
+        if len(segment_data) < 2:
             return 0.5
         
-        # Calculate TF-IDF similarity between adjacent segments
+        # Multi-dimensional topic coherence analysis
+        adjacent_coherence = self._calculate_adjacent_segment_coherence(segment_data)
+        keyword_consistency = self._calculate_keyword_consistency(segment_data)
+        semantic_coherence = self._calculate_semantic_topic_coherence(segment_data)
+        conversation_flow = self._calculate_conversation_flow_score(segment_data)
+        topic_transitions = self._calculate_topic_transition_quality(segment_data)
+        
+        # Weighted combination of coherence dimensions
+        final_coherence = (
+            0.30 * adjacent_coherence +
+            0.25 * keyword_consistency +
+            0.20 * semantic_coherence +
+            0.15 * conversation_flow +
+            0.10 * topic_transitions
+        )
+        
+        return float(final_coherence)
+    
+    def _calculate_adjacent_segment_coherence(self, segment_data: List[Dict[str, Any]]) -> float:
+        """Calculate enhanced adjacent segment coherence with multiple similarity measures"""
+        if len(segment_data) < 2:
+            return 0.8
+        
+        segment_texts = [seg['text'] for seg in segment_data]
+        
         try:
-            vectorizer = TfidfVectorizer(max_features=100, stop_words='english')
-            tfidf_matrix = vectorizer.fit_transform(segment_texts)
+            # Multi-scale TF-IDF analysis
+            coherence_scores = []
             
-            # Calculate average cosine similarity between adjacent segments
-            similarities = []
+            # Fine-grained analysis (more features)
+            vectorizer_fine = TfidfVectorizer(
+                max_features=200, 
+                stop_words='english',
+                ngram_range=(1, 2),  # Include bigrams
+                min_df=1
+            )
+            tfidf_fine = vectorizer_fine.fit_transform(segment_texts)
+            
+            # Coarse-grained analysis (fewer features, more general topics)
+            vectorizer_coarse = TfidfVectorizer(
+                max_features=50,
+                stop_words='english',
+                ngram_range=(1, 1),
+                min_df=1
+            )
+            tfidf_coarse = vectorizer_coarse.fit_transform(segment_texts)
+            
+            # Calculate similarities at different scales
             for i in range(len(segment_texts) - 1):
-                sim = cosine_similarity(tfidf_matrix[i:i+1], tfidf_matrix[i+1:i+2])[0][0]
-                similarities.append(sim)
+                # Fine-grained similarity
+                fine_sim = cosine_similarity(tfidf_fine[i:i+1], tfidf_fine[i+1:i+2])[0][0]
+                
+                # Coarse-grained similarity
+                coarse_sim = cosine_similarity(tfidf_coarse[i:i+1], tfidf_coarse[i+1:i+2])[0][0]
+                
+                # Lexical overlap similarity
+                lexical_sim = self._calculate_lexical_overlap(segment_texts[i], segment_texts[i+1])
+                
+                # Speaker consistency bonus
+                speaker_bonus = self._calculate_speaker_consistency_bonus(
+                    segment_data[i], segment_data[i+1]
+                )
+                
+                # Combined similarity with speaker awareness
+                combined_sim = (
+                    0.40 * fine_sim +
+                    0.30 * coarse_sim +
+                    0.20 * lexical_sim +
+                    0.10 * speaker_bonus
+                )
+                
+                coherence_scores.append(combined_sim)
             
-            return float(np.mean(similarities)) if similarities else 0.5
+            return float(np.mean(coherence_scores)) if coherence_scores else 0.5
             
         except Exception:
-            return 0.5  # Fallback score
+            return 0.5
+    
+    def _calculate_lexical_overlap(self, text1: str, text2: str) -> float:
+        """Calculate lexical overlap between two text segments"""
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+        
+        # Remove stop words
+        stop_words = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of',
+            'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had',
+            'will', 'would', 'could', 'should', 'can', 'may', 'might', 'this', 'that',
+            'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they'
+        }
+        
+        words1 = words1 - stop_words
+        words2 = words2 - stop_words
+        
+        if not words1 and not words2:
+            return 1.0
+        
+        intersection = len(words1 & words2)
+        union = len(words1 | words2)
+        
+        return intersection / max(union, 1)
+    
+    def _calculate_speaker_consistency_bonus(self, seg1: Dict[str, Any], seg2: Dict[str, Any]) -> float:
+        """Calculate bonus for speaker consistency between segments"""
+        speaker1 = seg1.get('speaker_id', 'unknown')
+        speaker2 = seg2.get('speaker_id', 'unknown')
+        
+        # Same speaker gets higher coherence bonus
+        if speaker1 == speaker2:
+            return 0.8
+        # Different speakers but reasonable transition gets moderate bonus
+        else:
+            # Check if this is a reasonable speaker turn (not too short)
+            duration1 = seg1.get('end', 0) - seg1.get('start', 0)
+            duration2 = seg2.get('end', 0) - seg2.get('start', 0)
+            
+            if duration1 >= 2.0 and duration2 >= 2.0:  # Both segments at least 2 seconds
+                return 0.6
+            else:
+                return 0.3  # Penalty for very short segments (likely diarization errors)
+    
+    def _calculate_keyword_consistency(self, segment_data: List[Dict[str, Any]]) -> float:
+        """Calculate consistency of important keywords across segments"""
+        if len(segment_data) < 3:
+            return 0.7
+        
+        # Extract all text for keyword analysis
+        full_text = ' '.join([seg['text'] for seg in segment_data])
+        
+        # Identify important keywords using TF-IDF
+        important_keywords = self._extract_important_keywords(full_text, segment_data)
+        
+        if not important_keywords:
+            return 0.6
+        
+        # Calculate keyword distribution across segments
+        keyword_distribution_score = self._analyze_keyword_distribution(important_keywords, segment_data)
+        
+        # Calculate keyword co-occurrence patterns
+        keyword_cooccurrence_score = self._analyze_keyword_cooccurrence(important_keywords, segment_data)
+        
+        # Calculate keyword progression (for meeting flow)
+        keyword_progression_score = self._analyze_keyword_progression(important_keywords, segment_data)
+        
+        # Combine keyword consistency metrics
+        return (
+            0.40 * keyword_distribution_score +
+            0.35 * keyword_cooccurrence_score +
+            0.25 * keyword_progression_score
+        )
+    
+    def _extract_important_keywords(self, full_text: str, segment_data: List[Dict[str, Any]]) -> List[str]:
+        """Extract important keywords using TF-IDF and domain patterns"""
+        try:
+            # Create corpus for TF-IDF
+            segment_texts = [seg['text'] for seg in segment_data]
+            
+            vectorizer = TfidfVectorizer(
+                max_features=50,
+                stop_words='english',
+                ngram_range=(1, 2),
+                min_df=2,  # Must appear in at least 2 segments
+                max_df=0.8  # But not in more than 80% of segments
+            )
+            
+            tfidf_matrix = vectorizer.fit_transform(segment_texts)
+            feature_names = vectorizer.get_feature_names_out()
+            
+            # Calculate mean TF-IDF scores
+            # Convert sparse matrix to dense array
+            # TF-IDF vectorizer returns scipy sparse matrix which has toarray() method
+            tfidf_array = np.asarray(tfidf_matrix.toarray())  # type: ignore
+            mean_scores = np.mean(tfidf_array, axis=0)
+            
+            # Get top keywords
+            top_indices = mean_scores.argsort()[-20:][::-1]  # Top 20 keywords
+            important_keywords = [str(feature_names[i]) for i in top_indices if mean_scores[i] > 0.1]
+            
+            # Add domain-specific keywords (business, meeting terms)
+            domain_keywords = self._extract_domain_keywords(full_text)
+            important_keywords.extend(domain_keywords)
+            
+            return list(set(important_keywords))[:25]  # Limit to top 25
+            
+        except Exception:
+            return []
+    
+    def _extract_domain_keywords(self, text: str) -> List[str]:
+        """Extract domain-specific keywords for business/meeting contexts"""
+        domain_patterns = [
+            # Business terms
+            r'\b(?:project|budget|deadline|timeline|milestone|deliverable|stakeholder|client|customer)\b',
+            # Meeting terms
+            r'\b(?:agenda|action\s+item|follow\s+up|decision|approval|review|discussion|presentation)\b',
+            # Process terms
+            r'\b(?:process|procedure|workflow|implementation|strategy|plan|goal|objective|target)\b',
+            # Technical terms
+            r'\b(?:system|platform|software|application|database|server|integration|api|framework)\b',
+        ]
+        
+        domain_keywords = []
+        for pattern in domain_patterns:
+            matches = re.findall(pattern, text.lower())
+            domain_keywords.extend(matches)
+        
+        # Clean and deduplicate
+        cleaned_keywords = []
+        for keyword in domain_keywords:
+            # Normalize multi-word terms
+            normalized = re.sub(r'\s+', ' ', keyword.strip())
+            if len(normalized) > 2:
+                cleaned_keywords.append(normalized)
+        
+        return list(set(cleaned_keywords))[:10]  # Top 10 domain keywords
+    
+    def _analyze_keyword_distribution(self, keywords: List[str], segment_data: List[Dict[str, Any]]) -> float:
+        """Analyze how evenly important keywords are distributed across segments"""
+        if not keywords:
+            return 0.6
+        
+        keyword_segment_counts = {}
+        total_segments = len(segment_data)
+        
+        for keyword in keywords:
+            count = 0
+            for seg in segment_data:
+                if keyword in seg['text'].lower():
+                    count += 1
+            keyword_segment_counts[keyword] = count
+        
+        # Calculate distribution evenness
+        # Good keywords should appear in multiple segments but not all
+        good_distribution_count = 0
+        for keyword, count in keyword_segment_counts.items():
+            # Ideal: appears in 25-75% of segments
+            ratio = count / total_segments
+            if 0.25 <= ratio <= 0.75:
+                good_distribution_count += 1
+        
+        return good_distribution_count / max(len(keywords), 1)
+    
+    def _analyze_keyword_cooccurrence(self, keywords: List[str], segment_data: List[Dict[str, Any]]) -> float:
+        """Analyze how well keywords co-occur in segments (topic clustering)"""
+        if len(keywords) < 2:
+            return 0.7
+        
+        # Find segments with multiple keywords
+        segments_with_multiple_keywords = 0
+        total_keyword_segments = 0
+        
+        for seg in segment_data:
+            text_lower = seg['text'].lower()
+            keyword_count = sum(1 for keyword in keywords if keyword in text_lower)
+            
+            if keyword_count > 0:
+                total_keyword_segments += 1
+                if keyword_count >= 2:
+                    segments_with_multiple_keywords += 1
+        
+        if total_keyword_segments == 0:
+            return 0.5
+        
+        # Good topic coherence: segments with keywords often have multiple related keywords
+        cooccurrence_ratio = segments_with_multiple_keywords / total_keyword_segments
+        
+        # Normalize to reasonable range
+        return min(0.9, cooccurrence_ratio * 1.5)
+    
+    def _analyze_keyword_progression(self, keywords: List[str], segment_data: List[Dict[str, Any]]) -> float:
+        """Analyze natural progression/flow of keywords through the conversation"""
+        if len(keywords) < 2 or len(segment_data) < 3:
+            return 0.7
+        
+        # Track keyword appearances over time
+        keyword_timeline = {}
+        for keyword in keywords:
+            keyword_timeline[keyword] = []
+        
+        for i, seg in enumerate(segment_data):
+            text_lower = seg['text'].lower()
+            for keyword in keywords:
+                if keyword in text_lower:
+                    keyword_timeline[keyword].append(i)
+        
+        # Analyze progression patterns
+        progression_scores = []
+        
+        for keyword, positions in keyword_timeline.items():
+            if len(positions) >= 2:
+                # Check for reasonable clustering (not too scattered)
+                position_spread = max(positions) - min(positions)
+                total_span = len(segment_data) - 1
+                
+                if total_span > 0:
+                    clustering_score = 1.0 - (position_spread / total_span)
+                    progression_scores.append(max(0.3, clustering_score))
+        
+        return float(np.mean(progression_scores)) if progression_scores else 0.6
+    
+    def _calculate_semantic_topic_coherence(self, segment_data: List[Dict[str, Any]]) -> float:
+        """Calculate semantic coherence using advanced topic modeling"""
+        if len(segment_data) < 3:
+            return 0.7
+        
+        segment_texts = [seg['text'] for seg in segment_data]
+        
+        # Semantic similarity using word overlap and context
+        semantic_coherence = self._calculate_semantic_similarity_matrix(segment_texts)
+        
+        # Topic consistency across conversation
+        topic_consistency = self._calculate_segment_topic_consistency(segment_texts)
+        
+        # Conversation naturalness
+        naturalness_score = self._calculate_conversation_naturalness(segment_data)
+        
+        return (
+            0.40 * semantic_coherence +
+            0.35 * topic_consistency +
+            0.25 * naturalness_score
+        )
+    
+    def _calculate_semantic_similarity_matrix(self, texts: List[str]) -> float:
+        """Calculate semantic similarity using multiple approaches"""
+        if len(texts) < 2:
+            return 0.7
+        
+        # Character-level similarity (for handling ASR errors)
+        char_similarities = []
+        for i in range(len(texts) - 1):
+            char_sim = SequenceMatcher(None, texts[i], texts[i+1]).ratio()
+            char_similarities.append(char_sim)
+        
+        char_score = float(np.mean(char_similarities)) if char_similarities else 0.5
+        
+        # Word-level semantic overlap
+        word_similarities = []
+        for i in range(len(texts) - 1):
+            word_sim = self._calculate_word_semantic_similarity(texts[i], texts[i+1])
+            word_similarities.append(word_sim)
+        
+        word_score = float(np.mean(word_similarities)) if word_similarities else 0.5
+        
+        # Combine character and word level similarities
+        return 0.3 * char_score + 0.7 * word_score
+    
+    def _calculate_word_semantic_similarity(self, text1: str, text2: str) -> float:
+        """Calculate semantic similarity between two text segments"""
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+        
+        # Remove punctuation and short words
+        words1 = {re.sub(r'[^\w]', '', w) for w in words1 if len(w) > 2}
+        words2 = {re.sub(r'[^\w]', '', w) for w in words2 if len(w) > 2}
+        
+        # Direct overlap
+        direct_overlap = len(words1 & words2) / max(len(words1 | words2), 1)
+        
+        # Stemmed overlap (simple stemming)
+        stemmed_words1 = {self._simple_stem(w) for w in words1}
+        stemmed_words2 = {self._simple_stem(w) for w in words2}
+        stemmed_overlap = len(stemmed_words1 & stemmed_words2) / max(len(stemmed_words1 | stemmed_words2), 1)
+        
+        return 0.6 * direct_overlap + 0.4 * stemmed_overlap
+    
+    def _simple_stem(self, word: str) -> str:
+        """Simple stemming for basic word variants"""
+        # Remove common suffixes
+        suffixes = ['ing', 'ed', 'er', 'est', 'ly', 's', 'es']
+        for suffix in suffixes:
+            if word.endswith(suffix) and len(word) > len(suffix) + 2:
+                return word[:-len(suffix)]
+        return word
+    
+    def _calculate_segment_topic_consistency(self, texts: List[str]) -> float:
+        """Calculate overall topic consistency across all segments"""
+        if len(texts) < 3:
+            return 0.7
+        
+        # Global keyword extraction
+        all_text = ' '.join(texts)
+        
+        try:
+            vectorizer = TfidfVectorizer(
+                max_features=30,
+                stop_words='english',
+                min_df=2,
+                ngram_range=(1, 2)
+            )
+            
+            tfidf_matrix = vectorizer.fit_transform(texts)
+            
+            # Calculate variance in TF-IDF scores across segments
+            # Lower variance = more consistent topics
+            # Convert sparse matrix to dense array
+            # TF-IDF vectorizer returns scipy sparse matrix which has toarray() method
+            tfidf_array = np.asarray(tfidf_matrix.toarray())  # type: ignore
+            feature_variances = np.var(tfidf_array, axis=0)
+            mean_variance = float(np.mean(feature_variances))
+            
+            # Convert variance to consistency score (lower variance = higher consistency)
+            consistency_score = 1.0 / (1.0 + mean_variance * 5)
+            
+            return float(consistency_score)
+            
+        except Exception:
+            return 0.6
+    
+    def _calculate_conversation_naturalness(self, segment_data: List[Dict[str, Any]]) -> float:
+        """Calculate how natural the conversation flow appears"""
+        if len(segment_data) < 2:
+            return 0.8
+        
+        # Check for natural conversation patterns
+        speaker_alternation = self._calculate_speaker_alternation_naturalness(segment_data)
+        segment_length_distribution = self._calculate_segment_length_naturalness(segment_data)
+        response_patterns = self._calculate_response_pattern_naturalness(segment_data)
+        
+        return (
+            0.40 * speaker_alternation +
+            0.30 * segment_length_distribution +
+            0.30 * response_patterns
+        )
+    
+    def _calculate_speaker_alternation_naturalness(self, segment_data: List[Dict[str, Any]]) -> float:
+        """Check for natural speaker alternation patterns"""
+        if len(segment_data) < 3:
+            return 0.8
+        
+        speakers = [seg.get('speaker_id', 'unknown') for seg in segment_data]
+        
+        # Count speaker changes
+        changes = sum(1 for i in range(len(speakers) - 1) if speakers[i] != speakers[i+1])
+        
+        # Natural conversation should have some but not excessive speaker changes
+        change_ratio = changes / max(len(speakers) - 1, 1)
+        
+        # Optimal range: 30-70% of segments involve speaker changes
+        if 0.3 <= change_ratio <= 0.7:
+            return 0.9
+        elif 0.2 <= change_ratio <= 0.8:
+            return 0.7
+        else:
+            return 0.5
+    
+    def _calculate_segment_length_naturalness(self, segment_data: List[Dict[str, Any]]) -> float:
+        """Check for natural distribution of segment lengths"""
+        durations = []
+        word_counts = []
+        
+        for seg in segment_data:
+            duration = seg.get('end', 0) - seg.get('start', 0)
+            word_count = len(seg['text'].split())
+            
+            durations.append(duration)
+            word_counts.append(word_count)
+        
+        if not durations:
+            return 0.5
+        
+        # Check duration distribution
+        mean_duration = float(np.mean(durations))
+        std_duration = float(np.std(durations))
+        
+        # Natural speech: average 3-8 seconds, reasonable variation
+        duration_score = 1.0 if 3.0 <= mean_duration <= 8.0 else max(0.4, 1.0 - abs(mean_duration - 5.5) * 0.2)
+        
+        # Check for reasonable variation (not all segments same length)
+        variation_score = min(1.0, std_duration / max(mean_duration, 1)) if mean_duration > 0 else 0.5
+        variation_score = max(0.3, variation_score)
+        
+        return (duration_score + variation_score) / 2
+    
+    def _calculate_response_pattern_naturalness(self, segment_data: List[Dict[str, Any]]) -> float:
+        """Check for natural response patterns in conversation"""
+        if len(segment_data) < 4:
+            return 0.8
+        
+        # Look for question-answer patterns
+        question_words = ['what', 'where', 'when', 'why', 'how', 'who', 'which', 'do', 'does', 'did', 'can', 'could', 'would', 'should']
+        
+        question_answer_pairs = 0
+        total_potential_pairs = 0
+        
+        for i in range(len(segment_data) - 1):
+            current_text = segment_data[i]['text'].lower()
+            next_text = segment_data[i + 1]['text'].lower()
+            current_speaker = segment_data[i].get('speaker_id', 'unknown')
+            next_speaker = segment_data[i + 1].get('speaker_id', 'unknown')
+            
+            # Check if current segment might be a question
+            has_question_word = any(word in current_text for word in question_words)
+            has_question_mark = '?' in segment_data[i]['text']
+            
+            if (has_question_word or has_question_mark) and current_speaker != next_speaker:
+                total_potential_pairs += 1
+                
+                # Check if next segment could be an answer
+                # Simple heuristics: starts with common answer patterns
+                answer_patterns = ['yes', 'no', 'i think', 'well', 'actually', 'sure', 'definitely', 'probably']
+                if any(next_text.startswith(pattern) for pattern in answer_patterns):
+                    question_answer_pairs += 1
+        
+        if total_potential_pairs == 0:
+            return 0.7  # No clear question patterns found
+        
+        return question_answer_pairs / total_potential_pairs
+    
+    def _calculate_conversation_flow_score(self, segment_data: List[Dict[str, Any]]) -> float:
+        """Calculate overall conversation flow quality"""
+        if len(segment_data) < 3:
+            return 0.8
+        
+        # Conversation momentum (segments build on each other)
+        momentum_score = self._calculate_conversation_momentum(segment_data)
+        
+        # Topic development (topics develop naturally over time)
+        development_score = self._calculate_topic_development(segment_data)
+        
+        # Coherent endings and beginnings
+        transition_score = self._calculate_transition_quality(segment_data)
+        
+        return (
+            0.40 * momentum_score +
+            0.35 * development_score +
+            0.25 * transition_score
+        )
+    
+    def _calculate_conversation_momentum(self, segment_data: List[Dict[str, Any]]) -> float:
+        """Calculate how well the conversation maintains momentum"""
+        momentum_indicators = {
+            'continuation': ['and', 'also', 'furthermore', 'additionally', 'moreover'],
+            'contrast': ['but', 'however', 'although', 'despite', 'nevertheless'],
+            'consequence': ['so', 'therefore', 'thus', 'consequently', 'as a result'],
+            'elaboration': ['specifically', 'for example', 'in particular', 'namely']
+        }
+        
+        momentum_count = 0
+        total_segments = len(segment_data)
+        
+        for seg in segment_data[1:]:  # Skip first segment
+            text_lower = seg['text'].lower()
+            
+            # Check for momentum indicators
+            for category, indicators in momentum_indicators.items():
+                if any(indicator in text_lower for indicator in indicators):
+                    momentum_count += 1
+                    break
+        
+        return momentum_count / max(total_segments - 1, 1)
+    
+    def _calculate_topic_development(self, segment_data: List[Dict[str, Any]]) -> float:
+        """Calculate how well topics develop through the conversation"""
+        if len(segment_data) < 4:
+            return 0.7
+        
+        # Split conversation into thirds and analyze topic evolution
+        third_size = len(segment_data) // 3
+        
+        beginning = segment_data[:third_size]
+        middle = segment_data[third_size:2*third_size]
+        end = segment_data[2*third_size:]
+        
+        # Extract keywords from each section
+        beginning_keywords = self._extract_section_keywords(beginning)
+        middle_keywords = self._extract_section_keywords(middle)
+        end_keywords = self._extract_section_keywords(end)
+        
+        # Calculate topic evolution
+        beginning_middle_overlap = len(beginning_keywords & middle_keywords) / max(len(beginning_keywords | middle_keywords), 1)
+        middle_end_overlap = len(middle_keywords & end_keywords) / max(len(middle_keywords | end_keywords), 1)
+        
+        # Good development: some continuity but also evolution
+        continuity_score = (beginning_middle_overlap + middle_end_overlap) / 2
+        
+        # Moderate overlap is good (20-60%)
+        if 0.2 <= continuity_score <= 0.6:
+            return 0.9
+        elif 0.1 <= continuity_score <= 0.7:
+            return 0.7
+        else:
+            return 0.5
+    
+    def _extract_section_keywords(self, section_data: List[Dict[str, Any]]) -> Set[str]:
+        """Extract important keywords from a section of the conversation"""
+        if not section_data:
+            return set()
+        
+        section_text = ' '.join([seg['text'] for seg in section_data])
+        words = section_text.lower().split()
+        
+        # Remove stop words and short words
+        stop_words = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of',
+            'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had',
+            'will', 'would', 'could', 'should', 'can', 'may', 'might', 'this', 'that',
+            'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they'
+        }
+        
+        meaningful_words = [
+            re.sub(r'[^\w]', '', word) for word in words 
+            if len(word) > 3 and word.lower() not in stop_words
+        ]
+        
+        # Return most frequent meaningful words
+        word_counts = Counter(meaningful_words)
+        top_words = [word for word, count in word_counts.most_common(10) if count >= 2]
+        
+        return set(top_words)
+    
+    def _calculate_transition_quality(self, segment_data: List[Dict[str, Any]]) -> float:
+        """Calculate quality of transitions between segments"""
+        if len(segment_data) < 2:
+            return 0.8
+        
+        good_transitions = 0
+        total_transitions = len(segment_data) - 1
+        
+        for i in range(len(segment_data) - 1):
+            current_seg = segment_data[i]
+            next_seg = segment_data[i + 1]
+            
+            # Check for natural transition indicators
+            transition_quality = self._evaluate_single_transition(current_seg, next_seg)
+            if transition_quality >= 0.6:
+                good_transitions += 1
+        
+        return good_transitions / max(total_transitions, 1)
+    
+    def _evaluate_single_transition(self, seg1: Dict[str, Any], seg2: Dict[str, Any]) -> float:
+        """Evaluate the quality of a single transition between segments"""
+        text1 = seg1['text'].lower()
+        text2 = seg2['text'].lower()
+        speaker1 = seg1.get('speaker_id', 'unknown')
+        speaker2 = seg2.get('speaker_id', 'unknown')
+        
+        # Lexical overlap
+        overlap_score = self._calculate_lexical_overlap(text1, text2)
+        
+        # Speaker change appropriateness
+        if speaker1 != speaker2:
+            # Different speakers - check for natural handoff
+            handoff_indicators = ['thank you', 'that\'s right', 'exactly', 'yes', 'i agree', 'now']
+            if any(indicator in text1 for indicator in handoff_indicators):
+                speaker_score = 0.8
+            else:
+                speaker_score = 0.6
+        else:
+            # Same speaker - check for continuation
+            continuation_indicators = ['and', 'also', 'furthermore', 'so', 'then', 'next']
+            if any(indicator in text2 for indicator in continuation_indicators):
+                speaker_score = 0.8
+            else:
+                speaker_score = 0.7
+        
+        # Time gap appropriateness
+        time_gap = seg2.get('start', 0) - seg1.get('end', 0)
+        if 0 <= time_gap <= 3.0:  # Reasonable pause
+            time_score = 0.9
+        elif time_gap <= 5.0:  # Longer but acceptable pause
+            time_score = 0.7
+        else:  # Very long gap
+            time_score = 0.4
+        
+        return (0.4 * overlap_score + 0.35 * speaker_score + 0.25 * time_score)
+    
+    def _calculate_topic_transition_quality(self, segment_data: List[Dict[str, Any]]) -> float:
+        """Calculate quality of topic transitions throughout the conversation"""
+        if len(segment_data) < 5:
+            return 0.7
+        
+        # Use sliding window to detect topic shifts
+        window_size = 3
+        transition_scores = []
+        
+        for i in range(len(segment_data) - window_size + 1):
+            window = segment_data[i:i + window_size]
+            
+            # Analyze topic coherence within window
+            window_texts = [seg['text'] for seg in window]
+            window_coherence = self._calculate_window_topic_coherence(window_texts)
+            
+            transition_scores.append(window_coherence)
+        
+        # Calculate overall transition quality
+        return float(np.mean(transition_scores)) if transition_scores else 0.6
+    
+    def _calculate_window_topic_coherence(self, window_texts: List[str]) -> float:
+        """Calculate topic coherence within a small window of segments"""
+        if len(window_texts) < 2:
+            return 0.8
+        
+        try:
+            vectorizer = TfidfVectorizer(
+                max_features=20,
+                stop_words='english',
+                min_df=1
+            )
+            
+            tfidf_matrix = vectorizer.fit_transform(window_texts)
+            
+            # Calculate pairwise similarities within window
+            similarities = []
+            for i in range(len(window_texts)):
+                for j in range(i + 1, len(window_texts)):
+                    sim = cosine_similarity(tfidf_matrix[i:i+1], tfidf_matrix[j:j+1])[0][0]
+                    similarities.append(sim)
+            
+            return float(np.mean(similarities)) if similarities else 0.6
+            
+        except Exception:
+            return 0.6
     
     def _calculate_overlap_scores(self, candidates: List[Dict[str, Any]]) -> List[float]:
         """Calculate O1 - Overlap handling quality scores"""
