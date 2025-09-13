@@ -21,6 +21,61 @@ class ConfidenceScorer:
             'R': 0.12,  # Cross-run agreement
             'O': 0.10   # Overlap handling
         }
+        
+        # Vectorizer cache for performance optimization
+        self._vectorizer_cache = {}
+        self._fitted_cache = {}
+    
+    def _get_cached_vectorizer(self, vectorizer_type: str, **kwargs) -> TfidfVectorizer:
+        """
+        Get or create a cached TfidfVectorizer instance.
+        
+        Args:
+            vectorizer_type: Type identifier for the vectorizer (e.g., 'fine', 'coarse', 'agreement')
+            **kwargs: TfidfVectorizer parameters
+            
+        Returns:
+            Cached or new TfidfVectorizer instance
+        """
+        # Create cache key from type and parameters
+        cache_key = (vectorizer_type, tuple(sorted(kwargs.items())))
+        
+        if cache_key not in self._vectorizer_cache:
+            self._vectorizer_cache[cache_key] = TfidfVectorizer(**kwargs)
+        
+        return self._vectorizer_cache[cache_key]
+    
+    def _get_fitted_vectorizer(self, vectorizer_type: str, texts: List[str], **kwargs) -> Tuple[TfidfVectorizer, Any]:
+        """
+        Get a fitted vectorizer and its transform matrix, using cache when possible.
+        
+        Args:
+            vectorizer_type: Type identifier for the vectorizer
+            texts: Text corpus to fit/transform
+            **kwargs: TfidfVectorizer parameters
+            
+        Returns:
+            Tuple of (fitted_vectorizer, tfidf_matrix)
+        """
+        # Create cache key including text hash for fitted versions
+        text_hash = hash(tuple(texts))
+        cache_key = (vectorizer_type, text_hash, tuple(sorted(kwargs.items())))
+        
+        if cache_key in self._fitted_cache:
+            return self._fitted_cache[cache_key]
+        
+        # Get vectorizer and fit it
+        vectorizer = self._get_cached_vectorizer(vectorizer_type, **kwargs)
+        tfidf_matrix = vectorizer.fit_transform(texts)
+        
+        # Cache the result
+        self._fitted_cache[cache_key] = (vectorizer, tfidf_matrix)
+        return vectorizer, tfidf_matrix
+    
+    def _clear_vectorizer_cache(self):
+        """Clear vectorizer cache to free memory between batches."""
+        self._vectorizer_cache.clear()
+        self._fitted_cache.clear()
     
     def score_all_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -77,6 +132,9 @@ class ConfidenceScorer:
             }
             
             scored_candidates.append(candidate_with_scores)
+        
+        # Clear vectorizer cache to free memory after batch processing
+        self._clear_vectorizer_cache()
         
         return scored_candidates
     
@@ -2540,26 +2598,26 @@ class ConfidenceScorer:
         segment_texts = [seg['text'] for seg in segment_data]
         
         try:
-            # Multi-scale TF-IDF analysis
+            # Multi-scale TF-IDF analysis using cached vectorizers
             coherence_scores = []
             
             # Fine-grained analysis (more features)
-            vectorizer_fine = TfidfVectorizer(
+            vectorizer_fine, tfidf_fine = self._get_fitted_vectorizer(
+                'coherence_fine', segment_texts,
                 max_features=200, 
                 stop_words='english',
                 ngram_range=(1, 2),  # Include bigrams
                 min_df=1
             )
-            tfidf_fine = vectorizer_fine.fit_transform(segment_texts)
             
             # Coarse-grained analysis (fewer features, more general topics)
-            vectorizer_coarse = TfidfVectorizer(
+            vectorizer_coarse, tfidf_coarse = self._get_fitted_vectorizer(
+                'coherence_coarse', segment_texts,
                 max_features=50,
                 stop_words='english',
                 ngram_range=(1, 1),
                 min_df=1
             )
-            tfidf_coarse = vectorizer_coarse.fit_transform(segment_texts)
             
             # Calculate similarities at different scales
             for i in range(len(segment_texts) - 1):
@@ -2671,15 +2729,14 @@ class ConfidenceScorer:
             # Create corpus for TF-IDF
             segment_texts = [seg['text'] for seg in segment_data]
             
-            vectorizer = TfidfVectorizer(
+            vectorizer, tfidf_matrix = self._get_fitted_vectorizer(
+                'keyword_extraction', segment_texts,
                 max_features=50,
                 stop_words='english',
                 ngram_range=(1, 2),
                 min_df=2,  # Must appear in at least 2 segments
                 max_df=0.8  # But not in more than 80% of segments
             )
-            
-            tfidf_matrix = vectorizer.fit_transform(segment_texts)
             feature_names = vectorizer.get_feature_names_out()
             
             # Calculate mean TF-IDF scores
@@ -2896,14 +2953,13 @@ class ConfidenceScorer:
         all_text = ' '.join(texts)
         
         try:
-            vectorizer = TfidfVectorizer(
+            vectorizer, tfidf_matrix = self._get_fitted_vectorizer(
+                'topic_consistency', texts,
                 max_features=30,
                 stop_words='english',
                 min_df=2,
                 ngram_range=(1, 2)
             )
-            
-            tfidf_matrix = vectorizer.fit_transform(texts)
             
             # Calculate variance in TF-IDF scores across segments
             # Lower variance = more consistent topics
@@ -3206,13 +3262,12 @@ class ConfidenceScorer:
             return 0.8
         
         try:
-            vectorizer = TfidfVectorizer(
+            vectorizer, tfidf_matrix = self._get_fitted_vectorizer(
+                'window_coherence', window_texts,
                 max_features=20,
                 stop_words='english',
                 min_df=1
             )
-            
-            tfidf_matrix = vectorizer.fit_transform(window_texts)
             
             # Calculate pairwise similarities within window
             similarities = []

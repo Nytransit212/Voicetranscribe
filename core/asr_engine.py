@@ -137,17 +137,16 @@ class ASREngine:
     
     def _create_asr_variants(self, audio_path: str, diarization_data: Dict[str, Any], target_language: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Create 5 ASR variants for a single diarization result.
+        Create 5 ASR variants for a single diarization result using parallel processing.
         
         Args:
             audio_path: Path to audio file
             diarization_data: Single diarization variant data
+            target_language: Optional target language for transcription
             
         Returns:
             List of 5 ASR variant results
         """
-        variants = []
-        
         # Define 5 different ASR parameter sets with language support
         # Implement proper auto-detection ensemble when target_language is None
         if target_language is not None:
@@ -195,37 +194,75 @@ class ASREngine:
             }
         ]
         
-        # Run each ASR variant with progress tracking
-        for j, config in enumerate(asr_configs, 1):
-            try:
-                print(f"  Running ASR variant {j}/5 (temp={config['temperature']})...")
-                start_time = time.time()
-                asr_result = self._run_asr_variant(audio_path, diarization_data, config)
-                elapsed = time.time() - start_time
-                
-                # Combine diarization and ASR data
-                candidate = {
-                    'candidate_id': f"diar_{diarization_data['variant_id']}_asr_{config['variant_id']}",
-                    'diarization_variant_id': diarization_data['variant_id'],
-                    'asr_variant_id': config['variant_id'],
-                    'diarization_data': diarization_data,
-                    'asr_data': asr_result,
-                    'aligned_segments': self._align_asr_to_diarization(asr_result, diarization_data),
-                    'parameters': {
-                        'diarization': diarization_data['parameters'],
-                        'asr': config
-                    }
-                }
-                
-                variants.append(candidate)
-                print(f"  ✓ ASR variant {j} completed in {elapsed:.1f}s")
-                
-            except Exception as e:
-                print(f"  ⚠ ASR variant {j} failed: {e}")
-                # Continue with other variants
-                continue
+        # Run ASR variants in parallel with rate limiting
+        print(f"  Running 5 ASR variants in parallel...")
+        start_time = time.time()
+        
+        # Use ThreadPoolExecutor with max 3 workers to respect API rate limits
+        variants = []
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            # Submit all tasks
+            future_to_config = {
+                executor.submit(self._run_asr_variant_with_metadata, audio_path, diarization_data, config): config
+                for config in asr_configs
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_config):
+                config = future_to_config[future]
+                try:
+                    result = future.result(timeout=180)  # 3 minute timeout per variant
+                    if result:
+                        variants.append(result)
+                        variant_id = config['variant_id']
+                        print(f"  ✓ ASR variant {variant_id} completed")
+                    
+                except Exception as e:
+                    variant_id = config['variant_id']
+                    print(f"  ⚠ ASR variant {variant_id} failed: {e}")
+                    continue
+        
+        elapsed = time.time() - start_time
+        print(f"  ✓ All ASR variants completed in {elapsed:.1f}s ({len(variants)}/{len(asr_configs)} successful)")
         
         return variants
+    
+    def _run_asr_variant_with_metadata(self, audio_path: str, diarization_data: Dict[str, Any], 
+                                     config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Run ASR variant and create candidate with all metadata.
+        Used for parallel processing.
+        
+        Args:
+            audio_path: Path to audio file
+            diarization_data: Diarization results
+            config: ASR configuration parameters
+            
+        Returns:
+            Complete candidate dictionary with ASR and diarization data
+        """
+        try:
+            asr_result = self._run_asr_variant(audio_path, diarization_data, config)
+            
+            # Combine diarization and ASR data
+            candidate = {
+                'candidate_id': f"diar_{diarization_data['variant_id']}_asr_{config['variant_id']}",
+                'diarization_variant_id': diarization_data['variant_id'],
+                'asr_variant_id': config['variant_id'],
+                'diarization_data': diarization_data,
+                'asr_data': asr_result,
+                'aligned_segments': self._align_asr_to_diarization(asr_result, diarization_data),
+                'parameters': {
+                    'diarization': diarization_data['parameters'],
+                    'asr': config
+                }
+            }
+            
+            return candidate
+            
+        except Exception as e:
+            # Re-raise with variant info for better error handling
+            raise Exception(f"ASR variant {config['variant_id']} failed: {str(e)}")
     
     def _run_asr_variant(self, audio_path: str, diarization_data: Dict[str, Any], 
                         config: Dict[str, Any]) -> Dict[str, Any]:

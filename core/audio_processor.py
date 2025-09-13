@@ -104,7 +104,7 @@ Run `ffmpeg -version` in your terminal to verify installation.
         
         success = False
         try:
-            # Extract raw audio using ffmpeg
+            # Extract raw audio using ffmpeg at target sample rate (no resampling needed later)
             (
                 ffmpeg
                 .input(video_path)
@@ -119,13 +119,20 @@ Run `ffmpeg -version` in your terminal to verify installation.
                 .run(quiet=True)
             )
             
-            # Load and preprocess audio
-            audio_data, sr = librosa.load(raw_audio_path, sr=self.target_sr, mono=True)
+            # Load audio without resampling (FFmpeg already set to target_sr)
+            # Use sr=None to avoid redundant resampling since FFmpeg already outputs at target_sr
+            audio_data, sr = librosa.load(raw_audio_path, sr=None, mono=True)
             
-            # Apply preprocessing
+            # Verify sample rate matches target (should always be true after FFmpeg processing)
+            if sr != self.target_sr:
+                # Fallback: resample only if necessary (shouldn't happen in normal operation)
+                audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=self.target_sr)
+                sr = self.target_sr
+            
+            # Apply preprocessing with standardized sample rate
             cleaned_audio = self._preprocess_audio(audio_data, int(sr))
             
-            # Save cleaned audio
+            # Save cleaned audio at target sample rate
             import soundfile as sf
             sf.write(clean_audio_path, cleaned_audio, sr)
             
