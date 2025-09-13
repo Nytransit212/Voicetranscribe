@@ -275,78 +275,208 @@ class ASREngine:
     def _align_asr_to_diarization(self, asr_data: Dict[str, Any], 
                                  diarization_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Align ASR word timestamps to diarization speaker segments.
+        Align ASR word timestamps to diarization speaker segments with robust handling 
+        of overlaps, gaps, and speaker transitions.
         
         Args:
-            asr_data: ASR transcription results
-            diarization_data: Speaker diarization results
+            asr_data: ASR transcription results with word-level timestamps
+            diarization_data: Speaker diarization results with segments
             
         Returns:
-            List of aligned segments with speaker and word information
+            List of aligned segments with enhanced speaker attribution and metrics
         """
-        aligned_segments = []
-        diar_segments = diarization_data['segments']
+        diar_segments = diarization_data.get('segments', [])
         words = asr_data.get('words', [])
         
         if not words or not diar_segments:
-            return aligned_segments
+            return []
         
-        # Sort both by start time
+        # Sort by start time
         diar_segments = sorted(diar_segments, key=lambda x: x['start'])
         words = sorted(words, key=lambda x: x['start'])
         
-        current_diar_idx = 0
-        current_segment = None
-        current_words = []
+        # Create word-to-speaker assignments with overlap handling
+        word_assignments = self._assign_words_to_speakers(words, diar_segments)
+        
+        # Group words into coherent speaker segments
+        aligned_segments = self._group_words_into_segments(word_assignments, diar_segments)
+        
+        # Calculate alignment quality metrics
+        alignment_metrics = self._calculate_alignment_metrics(word_assignments, diar_segments)
+        
+        # Add metrics to each segment
+        for segment in aligned_segments:
+            segment['alignment_metrics'] = alignment_metrics
+        
+        return aligned_segments
+    
+    def _assign_words_to_speakers(self, words: List[Dict[str, Any]], 
+                                 diar_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Assign each word to the most appropriate speaker using sophisticated overlap handling.
+        
+        Args:
+            words: List of ASR words with timestamps
+            diar_segments: List of diarization segments
+            
+        Returns:
+            List of word assignments with speaker attribution and confidence
+        """
+        word_assignments = []
+        tolerance_ms = 0.15  # 150ms tolerance for boundary alignment
         
         for word in words:
             word_start = word['start']
             word_end = word['end']
+            word_center = (word_start + word_end) / 2
             
-            # Find the appropriate diarization segment for this word
-            while (current_diar_idx < len(diar_segments) and 
-                   diar_segments[current_diar_idx]['end'] < word_start):
-                # Finish current segment if it has words
-                if current_segment and current_words:
-                    aligned_segments.append(self._create_aligned_segment(current_segment, current_words))
-                
-                current_diar_idx += 1
-                current_words = []
-                current_segment = None
-            
-            # Check if word fits in current diarization segment
-            if (current_diar_idx < len(diar_segments) and 
-                diar_segments[current_diar_idx]['start'] <= word_start <= diar_segments[current_diar_idx]['end']):
-                
-                # Start new segment if speaker changed
-                if current_segment is None or current_segment['speaker_id'] != diar_segments[current_diar_idx]['speaker_id']:
-                    # Finish previous segment
-                    if current_segment and current_words:
-                        aligned_segments.append(self._create_aligned_segment(current_segment, current_words))
+            # Find all overlapping diarization segments
+            overlapping_segments = []
+            for seg in diar_segments:
+                # Check for any temporal overlap
+                if (word_start <= seg['end'] + tolerance_ms and 
+                    word_end >= seg['start'] - tolerance_ms):
                     
-                    # Start new segment
-                    current_segment = diar_segments[current_diar_idx]
-                    current_words = []
+                    # Calculate overlap amount
+                    overlap_start = max(word_start, seg['start'])
+                    overlap_end = min(word_end, seg['end'])
+                    overlap_duration = max(0, overlap_end - overlap_start)
+                    
+                    overlapping_segments.append({
+                        'segment': seg,
+                        'overlap_duration': overlap_duration,
+                        'overlap_ratio': overlap_duration / (word_end - word_start),
+                        'center_distance': abs(word_center - (seg['start'] + seg['end']) / 2)
+                    })
+            
+            # Determine best speaker assignment
+            if overlapping_segments:
+                # Sort by overlap ratio, then by center distance
+                overlapping_segments.sort(
+                    key=lambda x: (-x['overlap_ratio'], x['center_distance'])
+                )
                 
-                current_words.append(word)
+                best_match = overlapping_segments[0]
+                assignment_confidence = min(1.0, best_match['overlap_ratio'] * 1.2)
+                
+                # Check for speaker conflicts (overlaps)
+                speaker_conflict = len(overlapping_segments) > 1 and \
+                                 overlapping_segments[1]['overlap_ratio'] > 0.3
+                
+                word_assignment = {
+                    'word': word,
+                    'speaker_id': best_match['segment']['speaker_id'],
+                    'assignment_confidence': assignment_confidence,
+                    'diarization_segment': best_match['segment'],
+                    'overlap_ratio': best_match['overlap_ratio'],
+                    'speaker_conflict': speaker_conflict,
+                    'num_overlapping_speakers': len(overlapping_segments)
+                }
+            else:
+                # Word falls in gap - assign to nearest speaker
+                nearest_segment = min(
+                    diar_segments,
+                    key=lambda seg: min(
+                        abs(word_start - seg['end']),  # Distance to segment end
+                        abs(word_end - seg['start'])   # Distance to segment start
+                    )
+                )
+                
+                gap_distance = min(
+                    abs(word_start - nearest_segment['end']),
+                    abs(word_end - nearest_segment['start'])
+                )
+                
+                # Lower confidence for gap assignments
+                gap_confidence = max(0.1, 1.0 - (gap_distance / 2.0))  # 2s max penalty
+                
+                word_assignment = {
+                    'word': word,
+                    'speaker_id': nearest_segment['speaker_id'],
+                    'assignment_confidence': gap_confidence,
+                    'diarization_segment': nearest_segment,
+                    'overlap_ratio': 0.0,
+                    'speaker_conflict': False,
+                    'num_overlapping_speakers': 0,
+                    'gap_assignment': True,
+                    'gap_distance': gap_distance
+                }
+            
+            word_assignments.append(word_assignment)
+        
+        return word_assignments
+    
+    def _group_words_into_segments(self, word_assignments: List[Dict[str, Any]], 
+                                  diar_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Group word assignments into coherent speaker segments.
+        
+        Args:
+            word_assignments: List of word-to-speaker assignments
+            diar_segments: Original diarization segments
+            
+        Returns:
+            List of aligned segments with speaker attribution
+        """
+        if not word_assignments:
+            return []
+        
+        aligned_segments = []
+        current_speaker = None
+        current_words = []
+        current_diar_segment = None
+        
+        for assignment in word_assignments:
+            speaker_id = assignment['speaker_id']
+            word = assignment['word']
+            
+            # Start new segment if speaker changed or significant time gap
+            time_gap = 0
+            if current_words:
+                time_gap = word['start'] - current_words[-1]['end']
+            
+            should_start_new_segment = (
+                current_speaker != speaker_id or
+                time_gap > 2.0  # 2 second gap threshold
+            )
+            
+            if should_start_new_segment and current_words and current_diar_segment:
+                # Finish current segment
+                aligned_segment = self._create_enhanced_aligned_segment(
+                    current_diar_segment, current_words, word_assignments
+                )
+                if aligned_segment:  # Only add non-empty segments
+                    aligned_segments.append(aligned_segment)
+                current_words = []
+            
+            # Update current segment info
+            current_speaker = speaker_id
+            current_diar_segment = assignment['diarization_segment']
+            current_words.append(word)
         
         # Add final segment
-        if current_segment and current_words:
-            aligned_segments.append(self._create_aligned_segment(current_segment, current_words))
+        if current_words and current_diar_segment:
+            aligned_segment = self._create_enhanced_aligned_segment(
+                current_diar_segment, current_words, word_assignments
+            )
+            if aligned_segment:  # Only add non-empty segments
+                aligned_segments.append(aligned_segment)
         
         return aligned_segments
     
-    def _create_aligned_segment(self, diar_segment: Dict[str, Any], 
-                              words: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _create_enhanced_aligned_segment(self, diar_segment: Dict[str, Any], 
+                                        words: List[Dict[str, Any]],
+                                        all_assignments: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Create an aligned segment combining diarization and ASR data.
+        Create an enhanced aligned segment with comprehensive metadata.
         
         Args:
             diar_segment: Diarization segment data
             words: List of words in this segment
+            all_assignments: All word assignments for context
             
         Returns:
-            Aligned segment dictionary
+            Enhanced aligned segment dictionary
         """
         if not words:
             return {}
@@ -356,11 +486,29 @@ class ASREngine:
         segment_end = max(word['end'] for word in words)
         
         # Join words into text
-        segment_text = ' '.join(word['word'] for word in words)
+        segment_text = ' '.join(word.get('word', '').strip() for word in words)
         
-        # Calculate average confidence
+        # Calculate confidence metrics
         word_confidences = [word.get('confidence', 0.0) for word in words]
-        avg_confidence = np.mean(word_confidences) if word_confidences else 0.0
+        avg_word_confidence = float(np.mean(word_confidences)) if word_confidences else 0.0
+        
+        # Find assignment info for these words
+        segment_assignments = [
+            assignment for assignment in all_assignments 
+            if any(w == assignment['word'] for w in words)
+        ]
+        
+        # Calculate alignment quality metrics
+        assignment_confidences = [a['assignment_confidence'] for a in segment_assignments]
+        avg_assignment_confidence = float(np.mean(assignment_confidences)) if assignment_confidences else 0.0
+        
+        speaker_conflicts = sum(1 for a in segment_assignments if a.get('speaker_conflict', False))
+        gap_assignments = sum(1 for a in segment_assignments if a.get('gap_assignment', False))
+        
+        # Calculate boundary alignment score
+        boundary_score = self._calculate_boundary_alignment_score(
+            segment_start, segment_end, diar_segment
+        )
         
         return {
             'start': segment_start,
@@ -368,7 +516,129 @@ class ASREngine:
             'speaker_id': diar_segment['speaker_id'],
             'text': segment_text,
             'words': words,
-            'confidence': float(avg_confidence),
+            'confidence': avg_word_confidence,
             'word_count': len(words),
-            'diarization_confidence': diar_segment.get('confidence', 0.0)
+            'diarization_confidence': diar_segment.get('confidence', 0.0),
+            'alignment_confidence': avg_assignment_confidence,
+            'boundary_alignment_score': boundary_score,
+            'speaker_conflicts': speaker_conflicts,
+            'gap_assignments': gap_assignments,
+            'temporal_coherence': self._calculate_temporal_coherence(words)
+        }
+    
+    def _calculate_boundary_alignment_score(self, segment_start: float, segment_end: float, 
+                                           diar_segment: Dict[str, Any]) -> float:
+        """
+        Calculate how well segment boundaries align with diarization boundaries.
+        
+        Args:
+            segment_start: Start time of aligned segment
+            segment_end: End time of aligned segment  
+            diar_segment: Diarization segment
+            
+        Returns:
+            Boundary alignment score (0.0-1.0)
+        """
+        diar_start = diar_segment['start']
+        diar_end = diar_segment['end']
+        
+        # Calculate boundary offsets
+        start_offset = abs(segment_start - diar_start)
+        end_offset = abs(segment_end - diar_end)
+        
+        # Score based on offset (penalty for >200ms misalignment)
+        start_score = max(0.0, 1.0 - (start_offset / 0.4))  # 400ms max penalty
+        end_score = max(0.0, 1.0 - (end_offset / 0.4))
+        
+        return (start_score + end_score) / 2
+    
+    def _calculate_temporal_coherence(self, words: List[Dict[str, Any]]) -> float:
+        """
+        Calculate temporal coherence of word sequence.
+        
+        Args:
+            words: List of words in segment
+            
+        Returns:
+            Temporal coherence score (0.0-1.0)
+        """
+        if len(words) < 2:
+            return 1.0
+        
+        violations = 0
+        total_transitions = 0
+        
+        for i in range(len(words) - 1):
+            current_end = words[i]['end']
+            next_start = words[i + 1]['start']
+            
+            # Check for temporal violations
+            if current_end > next_start + 0.05:  # 50ms tolerance
+                violations += 1
+            
+            total_transitions += 1
+        
+        return 1.0 - (violations / max(total_transitions, 1))
+    
+    def _calculate_alignment_metrics(self, word_assignments: List[Dict[str, Any]], 
+                                   diar_segments: List[Dict[str, Any]]) -> Dict[str, float]:
+        """
+        Calculate comprehensive alignment quality metrics.
+        
+        Args:
+            word_assignments: List of word-to-speaker assignments
+            diar_segments: Diarization segments
+            
+        Returns:
+            Dictionary of alignment quality metrics
+        """
+        if not word_assignments:
+            return {
+                'coverage_ratio': 0.0,
+                'avg_assignment_confidence': 0.0,
+                'boundary_precision': 0.0,
+                'speaker_consistency': 0.0,
+                'overlap_handling_score': 0.0
+            }
+        
+        # Coverage ratio - fraction of words successfully aligned
+        total_words = len(word_assignments)
+        gap_assignments = sum(1 for a in word_assignments if a.get('gap_assignment', False))
+        coverage_ratio = (total_words - gap_assignments) / total_words
+        
+        # Average assignment confidence
+        confidences = [a['assignment_confidence'] for a in word_assignments]
+        avg_assignment_confidence = float(np.mean(confidences))
+        
+        # Boundary precision - how well word boundaries align with speaker boundaries
+        boundary_scores = []
+        for assignment in word_assignments:
+            if not assignment.get('gap_assignment', False):
+                word = assignment['word']
+                diar_seg = assignment['diarization_segment']
+                score = self._calculate_boundary_alignment_score(
+                    word['start'], word['end'], diar_seg
+                )
+                boundary_scores.append(score)
+        
+        boundary_precision = float(np.mean(boundary_scores)) if boundary_scores else 0.0
+        
+        # Speaker consistency - penalize rapid speaker changes
+        speaker_changes = 0
+        for i in range(len(word_assignments) - 1):
+            if word_assignments[i]['speaker_id'] != word_assignments[i + 1]['speaker_id']:
+                speaker_changes += 1
+        
+        speaker_consistency = max(0.0, 1.0 - (speaker_changes / max(total_words, 1)) * 2)
+        
+        # Overlap handling score - how well overlaps are managed
+        conflict_words = sum(1 for a in word_assignments if a.get('speaker_conflict', False))
+        overlap_handling_score = 1.0 - (conflict_words / max(total_words, 1))
+        
+        return {
+            'coverage_ratio': coverage_ratio,
+            'avg_assignment_confidence': avg_assignment_confidence,
+            'boundary_precision': boundary_precision,
+            'speaker_consistency': speaker_consistency,
+            'overlap_handling_score': overlap_handling_score
         }

@@ -226,7 +226,7 @@ class ConfidenceScorer:
         return normalized_entropy
     
     def _calculate_asr_scores(self, candidates: List[Dict[str, Any]]) -> List[float]:
-        """Calculate A1 - ASR alignment and confidence scores"""
+        """Calculate A1 - Enhanced ASR alignment and confidence scores"""
         scores = []
         
         for candidate in candidates:
@@ -236,21 +236,25 @@ class ConfidenceScorer:
             # A1a: Word confidence mean (trimmed at 10% tails)
             word_confidence = self._calculate_trimmed_word_confidence(asr_data)
             
-            # A1b: Timestamp monotonicity
-            monotonicity = self._calculate_timestamp_monotonicity(asr_data)
+            # A1b: Enhanced alignment quality metrics
+            alignment_quality = self._calculate_enhanced_alignment_quality(segments)
             
-            # A1c: Boundary fit (fraction of words inside diarization turns)
-            boundary_fit = self._calculate_boundary_fit(segments)
+            # A1c: Timestamp coherence and monotonicity
+            temporal_coherence = self._calculate_enhanced_temporal_coherence(asr_data, segments)
             
-            # A1d: Rare word stability (agreement on proper nouns)
-            word_stability = self._calculate_word_stability(asr_data)
+            # A1d: Boundary precision and speaker consistency
+            boundary_precision = self._calculate_enhanced_boundary_precision(segments)
             
-            # Aggregate A score
+            # A1e: Coverage and gap handling quality
+            coverage_quality = self._calculate_coverage_quality(segments)
+            
+            # Aggregate A score with enhanced weighting
             a_score = (
-                0.35 * word_confidence +
-                0.25 * monotonicity +
-                0.25 * boundary_fit +
-                0.15 * word_stability
+                0.25 * word_confidence +
+                0.25 * alignment_quality +
+                0.20 * temporal_coherence +
+                0.20 * boundary_precision +
+                0.10 * coverage_quality
             )
             
             scores.append(a_score)
@@ -296,8 +300,132 @@ class ConfidenceScorer:
         
         return monotonic_pairs / max(total_pairs, 1)
     
+    def _calculate_enhanced_alignment_quality(self, segments: List[Dict[str, Any]]) -> float:
+        """Calculate enhanced alignment quality using new metrics"""
+        if not segments:
+            return 0.0
+        
+        # Extract alignment metrics from segments
+        alignment_metrics = []
+        for segment in segments:
+            metrics = segment.get('alignment_metrics', {})
+            if metrics:
+                alignment_metrics.append(metrics)
+        
+        if not alignment_metrics:
+            return 0.0
+        
+        # Average the key alignment quality metrics
+        coverage_ratios = [m.get('coverage_ratio', 0.0) for m in alignment_metrics]
+        assignment_confidences = [m.get('avg_assignment_confidence', 0.0) for m in alignment_metrics]
+        overlap_scores = [m.get('overlap_handling_score', 0.0) for m in alignment_metrics]
+        
+        avg_coverage = float(np.mean(coverage_ratios)) if coverage_ratios else 0.0
+        avg_assignment = float(np.mean(assignment_confidences)) if assignment_confidences else 0.0
+        avg_overlap = float(np.mean(overlap_scores)) if overlap_scores else 0.0
+        
+        # Weighted combination
+        return 0.4 * avg_coverage + 0.35 * avg_assignment + 0.25 * avg_overlap
+    
+    def _calculate_enhanced_temporal_coherence(self, asr_data: Dict[str, Any], 
+                                             segments: List[Dict[str, Any]]) -> float:
+        """Calculate enhanced temporal coherence across ASR and alignment"""
+        # Original timestamp monotonicity
+        asr_monotonicity = self._calculate_timestamp_monotonicity(asr_data)
+        
+        # Segment-level temporal coherence
+        if not segments:
+            return asr_monotonicity
+        
+        temporal_scores = []
+        for segment in segments:
+            # Get temporal coherence from segment metadata
+            segment_coherence = segment.get('temporal_coherence', 0.0)
+            temporal_scores.append(segment_coherence)
+        
+        segment_coherence = float(np.mean(temporal_scores)) if temporal_scores else 0.0
+        
+        # Cross-segment temporal consistency
+        cross_segment_consistency = self._calculate_cross_segment_consistency(segments)
+        
+        return 0.4 * asr_monotonicity + 0.35 * segment_coherence + 0.25 * cross_segment_consistency
+    
+    def _calculate_cross_segment_consistency(self, segments: List[Dict[str, Any]]) -> float:
+        """Calculate temporal consistency across segment boundaries"""
+        if len(segments) < 2:
+            return 1.0
+        
+        consistent_transitions = 0
+        total_transitions = 0
+        
+        for i in range(len(segments) - 1):
+            current_seg = segments[i]
+            next_seg = segments[i + 1]
+            
+            # Check for reasonable time gap between segments
+            time_gap = next_seg['start'] - current_seg['end']
+            
+            # Good transition: gap between -0.1s and 3.0s
+            if -0.1 <= time_gap <= 3.0:
+                consistent_transitions += 1
+            
+            total_transitions += 1
+        
+        return consistent_transitions / max(total_transitions, 1)
+    
+    def _calculate_enhanced_boundary_precision(self, segments: List[Dict[str, Any]]) -> float:
+        """Calculate enhanced boundary precision using alignment scores"""
+        if not segments:
+            return 0.0
+        
+        boundary_scores = []
+        for segment in segments:
+            # Use the boundary alignment score from the enhanced alignment
+            boundary_score = segment.get('boundary_alignment_score', 0.0)
+            boundary_scores.append(boundary_score)
+        
+        avg_boundary_score = float(np.mean(boundary_scores)) if boundary_scores else 0.0
+        
+        # Also consider speaker conflict penalties
+        total_words = sum(segment.get('word_count', 0) for segment in segments)
+        total_conflicts = sum(segment.get('speaker_conflicts', 0) for segment in segments)
+        
+        conflict_penalty = total_conflicts / max(total_words, 1)
+        conflict_score = max(0.0, 1.0 - conflict_penalty * 2.0)  # Penalty up to 50%
+        
+        return 0.7 * avg_boundary_score + 0.3 * conflict_score
+    
+    def _calculate_coverage_quality(self, segments: List[Dict[str, Any]]) -> float:
+        """Calculate quality of word coverage and gap handling"""
+        if not segments:
+            return 0.0
+        
+        total_words = sum(segment.get('word_count', 0) for segment in segments)
+        gap_assignments = sum(segment.get('gap_assignments', 0) for segment in segments)
+        
+        if total_words == 0:
+            return 0.0
+        
+        # Coverage ratio (fewer gap assignments is better)
+        coverage_ratio = 1.0 - (gap_assignments / total_words)
+        
+        # Segment distribution quality (avoid too many tiny segments)
+        segment_sizes = [segment.get('word_count', 0) for segment in segments]
+        avg_segment_size = np.mean(segment_sizes) if segment_sizes else 0.0
+        min_segment_size = min(segment_sizes) if segment_sizes else 0.0
+        
+        # Penalty for very small segments (< 3 words)
+        size_penalty = 0.0
+        if avg_segment_size > 0:
+            small_segments = sum(1 for size in segment_sizes if size < 3)
+            size_penalty = small_segments / len(segment_sizes)
+        
+        size_quality = max(0.0, 1.0 - size_penalty)
+        
+        return 0.7 * coverage_ratio + 0.3 * size_quality
+    
     def _calculate_boundary_fit(self, segments: List[Dict[str, Any]]) -> float:
-        """Calculate fraction of words fully inside diarization turns"""
+        """Legacy boundary fit calculation for backwards compatibility"""
         if not segments:
             return 0.0
         
