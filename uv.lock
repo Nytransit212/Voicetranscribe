@@ -1372,6 +1372,7 @@ dependencies = [
     { name = "scipy" },
     { name = "soundfile" },
     { name = "streamlit" },
+    { name = "tenacity" },
 ]
 
 [package.optional-dependencies]
@@ -1404,6 +1405,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.16.2" },
     { name = "soundfile", specifier = ">=0.13.1" },
     { name = "streamlit", specifier = ">=1.49.1" },
+    { name = "tenacity", specifier = ">=9.1.2" },
     { name = "types-requests", marker = "extra == 'dev'", specifier = ">=2.31.0" },
     { name = "types-setuptools", marker = "extra == 'dev'", specifier = ">=68.0.0" },
 ]

@@ -10,6 +10,10 @@ import math
 import hashlib
 import time
 
+from utils.resilient_api import huggingface_retry
+from core.circuit_breaker import CircuitBreakerOpenException
+from utils.structured_logger import StructuredLogger
+
 # Define base classes and types for both real and mock implementations
 class BaseAnnotation:
     """Base annotation interface"""
@@ -73,6 +77,9 @@ class DiarizationEngine:
         self._speaker_features_cache = {}  # Cache for speaker features
         self._chunk_preview_cache = {}  # Cache for chunk previews
         
+        # Initialize structured logging for reliability telemetry
+        self.structured_logger = StructuredLogger("diarization_engine")
+        
         self._initialize_pipeline()
     
     def _validate_hf_token(self, token: Optional[str]) -> bool:
@@ -104,13 +111,22 @@ class DiarizationEngine:
             print("Loading pyannote speaker diarization pipeline...")
             # Ensure hf_token is not None here since we validated it
             assert hf_token is not None, "Token should be validated before reaching this point"
-            self.pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                use_auth_token=hf_token
-            )
-            print("✓ Real pyannote pipeline loaded successfully")
+            
+            # Load pipeline with retry logic and circuit breaker protection
+            try:
+                self.pipeline = self._load_pipeline_with_retry(hf_token)
+                print("✓ Real pyannote pipeline loaded successfully")
+            except CircuitBreakerOpenException as e:
+                print(f"⚠ HuggingFace service temporarily unavailable: {e}")
+                print("Falling back to mock pipeline")
+                self.pipeline = self._create_mock_pipeline()
+            except Exception as e:
+                print(f"⚠ Could not load pyannote pipeline after retries: {e}")
+                print("Falling back to mock pipeline")
+                self.pipeline = self._create_mock_pipeline()
+                
         except Exception as e:
-            print(f"⚠ Could not load pyannote pipeline: {e}")
+            print(f"⚠ Unexpected error during pipeline initialization: {e}")
             print("Falling back to mock pipeline")
             self.pipeline = self._create_mock_pipeline()
     
@@ -217,6 +233,25 @@ class DiarizationEngine:
                 return segments
         
         return MockPipeline(self)
+    
+    @huggingface_retry
+    def _load_pipeline_with_retry(self, hf_token: str):
+        """
+        Load HuggingFace pipeline with tenacity retry and circuit breaker protection.
+        
+        Args:
+            hf_token: HuggingFace authentication token
+            
+        Returns:
+            Loaded pipeline instance
+            
+        Raises:
+            Various exceptions if loading fails after retries
+        """
+        return Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=hf_token
+        )
     
     def create_diarization_variants(self, audio_path: str, use_voting_fusion: bool = True) -> List[Dict[str, Any]]:
         """

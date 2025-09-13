@@ -1,0 +1,94 @@
+{
+  "metadata": {
+    "generated_at": 1757791248.339043,
+    "session_id": "1757791248",
+    "report_type": "retry_audit_report",
+    "version": "1.0"
+  },
+  "session_summary": {
+    "session_id": "1757791248",
+    "session_duration": 0.002992868423461914,
+    "total_events": 3,
+    "retry_events": 1,
+    "success_events": 1,
+    "failure_events": 0,
+    "circuit_events": 1,
+    "services_used": [
+      "test_service"
+    ],
+    "service_metrics": {
+      "test_service": {
+        "service_name": "test_service",
+        "total_attempts": 2,
+        "successful_calls": 1,
+        "failed_calls": 0,
+        "circuit_trips": 1,
+        "total_retry_time": 2.0,
+        "max_attempts_used": 2,
+        "common_errors": {
+          "Exception": 1
+        },
+        "avg_success_duration": 150.0
+      }
+    }
+  },
+  "events": [
+    {
+      "timestamp": 1757791248.3363745,
+      "service": "test_service",
+      "event_type": "attempt",
+      "attempt_number": 1,
+      "total_attempts": 3,
+      "error_type": "Exception",
+      "error_message": "Test error",
+      "duration_ms": 100.0,
+      "backoff_duration": 2.0,
+      "http_status_code": null,
+      "api_endpoint": null
+    },
+    {
+      "timestamp": 1757791248.337308,
+      "service": "test_service",
+      "event_type": "success",
+      "attempt_number": 2,
+      "total_attempts": 3,
+      "error_type": null,
+      "error_message": null,
+      "duration_ms": 150.0,
+      "backoff_duration": null,
+      "http_status_code": null,
+      "api_endpoint": null
+    },
+    {
+      "timestamp": 1757791248.3380349,
+      "service": "test_service",
+      "event_type": "circuit_open",
+      "attempt_number": 3,
+      "total_attempts": 0,
+      "error_type": null,
+      "error_message": "Circuit breaker circuit_open, recovery_time=None",
+      "duration_ms": null,
+      "backoff_duration": null,
+      "http_status_code": null,
+      "api_endpoint": null
+    }
+  ],
+  "service_analysis": {
+    "test_service": {
+      "success_rate": 0.5,
+      "average_retries_per_call": 1.0,
+      "most_common_error": [
+        "Exception",
+        1
+      ],
+      "circuit_trips": 1,
+      "avg_success_duration_ms": 150.0,
+      "total_retry_time_seconds": 2.0,
+      "reliability_score": 30.0
+    }
+  },
+  "recommendations": [
+    "Service 'test_service' has low success rate (50.0%). Consider investigating service reliability or adjusting retry parameters.",
+    "Service 'test_service' had 1 circuit breaker trips. Monitor service health and consider adjusting circuit breaker thresholds."
+  ]
+}

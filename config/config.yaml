@@ -32,25 +32,85 @@ files:
 
 # Processing Settings  
 processing:
-  max_concurrent_asr_requests: 3
-  asr_timeout_seconds: 300  # 5 minutes
-  diarization_timeout_seconds: 600  # 10 minutes
   enable_parallel_processing: true
   chunk_size_seconds: 30  # For large files
+
+# Reliability Configuration - Centralized timeout, concurrency, and circuit breaker settings
+reliability:
+  # Global timeout settings (seconds)
+  timeouts:
+    api_request: 300      # Individual API request timeout
+    asr_variant: 180      # Per-ASR variant timeout
+    diarization: 600      # Diarization pipeline timeout
+    file_processing: 120  # File I/O operations
+    
+  # Concurrency control
+  concurrency:
+    max_asr_requests: 3       # Max concurrent ASR API calls
+    max_diarization: 2        # Max concurrent diarization processes
+    max_file_processors: 4    # Max concurrent file operations
+    thread_pool_queue_size: 50  # Bounded queue size
+    
+  # Retry configuration using tenacity
+  retry:
+    # Default retry settings for all services
+    default:
+      max_attempts: 5
+      initial_wait: 1.0       # seconds
+      max_wait: 60.0          # seconds  
+      exponential_base: 2
+      jitter: true
+      
+    # Service-specific retry overrides
+    openai:
+      max_attempts: 3
+      initial_wait: 2.0
+      max_wait: 30.0
+      retry_on_status: [429, 500, 502, 503, 504]  # Rate limit + server errors
+      
+    huggingface:
+      max_attempts: 4
+      initial_wait: 1.5
+      max_wait: 45.0
+      retry_on_status: [429, 500, 502, 503, 504]
+      
+    subprocess:
+      max_attempts: 3
+      initial_wait: 0.5
+      max_wait: 10.0
+      
+  # Circuit breaker settings
+  circuit_breakers:
+    # Default circuit breaker config
+    default:
+      failure_threshold: 5      # Consecutive failures to trip breaker
+      recovery_timeout: 60      # Seconds before testing recovery
+      success_threshold: 2      # Successes needed to close breaker
+      timeout_counts_as_failure: true
+      max_failure_history: 100
+      
+    # Service-specific circuit breaker overrides
+    openai:
+      failure_threshold: 3      # More aggressive for API limits
+      recovery_timeout: 120     # Longer recovery for rate limits
+      
+    huggingface:
+      failure_threshold: 4      # Model loading can be flaky
+      recovery_timeout: 90
+      
+    ffmpeg:
+      failure_threshold: 2      # System processes should fail fast
+      recovery_timeout: 30
 
 # API Configuration
 api:
   openai:
     model: "whisper-1"
     api_key: null  # Set via environment variable
-    max_retries: 3
-    retry_delay_seconds: 1
-    timeout_seconds: 300
   huggingface:
     model: "pyannote/speaker-diarization-3.1"
     auth_token: null  # Set via environment variable
     use_auth_token: true
-    timeout_seconds: 600
 
 # Quality Gates
 quality:

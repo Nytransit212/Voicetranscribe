@@ -7,11 +7,15 @@ from openai import OpenAI
 import librosa
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import queue
 import time
 import logging
 from openai import OpenAIError, RateLimitError, APITimeoutError, APIConnectionError
 
 from utils.structured_logger import StructuredLogger
+from utils.reliability_config import get_concurrency_config, get_timeout_config
+from utils.resilient_api import openai_retry
+from core.circuit_breaker import CircuitBreakerOpenException
 
 class ASREngine:
     """Handles Automatic Speech Recognition with ensemble variants"""
@@ -19,6 +23,10 @@ class ASREngine:
     def __init__(self):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.model = "whisper-1"  # OpenAI Whisper model for audio transcription
+        
+        # Load reliability configuration
+        self.concurrency_config = get_concurrency_config()
+        self.timeout_config = get_timeout_config()
         
         # Initialize structured logging
         self.structured_logger = StructuredLogger("asr_engine")
@@ -84,85 +92,27 @@ class ASREngine:
         print(f"🎤 ASR ensemble complete: {len(candidates)} total candidates generated")
         return candidates
     
-    def _retry_api_call_with_backoff(self, api_call_func, *args, max_retries: int = 5, **kwargs) -> Any:
+    @openai_retry
+    def _make_transcription_api_call(self, audio_file_path: str, **transcription_params) -> Any:
         """
-        Execute API call with exponential backoff retry logic.
+        Make OpenAI transcription API call with tenacity retry and circuit breaker protection.
         
         Args:
-            api_call_func: Function to call
-            *args: Arguments for the function
-            max_retries: Maximum number of retry attempts
-            **kwargs: Keyword arguments for the function
+            audio_file_path: Path to audio file
+            **transcription_params: Parameters for transcription API
             
         Returns:
             API response if successful
             
         Raises:
-            Exception: If all retries are exhausted
+            Various OpenAI exceptions if call fails after retries
         """
-        last_exception = None
-        retry_delays = [1, 2, 4, 8, 16]  # Exponential backoff delays
-        
-        for attempt in range(max_retries + 1):
-            try:
-                if attempt > 0:
-                    delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
-                    # Add jitter to prevent thundering herd
-                    jittered_delay = delay + random.uniform(0, 1)
-                    self.logger.info(f"Retry attempt {attempt}/{max_retries} after {jittered_delay:.1f}s delay")
-                    time.sleep(jittered_delay)
-                
-                # Attempt the API call
-                response = api_call_func(*args, **kwargs)
-                
-                if attempt > 0:
-                    self.logger.info(f"API call succeeded on retry attempt {attempt}")
-                
-                return response
-                
-            except RateLimitError as e:
-                self.logger.warning(f"Rate limit error on attempt {attempt + 1}: {e}")
-                last_exception = e
-                if attempt == max_retries:
-                    break
-                continue
-                
-            except APITimeoutError as e:
-                self.logger.warning(f"Timeout error on attempt {attempt + 1}: {e}")
-                last_exception = e
-                if attempt == max_retries:
-                    break
-                continue
-                
-            except APIConnectionError as e:
-                self.logger.warning(f"Connection error on attempt {attempt + 1}: {e}")
-                last_exception = e
-                if attempt == max_retries:
-                    break
-                continue
-                
-            except OpenAIError as e:
-                # Check if it's a retriable 5xx error
-                status_code = getattr(e, 'status_code', None)
-                if status_code and 500 <= status_code < 600:
-                    self.logger.warning(f"Server error {status_code} on attempt {attempt + 1}: {e}")
-                    last_exception = e
-                    if attempt == max_retries:
-                        break
-                    continue
-                else:
-                    # Non-retriable error (4xx, etc.)
-                    self.logger.error(f"Non-retriable OpenAI error: {e}")
-                    raise e
-                    
-            except Exception as e:
-                self.logger.error(f"Unexpected error on attempt {attempt + 1}: {e}")
-                last_exception = e
-                break
-        
-        # All retries exhausted
-        self.logger.error(f"All {max_retries} retry attempts failed. Last error: {last_exception}")
-        raise Exception(f"OpenAI API call failed after {max_retries} retries: {str(last_exception)}")
+        with open(audio_file_path, 'rb') as audio_file:
+            return self.client.audio.transcriptions.create(
+                file=audio_file,
+                timeout=self.timeout_config.api_request,
+                **transcription_params
+            )
     
     def _create_asr_variants(self, audio_path: str, diarization_data: Dict[str, Any], target_language: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -227,20 +177,33 @@ class ASREngine:
         print(f"  Running 5 ASR variants in parallel...")
         start_time = time.time()
         
-        # Use ThreadPoolExecutor with max 3 workers to respect API rate limits
+        # Use bounded thread pool executor with configurable concurrency and queue limits
+        from utils.bounded_executor import get_asr_executor
+        
         variants = []
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            # Submit all tasks
-            future_to_config = {
-                executor.submit(self._run_asr_variant_with_metadata, audio_path, diarization_data, config): config
-                for config in asr_configs
-            }
+        executor = get_asr_executor()
+        
+        try:
+            # Submit all tasks with backpressure handling
+            future_to_config = {}
+            for config in asr_configs:
+                future = executor.submit_with_backpressure(
+                    self._run_asr_variant_with_metadata, 
+                    audio_path, 
+                    diarization_data, 
+                    config,
+                    max_wait=5.0  # Wait up to 5 seconds for queue space
+                )
+                if future:
+                    future_to_config[future] = config
+                else:
+                    print(f"  ⚠ ASR variant {config['variant_id']} rejected due to queue backpressure")
             
             # Collect results as they complete
             for future in as_completed(future_to_config):
                 config = future_to_config[future]
                 try:
-                    result = future.result(timeout=180)  # 3 minute timeout per variant
+                    result = future.result(timeout=self.timeout_config.asr_variant)  # Configurable timeout per variant
                     if result:
                         variants.append(result)
                         variant_id = config['variant_id']
@@ -250,6 +213,10 @@ class ASREngine:
                     variant_id = config['variant_id']
                     print(f"  ⚠ ASR variant {variant_id} failed: {e}")
                     continue
+                    
+        except Exception as e:
+            self.structured_logger.error(f"Error in ASR variant processing: {e}")
+            raise
         
         elapsed = time.time() - start_time
         print(f"  ✓ All ASR variants completed in {elapsed:.1f}s ({len(variants)}/{len(asr_configs)} successful)")
@@ -320,18 +287,21 @@ class ASREngine:
             if config['prompt']:
                 transcription_params['prompt'] = config['prompt']
             
-            # Open and transcribe audio file with robust retry handling
-            with open(audio_path, 'rb') as audio_file:
-                # Define the API call function for retry mechanism
-                def make_transcription_call():
-                    return self.client.audio.transcriptions.create(
-                        file=audio_file,
-                        timeout=60.0,  # 60 second timeout
-                        **transcription_params
-                    )
-                
-                # Execute with retry logic
-                response = self._retry_api_call_with_backoff(make_transcription_call)
+            # Make transcription API call with tenacity retry and circuit breaker protection
+            try:
+                response = self._make_transcription_api_call(audio_path, **transcription_params)
+            except CircuitBreakerOpenException as e:
+                self.structured_logger.error(
+                    f"Circuit breaker open for OpenAI service during ASR variant {config['variant_id']}",
+                    context={'variant_id': config['variant_id'], 'error': str(e)}
+                )
+                raise Exception(f"OpenAI service temporarily unavailable: {str(e)}")
+            except Exception as e:
+                self.structured_logger.error(
+                    f"ASR API call failed for variant {config['variant_id']} after retries",
+                    context={'variant_id': config['variant_id'], 'error': str(e)}
+                )
+                raise
             
             # Extract word-level timestamps if available
             if hasattr(response, 'words') and response.words:

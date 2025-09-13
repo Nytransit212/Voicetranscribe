@@ -164,7 +164,8 @@ def render_main_page():
         st.stop()
     
     # Check FFmpeg availability
-    ffmpeg_available, ffmpeg_info = AudioProcessor.check_ffmpeg_availability()
+    audio_processor = AudioProcessor()
+    ffmpeg_available, ffmpeg_info = audio_processor.check_ffmpeg_availability()
     if not ffmpeg_available:
         st.error(f"⚠️ FFmpeg is required but not available: {ffmpeg_info}")
         with st.expander("📥 FFmpeg Installation Instructions", expanded=True):

@@ -6,14 +6,38 @@ import os
 import subprocess
 from typing import Tuple, Optional
 
+from utils.resilient_api import subprocess_retry
+from core.circuit_breaker import CircuitBreakerOpenException
+from utils.structured_logger import StructuredLogger
+
 class AudioProcessor:
     """Handles audio extraction and preprocessing from video files"""
     
     def __init__(self, target_sr: int = 16000):
         self.target_sr = target_sr
+        
+        # Initialize structured logging for reliability telemetry
+        self.structured_logger = StructuredLogger("audio_processor")
     
-    @staticmethod
-    def check_ffmpeg_availability() -> Tuple[bool, str]:
+    @subprocess_retry
+    def _check_ffmpeg_with_retry(self) -> subprocess.CompletedProcess:
+        """
+        Check FFmpeg availability with retry logic and circuit breaker protection.
+        
+        Returns:
+            subprocess.CompletedProcess result
+            
+        Raises:
+            Various subprocess exceptions if FFmpeg check fails after retries
+        """
+        return subprocess.run(
+            ['ffmpeg', '-version'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+    
+    def check_ffmpeg_availability(self) -> Tuple[bool, str]:
         """
         Check if FFmpeg is available and get version info.
         
@@ -21,13 +45,8 @@ class AudioProcessor:
             Tuple of (is_available, version_or_error_message)
         """
         try:
-            # Try to run ffmpeg -version
-            result = subprocess.run(
-                ['ffmpeg', '-version'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
+            # Use retry-protected method
+            result = self._check_ffmpeg_with_retry()
             
             if result.returncode == 0:
                 # Extract version from first line
@@ -36,11 +55,17 @@ class AudioProcessor:
             else:
                 return False, f"FFmpeg returned error code {result.returncode}"
                 
+        except CircuitBreakerOpenException:
+            return False, "FFmpeg service temporarily unavailable (circuit breaker open)"
         except FileNotFoundError:
             return False, "FFmpeg not found in system PATH"
         except subprocess.TimeoutExpired:
-            return False, "FFmpeg command timed out"
+            return False, "FFmpeg command timed out after retries"
         except Exception as e:
+            self.structured_logger.error(
+                f"FFmpeg availability check failed after retries: {e}",
+                context={'error_type': type(e).__name__, 'error_message': str(e)}
+            )
             return False, f"Error checking FFmpeg: {str(e)}"
     
     @staticmethod

@@ -149,7 +149,8 @@ class HydraSettings:
             'max_speakers': min(max_speakers, self.diarization.max_speakers)
         })
         
-        return base_config
+        # Ensure proper typing for return
+        return {str(k): v for k, v in base_config.items()}
     
     def validate_environment(self) -> Dict[str, bool]:
         """
@@ -197,7 +198,8 @@ class HydraSettings:
             weights = OmegaConf.to_container(self.scoring.weights, resolve=True)
         
         assert isinstance(weights, dict), "Weights should be a dictionary"
-        return weights
+        # Ensure proper typing for return
+        return {str(k): float(v) for k, v in weights.items()}
     
     def save_run_config(self, output_dir: Path, run_id: str) -> None:
         """
