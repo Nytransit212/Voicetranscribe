@@ -1,0 +1,264 @@
+{
+  "test_suite_version": "1.0.0",
+  "created": "2025-09-13",
+  "description": "Comprehensive test suite for ensemble transcription system validation",
+  "test_cases": [
+    {
+      "test_id": "clear_speech_multispeaker",
+      "name": "Clear Speech Multiple Speakers",
+      "audio_file": "test_short_video.mov",
+      "duration": 30.0,
+      "scenario_type": "baseline",
+      "description": "Clean audio with multiple distinct speakers, minimal overlap, good audio quality",
+      "expected_metrics": {
+        "der_max": 0.15,
+        "wer_max": 0.12,
+        "confidence_calibration_min": 0.7,
+        "processing_time_max": 45.0,
+        "speaker_count_accuracy_min": 0.8
+      },
+      "metadata": {
+        "speaker_count": 3,
+        "noise_level": "low",
+        "accent_types": ["US_General"],
+        "audio_quality": "high",
+        "content_type": "meeting",
+        "overlap_percentage": 5.0
+      }
+    },
+    {
+      "test_id": "heavy_overlap_crosstalk",
+      "name": "Heavy Speaker Overlap and Crosstalk",
+      "audio_file": "test_video.mp4", 
+      "duration": 60.0,
+      "scenario_type": "challenging_diarization",
+      "description": "Significant speaker overlap periods with interrupts and simultaneous speech",
+      "expected_metrics": {
+        "der_max": 0.35,
+        "wer_max": 0.25,
+        "confidence_calibration_min": 0.5,
+        "processing_time_max": 90.0,
+        "overlap_coverage_min": 0.6
+      },
+      "metadata": {
+        "speaker_count": 4,
+        "noise_level": "medium",
+        "accent_types": ["US_General", "UK_London"],
+        "audio_quality": "medium",
+        "content_type": "discussion",
+        "overlap_percentage": 25.0
+      }
+    },
+    {
+      "test_id": "synthetic_accent_variation",
+      "name": "Accent and Language Variations",
+      "audio_file": "synthetic_accent_test.wav",
+      "duration": 45.0,
+      "scenario_type": "challenging_asr",
+      "description": "Different English accents and non-native speaker patterns",
+      "expected_metrics": {
+        "der_max": 0.20,
+        "wer_max": 0.30,
+        "confidence_calibration_min": 0.6,
+        "processing_time_max": 70.0,
+        "linguistic_coherence_min": 0.7
+      },
+      "metadata": {
+        "speaker_count": 3,
+        "noise_level": "low",
+        "accent_types": ["UK_Scottish", "Australian", "Indian_English"],
+        "audio_quality": "high",
+        "content_type": "interview",
+        "overlap_percentage": 8.0
+      }
+    },
+    {
+      "test_id": "noisy_environment",
+      "name": "Noise and Acoustic Challenges",
+      "audio_file": "synthetic_noisy_meeting.wav",
+      "duration": 40.0,
+      "scenario_type": "challenging_audio",
+      "description": "Background noise, echo and reverberation effects",
+      "expected_metrics": {
+        "der_max": 0.40,
+        "wer_max": 0.35,
+        "confidence_calibration_min": 0.4,
+        "processing_time_max": 80.0,
+        "noise_robustness_min": 0.6
+      },
+      "metadata": {
+        "speaker_count": 3,
+        "noise_level": "high",
+        "accent_types": ["US_General"],
+        "audio_quality": "low",
+        "content_type": "conference_call",
+        "background_noise": ["traffic", "air_conditioning"],
+        "overlap_percentage": 12.0
+      }
+    },
+    {
+      "test_id": "low_volume_whispers",
+      "name": "Low Volume and Whispered Speech",
+      "audio_file": "synthetic_quiet_discussion.wav",
+      "duration": 35.0,
+      "scenario_type": "challenging_audio",
+      "description": "Quiet speakers, whispers, dynamic volume changes",
+      "expected_metrics": {
+        "der_max": 0.30,
+        "wer_max": 0.40,
+        "confidence_calibration_min": 0.3,
+        "processing_time_max": 60.0,
+        "volume_adaptation_min": 0.5
+      },
+      "metadata": {
+        "speaker_count": 2,
+        "noise_level": "very_low",
+        "accent_types": ["US_General"],
+        "audio_quality": "medium",
+        "content_type": "private_conversation",
+        "volume_range": "whisper_to_normal",
+        "overlap_percentage": 15.0
+      }
+    },
+    {
+      "test_id": "silent_regions_pauses",
+      "name": "Silent Regions and Long Pauses",
+      "audio_file": "synthetic_sparse_speech.wav",
+      "duration": 50.0,
+      "scenario_type": "edge_case",
+      "description": "Extended silence periods and long pauses between speakers",
+      "expected_metrics": {
+        "der_max": 0.25,
+        "wer_max": 0.15,
+        "confidence_calibration_min": 0.6,
+        "processing_time_max": 75.0,
+        "silence_handling_min": 0.8
+      },
+      "metadata": {
+        "speaker_count": 3,
+        "noise_level": "low",
+        "accent_types": ["US_General"],
+        "audio_quality": "high",
+        "content_type": "formal_presentation",
+        "silence_percentage": 40.0,
+        "overlap_percentage": 2.0
+      }
+    },
+    {
+      "test_id": "technical_jargon",
+      "name": "Technical Jargon and Specialized Content",
+      "audio_file": "synthetic_technical_discussion.wav",
+      "duration": 55.0,
+      "scenario_type": "challenging_asr",
+      "description": "Domain-specific terminology and technical discussions",
+      "expected_metrics": {
+        "der_max": 0.20,
+        "wer_max": 0.25,
+        "confidence_calibration_min": 0.5,
+        "processing_time_max": 85.0,
+        "domain_accuracy_min": 0.6
+      },
+      "metadata": {
+        "speaker_count": 4,
+        "noise_level": "low",
+        "accent_types": ["US_General", "UK_London"],
+        "audio_quality": "high",
+        "content_type": "technical_meeting",
+        "domain": "software_engineering",
+        "jargon_density": "high",
+        "overlap_percentage": 10.0
+      }
+    },
+    {
+      "test_id": "short_utterances",
+      "name": "Short Duration Edge Cases",
+      "audio_file": "synthetic_brief_responses.wav",
+      "duration": 25.0,
+      "scenario_type": "edge_case",
+      "description": "Very brief utterances and single word responses",
+      "expected_metrics": {
+        "der_max": 0.35,
+        "wer_max": 0.30,
+        "confidence_calibration_min": 0.4,
+        "processing_time_max": 40.0,
+        "short_segment_accuracy_min": 0.5
+      },
+      "metadata": {
+        "speaker_count": 5,
+        "noise_level": "medium",
+        "accent_types": ["US_General"],
+        "audio_quality": "medium",
+        "content_type": "rapid_fire_qa",
+        "avg_utterance_length": 1.5,
+        "overlap_percentage": 20.0
+      }
+    },
+    {
+      "test_id": "multilingual_content",
+      "name": "Mixed Language Content",
+      "audio_file": "synthetic_multilingual.wav",
+      "duration": 40.0,
+      "scenario_type": "challenging_asr",
+      "description": "Code-switching between languages within conversation",
+      "expected_metrics": {
+        "der_max": 0.25,
+        "wer_max": 0.45,
+        "confidence_calibration_min": 0.3,
+        "processing_time_max": 70.0,
+        "language_detection_min": 0.6
+      },
+      "metadata": {
+        "speaker_count": 3,
+        "noise_level": "low",
+        "accent_types": ["US_General", "Spanish_L2"],
+        "audio_quality": "high",
+        "content_type": "bilingual_meeting",
+        "languages": ["English", "Spanish"],
+        "code_switching_frequency": "medium",
+        "overlap_percentage": 7.0
+      }
+    },
+    {
+      "test_id": "phone_call_quality",
+      "name": "Compressed Audio Phone Quality",
+      "audio_file": "synthetic_phone_call.wav",
+      "duration": 30.0,
+      "scenario_type": "challenging_audio",
+      "description": "Compressed audio simulating phone call quality",
+      "expected_metrics": {
+        "der_max": 0.30,
+        "wer_max": 0.35,
+        "confidence_calibration_min": 0.4,
+        "processing_time_max": 50.0,
+        "compression_robustness_min": 0.5
+      },
+      "metadata": {
+        "speaker_count": 2,
+        "noise_level": "medium",
+        "accent_types": ["US_General"],
+        "audio_quality": "phone_compressed",
+        "content_type": "phone_interview",
+        "compression_type": "voip",
+        "bandwidth": "8kHz",
+        "overlap_percentage": 8.0
+      }
+    }
+  ],
+  "quality_thresholds": {
+    "regression_tolerance": {
+      "der_increase_max": 0.05,
+      "wer_increase_max": 0.05,
+      "confidence_decrease_max": 0.1,
+      "processing_time_increase_max": 20.0
+    },
+    "acceptance_criteria": {
+      "pass_rate_min": 0.8,
+      "critical_scenarios": ["clear_speech_multispeaker", "heavy_overlap_crosstalk"],
+      "performance_benchmarks": {
+        "baseline_scenarios": {"der_max": 0.15, "wer_max": 0.12},
+        "challenging_scenarios": {"der_max": 0.35, "wer_max": 0.35},
+        "edge_cases": {"der_max": 0.45, "wer_max": 0.45}
+      }
+    }
+  }
+}

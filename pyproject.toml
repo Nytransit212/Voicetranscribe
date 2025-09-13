@@ -20,6 +20,10 @@ dependencies = [
     "dvc>=3.63.0",
     "dvc-data>=3.16.12",
     "pyyaml>=6.0.2",
+    "pyannote-metrics>=2.1.1",
+    "jiwer>=3.0.3",
+    "pytest-cov>=6.0.0",
+    "pytest>=7.4.0",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +33,7 @@ dev = [
     "pre-commit>=3.4.0",
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
+    "pytest-cov>=6.0.0",
     "types-requests>=2.31.0",
     "types-setuptools>=68.0.0",
 ]

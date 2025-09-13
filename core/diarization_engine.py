@@ -45,9 +45,10 @@ class BasePipeline:
 # Try to import real pyannote classes, fall back to base classes
 PYANNOTE_AVAILABLE = False
 torch_module = None
-Annotation: Type[BaseAnnotation] = BaseAnnotation
-Segment: Type[BaseSegment] = BaseSegment
-Pipeline: Type[BasePipeline] = BasePipeline
+# Use Any type to handle both base and real classes
+Annotation: Type[Any] = BaseAnnotation
+Segment: Type[Any] = BaseSegment
+Pipeline: Type[Any] = BasePipeline
 
 try:
     import torch as torch_module  # type: ignore
@@ -55,9 +56,9 @@ try:
     from pyannote.core import Annotation as RealAnnotation, Segment as RealSegment  # type: ignore
     
     # Use real classes if available
-    Annotation = RealAnnotation
-    Segment = RealSegment
-    Pipeline = RealPipeline
+    Annotation = RealAnnotation  # type: ignore
+    Segment = RealSegment  # type: ignore
+    Pipeline = RealPipeline  # type: ignore
     PYANNOTE_AVAILABLE = True
     print("✓ pyannote.audio successfully imported")
 except ImportError as e:
@@ -396,7 +397,13 @@ class DiarizationEngine:
             segments = []
             speaker_embeddings = {}
             
-            for segment, _, speaker in diarization.itertracks(yield_label=True):
+            for track_info in diarization.itertracks(yield_label=True):
+                # Handle different tuple sizes from itertracks
+                if len(track_info) == 3:
+                    segment, _, speaker = track_info
+                else:
+                    segment, speaker = track_info
+                
                 segment_data = {
                     'start': segment.start,
                     'end': segment.end,

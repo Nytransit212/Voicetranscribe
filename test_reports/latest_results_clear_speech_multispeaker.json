@@ -1,0 +1,17 @@
+{
+  "test_id": "clear_speech_multispeaker",
+  "timestamp": "2025-09-13T19:49:57.869272",
+  "metrics": {
+    "diarization": {
+      "der": 0.08,
+      "speaker_count_accuracy": 0.95
+    },
+    "asr": {
+      "wer": 0.05,
+      "word_count": 120
+    },
+    "confidence_calibration": 0.85,
+    "ensemble_agreement": 0.78,
+    "processing_time": 35.0
+  }
+}

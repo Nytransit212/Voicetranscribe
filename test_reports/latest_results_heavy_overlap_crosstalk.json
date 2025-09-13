@@ -1,0 +1,17 @@
+{
+  "test_id": "heavy_overlap_crosstalk",
+  "timestamp": "2025-09-13T19:49:57.869312",
+  "metrics": {
+    "diarization": {
+      "der": 0.22,
+      "speaker_count_accuracy": 0.8
+    },
+    "asr": {
+      "wer": 0.18,
+      "word_count": 200
+    },
+    "confidence_calibration": 0.65,
+    "ensemble_agreement": 0.6,
+    "processing_time": 65.0
+  }
+}
