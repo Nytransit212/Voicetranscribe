@@ -296,12 +296,14 @@ def process_video(uploaded_file, expected_speakers, noise_level, selected_langua
             tmp_file.write(uploaded_file.read())
             tmp_path = tmp_file.name
         
-        # Initialize ensemble manager
+        # Initialize ensemble manager with versioning enabled
         ensemble_manager = EnsembleManager(
             expected_speakers=expected_speakers,
             noise_level=noise_level.lower(),
             target_language=selected_language if selected_language != 'auto' else None,
-            scoring_weights=scoring_weights
+            scoring_weights=scoring_weights,
+            enable_versioning=True,
+            domain="meeting"  # Default domain for UI uploads
         )
         
         # Process through ensemble pipeline

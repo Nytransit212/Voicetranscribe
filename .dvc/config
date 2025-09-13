@@ -1,0 +1,10 @@
+[core]
+    analytics = false
+    autostage = true
+    machine = replit-ensemble
+
+['remote "localstore"']
+    url = .dvc/cache
+
+[cache]
+    type = symlink

@@ -1,0 +1,1743 @@
+{
+  "version": "v1.0",
+  "created_date": "2025-09-13T19:34:22.173156",
+  "last_updated": "2025-09-13T19:34:22.173159",
+  "global_stats": {
+    "D": {
+      "mean": 0.72,
+      "std": 0.18,
+      "min_value": 0.0,
+      "max_value": 1.0,
+      "sample_count": 0,
+      "last_updated": "2025-09-13T19:34:22.172030"
+    },
+    "A": {
+      "mean": 0.78,
+      "std": 0.15,
+      "min_value": 0.0,
+      "max_value": 1.0,
+      "sample_count": 0,
+      "last_updated": "2025-09-13T19:34:22.172051"
+    },
+    "L": {
+      "mean": 0.68,
+      "std": 0.22,
+      "min_value": 0.0,
+      "max_value": 1.0,
+      "sample_count": 0,
+      "last_updated": "2025-09-13T19:34:22.172056"
+    },
+    "R": {
+      "mean": 0.65,
+      "std": 0.25,
+      "min_value": 0.0,
+      "max_value": 1.0,
+      "sample_count": 0,
+      "last_updated": "2025-09-13T19:34:22.172059"
+    },
+    "O": {
+      "mean": 0.7,
+      "std": 0.2,
+      "min_value": 0.0,
+      "max_value": 1.0,
+      "sample_count": 0,
+      "last_updated": "2025-09-13T19:34:22.172063"
+    }
+  },
+  "domain_stats": [
+    {
+      "domain_name": "meeting",
+      "speaker_range": "2-5",
+      "noise_level": "low",
+      "stats": {
+        "D": {
+          "mean": 0.74,
+          "std": 0.18,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172076"
+        },
+        "A": {
+          "mean": 0.8,
+          "std": 0.15,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172083"
+        },
+        "L": {
+          "mean": 0.7000000000000001,
+          "std": 0.22,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172089"
+        },
+        "R": {
+          "mean": 0.67,
+          "std": 0.25,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172094"
+        },
+        "O": {
+          "mean": 0.72,
+          "std": 0.2,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172099"
+        }
+      }
+    },
+    {
+      "domain_name": "meeting",
+      "speaker_range": "2-5",
+      "noise_level": "medium",
+      "stats": {
+        "D": {
+          "mean": 0.69,
+          "std": 0.18449999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172110"
+        },
+        "A": {
+          "mean": 0.75,
+          "std": 0.15374999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172118"
+        },
+        "L": {
+          "mean": 0.65,
+          "std": 0.22549999999999998,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172124"
+        },
+        "R": {
+          "mean": 0.62,
+          "std": 0.25625,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172128"
+        },
+        "O": {
+          "mean": 0.6699999999999999,
+          "std": 0.205,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172133"
+        }
+      }
+    },
+    {
+      "domain_name": "meeting",
+      "speaker_range": "2-5",
+      "noise_level": "high",
+      "stats": {
+        "D": {
+          "mean": 0.62,
+          "std": 0.1908,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172140"
+        },
+        "A": {
+          "mean": 0.68,
+          "std": 0.159,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172144"
+        },
+        "L": {
+          "mean": 0.5800000000000001,
+          "std": 0.23320000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172149"
+        },
+        "R": {
+          "mean": 0.55,
+          "std": 0.265,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172153"
+        },
+        "O": {
+          "mean": 0.6,
+          "std": 0.21200000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172157"
+        }
+      }
+    },
+    {
+      "domain_name": "meeting",
+      "speaker_range": "6-10",
+      "noise_level": "low",
+      "stats": {
+        "D": {
+          "mean": 0.72,
+          "std": 0.18,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172163"
+        },
+        "A": {
+          "mean": 0.78,
+          "std": 0.15,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172167"
+        },
+        "L": {
+          "mean": 0.68,
+          "std": 0.22,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172171"
+        },
+        "R": {
+          "mean": 0.65,
+          "std": 0.25,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172175"
+        },
+        "O": {
+          "mean": 0.7,
+          "std": 0.2,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172180"
+        }
+      }
+    },
+    {
+      "domain_name": "meeting",
+      "speaker_range": "6-10",
+      "noise_level": "medium",
+      "stats": {
+        "D": {
+          "mean": 0.6699999999999999,
+          "std": 0.18449999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172185"
+        },
+        "A": {
+          "mean": 0.73,
+          "std": 0.15374999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172189"
+        },
+        "L": {
+          "mean": 0.63,
+          "std": 0.22549999999999998,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172193"
+        },
+        "R": {
+          "mean": 0.6,
+          "std": 0.25625,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172197"
+        },
+        "O": {
+          "mean": 0.6499999999999999,
+          "std": 0.205,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172201"
+        }
+      }
+    },
+    {
+      "domain_name": "meeting",
+      "speaker_range": "6-10",
+      "noise_level": "high",
+      "stats": {
+        "D": {
+          "mean": 0.6,
+          "std": 0.1908,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172207"
+        },
+        "A": {
+          "mean": 0.66,
+          "std": 0.159,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172211"
+        },
+        "L": {
+          "mean": 0.56,
+          "std": 0.23320000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172215"
+        },
+        "R": {
+          "mean": 0.53,
+          "std": 0.265,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172219"
+        },
+        "O": {
+          "mean": 0.58,
+          "std": 0.21200000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172223"
+        }
+      }
+    },
+    {
+      "domain_name": "meeting",
+      "speaker_range": "11+",
+      "noise_level": "low",
+      "stats": {
+        "D": {
+          "mean": 0.64,
+          "std": 0.18,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172228"
+        },
+        "A": {
+          "mean": 0.7000000000000001,
+          "std": 0.15,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172233"
+        },
+        "L": {
+          "mean": 0.6000000000000001,
+          "std": 0.22,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172237"
+        },
+        "R": {
+          "mean": 0.5700000000000001,
+          "std": 0.25,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172241"
+        },
+        "O": {
+          "mean": 0.62,
+          "std": 0.2,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172245"
+        }
+      }
+    },
+    {
+      "domain_name": "meeting",
+      "speaker_range": "11+",
+      "noise_level": "medium",
+      "stats": {
+        "D": {
+          "mean": 0.59,
+          "std": 0.18449999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172250"
+        },
+        "A": {
+          "mean": 0.65,
+          "std": 0.15374999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172269"
+        },
+        "L": {
+          "mean": 0.55,
+          "std": 0.22549999999999998,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172274"
+        },
+        "R": {
+          "mean": 0.52,
+          "std": 0.25625,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172279"
+        },
+        "O": {
+          "mean": 0.57,
+          "std": 0.205,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172283"
+        }
+      }
+    },
+    {
+      "domain_name": "meeting",
+      "speaker_range": "11+",
+      "noise_level": "high",
+      "stats": {
+        "D": {
+          "mean": 0.52,
+          "std": 0.1908,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172290"
+        },
+        "A": {
+          "mean": 0.5800000000000001,
+          "std": 0.159,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172297"
+        },
+        "L": {
+          "mean": 0.48000000000000004,
+          "std": 0.23320000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172302"
+        },
+        "R": {
+          "mean": 0.45,
+          "std": 0.265,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172306"
+        },
+        "O": {
+          "mean": 0.49999999999999994,
+          "std": 0.21200000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172310"
+        }
+      }
+    },
+    {
+      "domain_name": "interview",
+      "speaker_range": "2-5",
+      "noise_level": "low",
+      "stats": {
+        "D": {
+          "mean": 0.74,
+          "std": 0.18,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172316"
+        },
+        "A": {
+          "mean": 0.8,
+          "std": 0.15,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172321"
+        },
+        "L": {
+          "mean": 0.7000000000000001,
+          "std": 0.22,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172325"
+        },
+        "R": {
+          "mean": 0.67,
+          "std": 0.25,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172329"
+        },
+        "O": {
+          "mean": 0.72,
+          "std": 0.2,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172333"
+        }
+      }
+    },
+    {
+      "domain_name": "interview",
+      "speaker_range": "2-5",
+      "noise_level": "medium",
+      "stats": {
+        "D": {
+          "mean": 0.69,
+          "std": 0.18449999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172338"
+        },
+        "A": {
+          "mean": 0.75,
+          "std": 0.15374999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172342"
+        },
+        "L": {
+          "mean": 0.65,
+          "std": 0.22549999999999998,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172346"
+        },
+        "R": {
+          "mean": 0.62,
+          "std": 0.25625,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172351"
+        },
+        "O": {
+          "mean": 0.6699999999999999,
+          "std": 0.205,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172355"
+        }
+      }
+    },
+    {
+      "domain_name": "interview",
+      "speaker_range": "2-5",
+      "noise_level": "high",
+      "stats": {
+        "D": {
+          "mean": 0.62,
+          "std": 0.1908,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172360"
+        },
+        "A": {
+          "mean": 0.68,
+          "std": 0.159,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172364"
+        },
+        "L": {
+          "mean": 0.5800000000000001,
+          "std": 0.23320000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172368"
+        },
+        "R": {
+          "mean": 0.55,
+          "std": 0.265,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172372"
+        },
+        "O": {
+          "mean": 0.6,
+          "std": 0.21200000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172376"
+        }
+      }
+    },
+    {
+      "domain_name": "interview",
+      "speaker_range": "6-10",
+      "noise_level": "low",
+      "stats": {
+        "D": {
+          "mean": 0.72,
+          "std": 0.18,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172382"
+        },
+        "A": {
+          "mean": 0.78,
+          "std": 0.15,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172388"
+        },
+        "L": {
+          "mean": 0.68,
+          "std": 0.22,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172392"
+        },
+        "R": {
+          "mean": 0.65,
+          "std": 0.25,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172396"
+        },
+        "O": {
+          "mean": 0.7,
+          "std": 0.2,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172401"
+        }
+      }
+    },
+    {
+      "domain_name": "interview",
+      "speaker_range": "6-10",
+      "noise_level": "medium",
+      "stats": {
+        "D": {
+          "mean": 0.6699999999999999,
+          "std": 0.18449999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172406"
+        },
+        "A": {
+          "mean": 0.73,
+          "std": 0.15374999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172410"
+        },
+        "L": {
+          "mean": 0.63,
+          "std": 0.22549999999999998,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172414"
+        },
+        "R": {
+          "mean": 0.6,
+          "std": 0.25625,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172418"
+        },
+        "O": {
+          "mean": 0.6499999999999999,
+          "std": 0.205,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172422"
+        }
+      }
+    },
+    {
+      "domain_name": "interview",
+      "speaker_range": "6-10",
+      "noise_level": "high",
+      "stats": {
+        "D": {
+          "mean": 0.6,
+          "std": 0.1908,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172427"
+        },
+        "A": {
+          "mean": 0.66,
+          "std": 0.159,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172431"
+        },
+        "L": {
+          "mean": 0.56,
+          "std": 0.23320000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172435"
+        },
+        "R": {
+          "mean": 0.53,
+          "std": 0.265,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172439"
+        },
+        "O": {
+          "mean": 0.58,
+          "std": 0.21200000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172443"
+        }
+      }
+    },
+    {
+      "domain_name": "interview",
+      "speaker_range": "11+",
+      "noise_level": "low",
+      "stats": {
+        "D": {
+          "mean": 0.64,
+          "std": 0.18,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172448"
+        },
+        "A": {
+          "mean": 0.7000000000000001,
+          "std": 0.15,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172452"
+        },
+        "L": {
+          "mean": 0.6000000000000001,
+          "std": 0.22,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172456"
+        },
+        "R": {
+          "mean": 0.5700000000000001,
+          "std": 0.25,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172460"
+        },
+        "O": {
+          "mean": 0.62,
+          "std": 0.2,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172464"
+        }
+      }
+    },
+    {
+      "domain_name": "interview",
+      "speaker_range": "11+",
+      "noise_level": "medium",
+      "stats": {
+        "D": {
+          "mean": 0.59,
+          "std": 0.18449999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172469"
+        },
+        "A": {
+          "mean": 0.65,
+          "std": 0.15374999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172474"
+        },
+        "L": {
+          "mean": 0.55,
+          "std": 0.22549999999999998,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172478"
+        },
+        "R": {
+          "mean": 0.52,
+          "std": 0.25625,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172483"
+        },
+        "O": {
+          "mean": 0.57,
+          "std": 0.205,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172487"
+        }
+      }
+    },
+    {
+      "domain_name": "interview",
+      "speaker_range": "11+",
+      "noise_level": "high",
+      "stats": {
+        "D": {
+          "mean": 0.52,
+          "std": 0.1908,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172493"
+        },
+        "A": {
+          "mean": 0.5800000000000001,
+          "std": 0.159,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172499"
+        },
+        "L": {
+          "mean": 0.48000000000000004,
+          "std": 0.23320000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172504"
+        },
+        "R": {
+          "mean": 0.45,
+          "std": 0.265,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172508"
+        },
+        "O": {
+          "mean": 0.49999999999999994,
+          "std": 0.21200000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172512"
+        }
+      }
+    },
+    {
+      "domain_name": "lecture",
+      "speaker_range": "2-5",
+      "noise_level": "low",
+      "stats": {
+        "D": {
+          "mean": 0.74,
+          "std": 0.18,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172517"
+        },
+        "A": {
+          "mean": 0.8,
+          "std": 0.15,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172522"
+        },
+        "L": {
+          "mean": 0.7000000000000001,
+          "std": 0.22,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172528"
+        },
+        "R": {
+          "mean": 0.67,
+          "std": 0.25,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172533"
+        },
+        "O": {
+          "mean": 0.72,
+          "std": 0.2,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172538"
+        }
+      }
+    },
+    {
+      "domain_name": "lecture",
+      "speaker_range": "2-5",
+      "noise_level": "medium",
+      "stats": {
+        "D": {
+          "mean": 0.69,
+          "std": 0.18449999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172543"
+        },
+        "A": {
+          "mean": 0.75,
+          "std": 0.15374999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172548"
+        },
+        "L": {
+          "mean": 0.65,
+          "std": 0.22549999999999998,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172552"
+        },
+        "R": {
+          "mean": 0.62,
+          "std": 0.25625,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172557"
+        },
+        "O": {
+          "mean": 0.6699999999999999,
+          "std": 0.205,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172561"
+        }
+      }
+    },
+    {
+      "domain_name": "lecture",
+      "speaker_range": "2-5",
+      "noise_level": "high",
+      "stats": {
+        "D": {
+          "mean": 0.62,
+          "std": 0.1908,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172566"
+        },
+        "A": {
+          "mean": 0.68,
+          "std": 0.159,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172570"
+        },
+        "L": {
+          "mean": 0.5800000000000001,
+          "std": 0.23320000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172577"
+        },
+        "R": {
+          "mean": 0.55,
+          "std": 0.265,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172581"
+        },
+        "O": {
+          "mean": 0.6,
+          "std": 0.21200000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172585"
+        }
+      }
+    },
+    {
+      "domain_name": "lecture",
+      "speaker_range": "6-10",
+      "noise_level": "low",
+      "stats": {
+        "D": {
+          "mean": 0.72,
+          "std": 0.18,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172590"
+        },
+        "A": {
+          "mean": 0.78,
+          "std": 0.15,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172594"
+        },
+        "L": {
+          "mean": 0.68,
+          "std": 0.22,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172598"
+        },
+        "R": {
+          "mean": 0.65,
+          "std": 0.25,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172601"
+        },
+        "O": {
+          "mean": 0.7,
+          "std": 0.2,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172605"
+        }
+      }
+    },
+    {
+      "domain_name": "lecture",
+      "speaker_range": "6-10",
+      "noise_level": "medium",
+      "stats": {
+        "D": {
+          "mean": 0.6699999999999999,
+          "std": 0.18449999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172610"
+        },
+        "A": {
+          "mean": 0.73,
+          "std": 0.15374999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172616"
+        },
+        "L": {
+          "mean": 0.63,
+          "std": 0.22549999999999998,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172620"
+        },
+        "R": {
+          "mean": 0.6,
+          "std": 0.25625,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172624"
+        },
+        "O": {
+          "mean": 0.6499999999999999,
+          "std": 0.205,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172628"
+        }
+      }
+    },
+    {
+      "domain_name": "lecture",
+      "speaker_range": "6-10",
+      "noise_level": "high",
+      "stats": {
+        "D": {
+          "mean": 0.6,
+          "std": 0.1908,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172633"
+        },
+        "A": {
+          "mean": 0.66,
+          "std": 0.159,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172637"
+        },
+        "L": {
+          "mean": 0.56,
+          "std": 0.23320000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172641"
+        },
+        "R": {
+          "mean": 0.53,
+          "std": 0.265,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172645"
+        },
+        "O": {
+          "mean": 0.58,
+          "std": 0.21200000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172648"
+        }
+      }
+    },
+    {
+      "domain_name": "lecture",
+      "speaker_range": "11+",
+      "noise_level": "low",
+      "stats": {
+        "D": {
+          "mean": 0.64,
+          "std": 0.18,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172653"
+        },
+        "A": {
+          "mean": 0.7000000000000001,
+          "std": 0.15,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172657"
+        },
+        "L": {
+          "mean": 0.6000000000000001,
+          "std": 0.22,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172661"
+        },
+        "R": {
+          "mean": 0.5700000000000001,
+          "std": 0.25,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172665"
+        },
+        "O": {
+          "mean": 0.62,
+          "std": 0.2,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172669"
+        }
+      }
+    },
+    {
+      "domain_name": "lecture",
+      "speaker_range": "11+",
+      "noise_level": "medium",
+      "stats": {
+        "D": {
+          "mean": 0.59,
+          "std": 0.18449999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172674"
+        },
+        "A": {
+          "mean": 0.65,
+          "std": 0.15374999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172678"
+        },
+        "L": {
+          "mean": 0.55,
+          "std": 0.22549999999999998,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172682"
+        },
+        "R": {
+          "mean": 0.52,
+          "std": 0.25625,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172686"
+        },
+        "O": {
+          "mean": 0.57,
+          "std": 0.205,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172690"
+        }
+      }
+    },
+    {
+      "domain_name": "lecture",
+      "speaker_range": "11+",
+      "noise_level": "high",
+      "stats": {
+        "D": {
+          "mean": 0.52,
+          "std": 0.1908,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172695"
+        },
+        "A": {
+          "mean": 0.5800000000000001,
+          "std": 0.159,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172699"
+        },
+        "L": {
+          "mean": 0.48000000000000004,
+          "std": 0.23320000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172703"
+        },
+        "R": {
+          "mean": 0.45,
+          "std": 0.265,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172707"
+        },
+        "O": {
+          "mean": 0.49999999999999994,
+          "std": 0.21200000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172711"
+        }
+      }
+    },
+    {
+      "domain_name": "general",
+      "speaker_range": "2-5",
+      "noise_level": "low",
+      "stats": {
+        "D": {
+          "mean": 0.74,
+          "std": 0.18,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172716"
+        },
+        "A": {
+          "mean": 0.8,
+          "std": 0.15,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172721"
+        },
+        "L": {
+          "mean": 0.7000000000000001,
+          "std": 0.22,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172886"
+        },
+        "R": {
+          "mean": 0.67,
+          "std": 0.25,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172894"
+        },
+        "O": {
+          "mean": 0.72,
+          "std": 0.2,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172899"
+        }
+      }
+    },
+    {
+      "domain_name": "general",
+      "speaker_range": "2-5",
+      "noise_level": "medium",
+      "stats": {
+        "D": {
+          "mean": 0.69,
+          "std": 0.18449999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172905"
+        },
+        "A": {
+          "mean": 0.75,
+          "std": 0.15374999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172909"
+        },
+        "L": {
+          "mean": 0.65,
+          "std": 0.22549999999999998,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172914"
+        },
+        "R": {
+          "mean": 0.62,
+          "std": 0.25625,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172918"
+        },
+        "O": {
+          "mean": 0.6699999999999999,
+          "std": 0.205,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172922"
+        }
+      }
+    },
+    {
+      "domain_name": "general",
+      "speaker_range": "2-5",
+      "noise_level": "high",
+      "stats": {
+        "D": {
+          "mean": 0.62,
+          "std": 0.1908,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172927"
+        },
+        "A": {
+          "mean": 0.68,
+          "std": 0.159,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172932"
+        },
+        "L": {
+          "mean": 0.5800000000000001,
+          "std": 0.23320000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172936"
+        },
+        "R": {
+          "mean": 0.55,
+          "std": 0.265,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172940"
+        },
+        "O": {
+          "mean": 0.6,
+          "std": 0.21200000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172945"
+        }
+      }
+    },
+    {
+      "domain_name": "general",
+      "speaker_range": "6-10",
+      "noise_level": "low",
+      "stats": {
+        "D": {
+          "mean": 0.72,
+          "std": 0.18,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172950"
+        },
+        "A": {
+          "mean": 0.78,
+          "std": 0.15,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172955"
+        },
+        "L": {
+          "mean": 0.68,
+          "std": 0.22,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172959"
+        },
+        "R": {
+          "mean": 0.65,
+          "std": 0.25,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.172963"
+        },
+        "O": {
+          "mean": 0.7,
+          "std": 0.2,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173023"
+        }
+      }
+    },
+    {
+      "domain_name": "general",
+      "speaker_range": "6-10",
+      "noise_level": "medium",
+      "stats": {
+        "D": {
+          "mean": 0.6699999999999999,
+          "std": 0.18449999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173033"
+        },
+        "A": {
+          "mean": 0.73,
+          "std": 0.15374999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173037"
+        },
+        "L": {
+          "mean": 0.63,
+          "std": 0.22549999999999998,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173041"
+        },
+        "R": {
+          "mean": 0.6,
+          "std": 0.25625,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173045"
+        },
+        "O": {
+          "mean": 0.6499999999999999,
+          "std": 0.205,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173050"
+        }
+      }
+    },
+    {
+      "domain_name": "general",
+      "speaker_range": "6-10",
+      "noise_level": "high",
+      "stats": {
+        "D": {
+          "mean": 0.6,
+          "std": 0.1908,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173055"
+        },
+        "A": {
+          "mean": 0.66,
+          "std": 0.159,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173059"
+        },
+        "L": {
+          "mean": 0.56,
+          "std": 0.23320000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173066"
+        },
+        "R": {
+          "mean": 0.53,
+          "std": 0.265,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173071"
+        },
+        "O": {
+          "mean": 0.58,
+          "std": 0.21200000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173076"
+        }
+      }
+    },
+    {
+      "domain_name": "general",
+      "speaker_range": "11+",
+      "noise_level": "low",
+      "stats": {
+        "D": {
+          "mean": 0.64,
+          "std": 0.18,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173090"
+        },
+        "A": {
+          "mean": 0.7000000000000001,
+          "std": 0.15,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173096"
+        },
+        "L": {
+          "mean": 0.6000000000000001,
+          "std": 0.22,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173100"
+        },
+        "R": {
+          "mean": 0.5700000000000001,
+          "std": 0.25,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173104"
+        },
+        "O": {
+          "mean": 0.62,
+          "std": 0.2,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173109"
+        }
+      }
+    },
+    {
+      "domain_name": "general",
+      "speaker_range": "11+",
+      "noise_level": "medium",
+      "stats": {
+        "D": {
+          "mean": 0.59,
+          "std": 0.18449999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173114"
+        },
+        "A": {
+          "mean": 0.65,
+          "std": 0.15374999999999997,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173118"
+        },
+        "L": {
+          "mean": 0.55,
+          "std": 0.22549999999999998,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173122"
+        },
+        "R": {
+          "mean": 0.52,
+          "std": 0.25625,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173126"
+        },
+        "O": {
+          "mean": 0.57,
+          "std": 0.205,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173130"
+        }
+      }
+    },
+    {
+      "domain_name": "general",
+      "speaker_range": "11+",
+      "noise_level": "high",
+      "stats": {
+        "D": {
+          "mean": 0.52,
+          "std": 0.1908,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173136"
+        },
+        "A": {
+          "mean": 0.5800000000000001,
+          "std": 0.159,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173140"
+        },
+        "L": {
+          "mean": 0.48000000000000004,
+          "std": 0.23320000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173144"
+        },
+        "R": {
+          "mean": 0.45,
+          "std": 0.265,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173148"
+        },
+        "O": {
+          "mean": 0.49999999999999994,
+          "std": 0.21200000000000002,
+          "min_value": 0.0,
+          "max_value": 1.0,
+          "sample_count": 0,
+          "last_updated": "2025-09-13T19:34:22.173152"
+        }
+      }
+    }
+  ],
+  "calibration_runs": 0,
+  "registry_schema_version": "1.0"
+}

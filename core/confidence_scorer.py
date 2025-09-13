@@ -10,11 +10,16 @@ from difflib import SequenceMatcher
 import string
 from scipy.sparse import spmatrix
 import numpy.typing as npt
+from utils.metrics_registry import MetricsRegistryManager
 
 class ConfidenceScorer:
     """Calculates multi-dimensional confidence scores for transcript candidates"""
     
-    def __init__(self, scoring_weights: Optional[Dict[str, float]] = None) -> None:
+    def __init__(self, scoring_weights: Optional[Dict[str, float]] = None, 
+                 use_registry_calibration: bool = True,
+                 domain: str = "general",
+                 speaker_count: int = 10,
+                 noise_level: str = "medium") -> None:
         # Use custom weights if provided, otherwise use defaults
         default_weights = {
             'D': 0.28,  # Diarization consistency
@@ -23,6 +28,27 @@ class ConfidenceScorer:
             'R': 0.12,  # Cross-run agreement
             'O': 0.10   # Overlap handling
         }
+        
+        # Initialize metrics registry for calibrated scoring
+        self.use_registry_calibration = use_registry_calibration
+        self.domain = domain
+        self.speaker_count = speaker_count
+        self.noise_level = noise_level
+        
+        if self.use_registry_calibration:
+            try:
+                self.metrics_registry = MetricsRegistryManager()
+                self.calibration_stats = self.metrics_registry.get_calibration_stats(
+                    domain=domain, speaker_count=speaker_count, noise_level=noise_level
+                )
+            except Exception as e:
+                # Fallback to non-calibrated scoring if registry fails
+                self.use_registry_calibration = False
+                self.metrics_registry = None
+                self.calibration_stats = None
+        else:
+            self.metrics_registry = None
+            self.calibration_stats = None
         
         if scoring_weights is not None:
             # Validate that all required keys are present
@@ -154,6 +180,20 @@ class ConfidenceScorer:
         
         # Clear vectorizer cache to free memory after batch processing
         self._clear_vectorizer_cache()
+        
+        # Update metrics registry with current run data if enabled
+        if self.use_registry_calibration and self.metrics_registry:
+            try:
+                confidence_scores = [candidate['confidence_scores'] for candidate in scored_candidates]
+                self.metrics_registry.update_registry_with_run(
+                    confidence_scores=confidence_scores,
+                    domain=self.domain,
+                    speaker_count=self.speaker_count,
+                    noise_level=self.noise_level
+                )
+            except Exception as e:
+                # Don't fail the whole process if registry update fails
+                pass
         
         return scored_candidates
     
@@ -3380,7 +3420,7 @@ class ConfidenceScorer:
     
     def _normalize_scores(self, scores: List[float], dimension: Optional[str] = None) -> List[float]:
         """
-        Normalize scores using calibrated absolute ranges for consistent scoring across sessions.
+        Normalize scores using calibrated absolute ranges or metrics registry for consistent scoring.
         
         Args:
             scores: Raw scores to normalize
@@ -3392,8 +3432,44 @@ class ConfidenceScorer:
         if not scores:
             return []
         
-        # Calibrated score ranges based on empirical distributions
-        # These ranges provide absolute meaning across different processing sessions
+        # Convert to numpy array for easier computation
+        scores_array = np.array(scores)
+        
+        # Use registry calibration if available
+        if (self.use_registry_calibration and self.calibration_stats and 
+            dimension and dimension in self.calibration_stats):
+            calibration_stat = self.calibration_stats[dimension]
+            
+            # Use historical mean and std for normalization
+            target_mean = calibration_stat.mean
+            target_std = max(calibration_stat.std, 0.01)  # Avoid division by zero
+            
+            # Robust z-score normalization with clipping
+            current_mean = np.mean(scores_array)
+            current_std = np.std(scores_array) if len(scores_array) > 1 else target_std
+            
+            if current_std > 0.001:
+                # Standardize using current distribution
+                z_scores = (scores_array - current_mean) / current_std
+                
+                # Transform to target distribution and apply sigmoid mapping
+                calibrated_scores = z_scores * target_std + target_mean
+                
+                # Apply sigmoid to map to 0-1 range centered on historical performance
+                def calibrated_sigmoid(x, center=target_mean, scale=target_std):
+                    z = (x - center) / (scale * 2)  # 2-sigma range
+                    return 1.0 / (1.0 + np.exp(-np.clip(z, -10, 10)))  # Clip to prevent overflow
+                
+                normalized_scores = calibrated_sigmoid(calibrated_scores)
+            else:
+                # Fallback for uniform scores
+                normalized_scores = np.full_like(scores_array, min(max(target_mean, 0.0), 1.0))
+                
+            # Ensure valid range
+            final_scores = np.clip(normalized_scores, 0.0, 1.0)
+            return final_scores.tolist()
+        
+        # Fallback to original calibrated absolute normalization
         calibration_ranges = {
             'D': {'min': 0.15, 'max': 0.95, 'median': 0.65},  # Diarization quality
             'A': {'min': 0.25, 'max': 0.98, 'median': 0.75},  # ASR confidence  

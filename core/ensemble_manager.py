@@ -2,9 +2,11 @@ import os
 import tempfile
 import json
 import time
+import uuid
 from typing import Dict, Any, List, Callable, Optional, Union, Tuple
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 from core.audio_processor import AudioProcessor
 from core.diarization_engine import DiarizationEngine
@@ -12,28 +14,61 @@ from core.asr_engine import ASREngine
 from core.confidence_scorer import ConfidenceScorer
 from utils.transcript_formatter import TranscriptFormatter
 from utils.structured_logger import StructuredLogger
+from utils.dvc_versioning import DVCVersioningManager
+from utils.metrics_registry import MetricsRegistryManager
 
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
     
-    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None) -> None:
+    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None, enable_versioning: bool = True, domain: str = "general") -> None:
         self.expected_speakers = expected_speakers
         self.noise_level = noise_level
         self.target_language = target_language  # None for auto-detect
+        self.domain = domain
+        self.enable_versioning = enable_versioning
+        
+        # Generate unique run ID for this processing session
+        self.run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
         # Initialize structured logging
         self.structured_logger = StructuredLogger("ensemble_manager")
         
-        # Initialize components
+        # Initialize versioning system
+        if self.enable_versioning:
+            try:
+                self.dvc_manager: Optional[DVCVersioningManager] = DVCVersioningManager()
+                self.metrics_registry: Optional[MetricsRegistryManager] = MetricsRegistryManager()
+                self.structured_logger.info("Versioning system initialized", context={'run_id': self.run_id})
+            except Exception as e:
+                self.structured_logger.warning(f"Failed to initialize versioning: {e}")
+                self.enable_versioning = False
+                self.dvc_manager = None
+                self.metrics_registry = None
+        else:
+            self.dvc_manager = None
+            self.metrics_registry = None
+        
+        # Initialize components with versioning context
         self.audio_processor = AudioProcessor()
         self.diarization_engine = DiarizationEngine(expected_speakers, noise_level)
         self.asr_engine = ASREngine()
-        self.confidence_scorer = ConfidenceScorer(scoring_weights=scoring_weights)
+        self.confidence_scorer = ConfidenceScorer(
+            scoring_weights=scoring_weights,
+            use_registry_calibration=self.enable_versioning,
+            domain=domain,
+            speaker_count=expected_speakers,
+            noise_level=noise_level
+        )
         self.transcript_formatter = TranscriptFormatter()
         
         # Working directory for temporary files
         self.work_dir: Optional[str] = None
         self.temp_audio_files: List[str] = []  # Track temp audio files for cleanup
+        
+        # Artifact tracking for run manifest
+        self.input_artifacts: Dict[str, Any] = {}
+        self.intermediate_artifacts: Dict[str, Any] = {}
+        self.output_artifacts: Dict[str, Any] = {}
     
     def process_video(self, video_path: str, progress_callback: Optional[Callable[[str, int, str], None]] = None) -> Dict[str, Any]:
         """
@@ -56,6 +91,12 @@ class EnsembleManager:
                                          context={'video_path': video_path, 'expected_speakers': self.expected_speakers, 'noise_level': self.noise_level})
         
         try:
+            # Step 0: Track input video (versioning)
+            if self.enable_versioning and self.dvc_manager:
+                tracked_input_path, input_artifact = self.dvc_manager.track_input_file(video_path, self.run_id)
+                self.input_artifacts['input_video'] = input_artifact
+                self.structured_logger.info("Input video tracked", context={'tracked_path': tracked_input_path})
+            
             # Step 1: Audio Extraction (0-10%)
             if progress_callback:
                 progress_callback("A", 5, "Extracting audio from video...")
@@ -65,6 +106,11 @@ class EnsembleManager:
             
             raw_audio_path, clean_audio_path = self.audio_processor.extract_audio_from_video(video_path)
             self.temp_audio_files.extend([raw_audio_path, clean_audio_path])
+            
+            # Track audio artifacts (versioning)
+            if self.enable_versioning and self.dvc_manager:
+                audio_artifacts = self.dvc_manager.track_audio_artifacts(raw_audio_path, clean_audio_path, self.run_id)
+                self.intermediate_artifacts.update(audio_artifacts)
             
             audio_extraction_time = time.time() - stage_start_time
             self.structured_logger.stage_complete("audio_extraction", "Audio extraction completed", 
@@ -101,6 +147,11 @@ class EnsembleManager:
             
             diarization_variants = self.diarization_engine.create_diarization_variants(clean_audio_path, use_voting_fusion=True)
             
+            # Track diarization artifacts (versioning)
+            if self.enable_versioning and self.dvc_manager:
+                diarization_artifacts = self.dvc_manager.track_diarization_artifacts(diarization_variants, self.run_id)
+                self.intermediate_artifacts.update(diarization_artifacts)
+            
             diarization_time = time.time() - stage_start_time
             self.structured_logger.stage_complete("diarization", "Diarization variants created", 
                                                 duration=diarization_time,
@@ -118,6 +169,11 @@ class EnsembleManager:
                                              context={'diarization_variants': len(diarization_variants), 'target_language': self.target_language})
             
             candidates = self.asr_engine.run_asr_ensemble(clean_audio_path, diarization_variants, target_language=self.target_language)
+            
+            # Track ASR artifacts (versioning)
+            if self.enable_versioning and self.dvc_manager:
+                asr_artifacts = self.dvc_manager.track_asr_artifacts(candidates, self.run_id)
+                self.intermediate_artifacts.update(asr_artifacts)
             
             asr_time = time.time() - stage_start_time
             self.structured_logger.stage_complete("asr_ensemble", "ASR ensemble processing completed", 
@@ -211,6 +267,59 @@ class EnsembleManager:
                     'processing_timestamp': time.time()
                 }
             }
+            
+            # Step 8: Track output artifacts and create run manifest (versioning)
+            if self.enable_versioning and self.dvc_manager:
+                if progress_callback:
+                    progress_callback("H", 95, "Creating run manifest and tracking artifacts...")
+                
+                # Track output artifacts
+                output_artifacts = self.dvc_manager.track_output_artifacts(results, self.run_id)
+                self.output_artifacts.update(output_artifacts)
+                
+                # Create processing configuration for manifest
+                processing_config = {
+                    'expected_speakers': self.expected_speakers,
+                    'noise_level': self.noise_level,
+                    'target_language': self.target_language,
+                    'domain': self.domain,
+                    'audio_duration': audio_duration,
+                    'estimated_noise': estimated_noise,
+                    'candidates_generated': len(scored_candidates),
+                    'diarization_variants': len(diarization_variants),
+                    'scoring_weights': self.confidence_scorer.score_weights
+                }
+                
+                # Get metrics registry version
+                registry_version = self.metrics_registry.get_registry_version() if self.metrics_registry else "v1.0"
+                
+                # Create comprehensive run manifest
+                run_manifest = self.dvc_manager.create_run_manifest(
+                    run_id=self.run_id,
+                    input_artifacts=self.input_artifacts,
+                    intermediate_artifacts=self.intermediate_artifacts,
+                    output_artifacts=self.output_artifacts,
+                    processing_config=processing_config,
+                    processing_time=processing_time,
+                    metrics_registry_version=registry_version
+                )
+                
+                # Save run manifest
+                manifest_path = self.dvc_manager.save_run_manifest(run_manifest)
+                
+                # Add versioning metadata to results
+                results['versioning_metadata'] = {
+                    'run_id': self.run_id,
+                    'manifest_path': manifest_path,
+                    'metrics_registry_version': registry_version,
+                    'input_artifacts': len(self.input_artifacts),
+                    'intermediate_artifacts': len(self.intermediate_artifacts),
+                    'output_artifacts': len(self.output_artifacts),
+                    'dvc_enabled': True
+                }
+                
+                self.structured_logger.info("Run manifest created", 
+                                           context={'run_id': self.run_id, 'manifest_path': manifest_path})
             
             return results
             
