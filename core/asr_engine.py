@@ -11,6 +11,8 @@ import time
 import logging
 from openai import OpenAIError, RateLimitError, APITimeoutError, APIConnectionError
 
+from utils.structured_logger import StructuredLogger
+
 class ASREngine:
     """Handles Automatic Speech Recognition with ensemble variants"""
     
@@ -18,7 +20,10 @@ class ASREngine:
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.model = "whisper-1"  # OpenAI Whisper model for audio transcription
         
-        # Configure logging for detailed retry tracking
+        # Initialize structured logging
+        self.structured_logger = StructuredLogger("asr_engine")
+        
+        # Configure basic logging for detailed retry tracking
         self.logger = logging.getLogger(__name__)
         if not self.logger.handlers:
             handler = logging.StreamHandler()
@@ -38,19 +43,43 @@ class ASREngine:
         Returns:
             List of 15 candidate transcripts with ASR and diarization data
         """
+        # Log ASR ensemble start
+        self.structured_logger.stage_start("asr_ensemble", 
+                                          f"Starting ASR ensemble processing for {len(diarization_variants)} diarization variants",
+                                          context={'diarization_variants': len(diarization_variants), 'target_language': target_language})
+        
         print(f"🎤 Starting ASR ensemble processing for {len(diarization_variants)} diarization variants...")
         candidates = []
         
         # For each diarization variant, run 5 ASR passes
         for i, diar_variant in enumerate(diarization_variants, 1):
+            variant_id = f"diar_v{diar_variant.get('variant_id', i)}"
+            
+            self.structured_logger.variant_start(variant_id, "asr_processing", 
+                                               f"Processing diarization variant {i}/{len(diarization_variants)}")
+            
             print(f"Processing diarization variant {i}/{len(diarization_variants)}...")
             try:
+                start_time = time.time()
                 asr_variants = self._create_asr_variants(audio_path, diar_variant, target_language)
                 candidates.extend(asr_variants)
+                
+                variant_time = time.time() - start_time
+                self.structured_logger.variant_complete(variant_id, "asr_processing", 
+                                                      f"Completed diarization variant {i}: {len(asr_variants)} ASR candidates generated",
+                                                      metrics={'asr_variants_generated': len(asr_variants), 'processing_time': variant_time})
+                
                 print(f"✓ Completed diarization variant {i}: {len(asr_variants)} ASR candidates generated")
             except Exception as e:
+                self.structured_logger.error(f"Error processing diarization variant {i}: {e}", 
+                                           variant_id=variant_id, stage="asr_processing")
                 print(f"⚠ Error processing diarization variant {i}: {e}")
                 continue
+        
+        # Log ASR ensemble completion
+        self.structured_logger.stage_complete("asr_ensemble", 
+                                            f"ASR ensemble complete: {len(candidates)} total candidates generated",
+                                            metrics={'total_candidates': len(candidates)})
         
         print(f"🎤 ASR ensemble complete: {len(candidates)} total candidates generated")
         return candidates

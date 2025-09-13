@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.asr_engine import ASREngine
 from core.diarization_engine import DiarizationEngine
 from core.confidence_scorer import ConfidenceScorer
+from utils.structured_logger import StructuredLogger
 
 class RepairEngine:
     """Handles targeted reprocessing and repair of transcript segments"""
@@ -19,6 +20,9 @@ class RepairEngine:
         self.asr_engine = ASREngine()
         self.diarization_engine = DiarizationEngine()
         self.confidence_scorer = ConfidenceScorer()
+        
+        # Initialize structured logging
+        self.structured_logger = StructuredLogger("repair_engine")
         
         # Repair-specific ASR configurations for different problem types
         self.repair_configs = {

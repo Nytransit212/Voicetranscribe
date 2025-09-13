@@ -46,9 +46,9 @@ Segment: Type[BaseSegment] = BaseSegment
 Pipeline: Type[BasePipeline] = BasePipeline
 
 try:
-    import torch as torch_module
-    from pyannote.audio import Pipeline as RealPipeline
-    from pyannote.core import Annotation as RealAnnotation, Segment as RealSegment
+    import torch as torch_module  # type: ignore
+    from pyannote.audio import Pipeline as RealPipeline  # type: ignore
+    from pyannote.core import Annotation as RealAnnotation, Segment as RealSegment  # type: ignore
     
     # Use real classes if available
     Annotation = RealAnnotation
@@ -120,12 +120,17 @@ class DiarizationEngine:
             def __init__(self, parent_engine):
                 self.parent = parent_engine
             
-            def __call__(self, audio_file, min_speakers=None, max_speakers=None):
+            def __call__(self, audio_file, min_speakers=None, max_speakers=None, seed=None):
                 # Generate mock diarization result with intelligent chunking
-                return self._generate_intelligent_mock_diarization(audio_file, min_speakers, max_speakers)
+                return self._generate_intelligent_mock_diarization(audio_file, min_speakers, max_speakers, seed)
             
-            def _generate_intelligent_mock_diarization(self, audio_file, min_speakers, max_speakers):
+            def _generate_intelligent_mock_diarization(self, audio_file, min_speakers, max_speakers, seed=None):
                 """Generate mock diarization with pause detection and flexible chunking"""
+                # Set deterministic seed for reproducible mock results
+                if seed is not None:
+                    random.seed(seed)
+                    np.random.seed(seed)
+                
                 # Create annotation
                 annotation = Annotation()
                 
@@ -348,7 +353,8 @@ class DiarizationEngine:
             diarization = self.pipeline(
                 audio_path,
                 min_speakers=min_speakers,
-                max_speakers=max_speakers
+                max_speakers=max_speakers,
+                seed=seed
             )
             
             # Convert to our format

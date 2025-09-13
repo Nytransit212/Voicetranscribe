@@ -29,6 +29,16 @@ def main():
     if 'current_page' not in st.session_state:
         st.session_state.current_page = 'main'
     
+    # Initialize scoring weights with defaults
+    if 'scoring_weights' not in st.session_state:
+        st.session_state.scoring_weights = {
+            'D': 0.28,  # Diarization consistency
+            'A': 0.32,  # ASR alignment and confidence  
+            'L': 0.18,  # Linguistic quality
+            'R': 0.12,  # Cross-run agreement
+            'O': 0.10   # Overlap handling
+        }
+    
     # Sidebar navigation
     st.sidebar.title("🎯 Navigation")
     
@@ -47,11 +57,90 @@ def main():
     
     st.session_state.current_page = selected_page
     
+    # Scoring weights configuration
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("⚖️ Scoring Weights Configuration", expanded=False):
+        st.markdown("**Adjust confidence scoring emphasis:**")
+        
+        # Create sliders for each weight
+        d_weight = st.slider(
+            "D - Diarization Consistency",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.scoring_weights['D'],
+            step=0.01,
+            help="Speaker boundary accuracy and turn stability"
+        )
+        
+        a_weight = st.slider(
+            "A - ASR Alignment & Confidence", 
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.scoring_weights['A'],
+            step=0.01,
+            help="Speech recognition quality and word-level confidence"
+        )
+        
+        l_weight = st.slider(
+            "L - Linguistic Quality",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.scoring_weights['L'],
+            step=0.01,
+            help="Grammar, coherence, and language model agreement"
+        )
+        
+        r_weight = st.slider(
+            "R - Cross-run Agreement",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.scoring_weights['R'],
+            step=0.01,
+            help="Consistency across multiple transcription runs"
+        )
+        
+        o_weight = st.slider(
+            "O - Overlap Handling",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.scoring_weights['O'],
+            step=0.01,
+            help="Quality of simultaneous speech detection"
+        )
+        
+        # Auto-normalize weights to sum to 1.0
+        total_weight = d_weight + a_weight + l_weight + r_weight + o_weight
+        
+        if total_weight > 0:
+            # Normalize and update session state
+            st.session_state.scoring_weights = {
+                'D': d_weight / total_weight,
+                'A': a_weight / total_weight,
+                'L': l_weight / total_weight,
+                'R': r_weight / total_weight,
+                'O': o_weight / total_weight
+            }
+            
+            # Show normalized weights
+            st.markdown("**Normalized weights (sum = 1.0):**")
+            for key, desc in [('D', 'Diarization'), ('A', 'ASR'), ('L', 'Linguistic'), ('R', 'Agreement'), ('O', 'Overlap')]:
+                normalized_val = st.session_state.scoring_weights[key]
+                st.text(f"{key}: {normalized_val:.2f} ({desc})")
+        else:
+            st.error("All weights cannot be zero!")
+        
+        # Reset to defaults button
+        if st.button("🔄 Reset to Defaults"):
+            st.session_state.scoring_weights = {
+                'D': 0.28, 'A': 0.32, 'L': 0.18, 'R': 0.12, 'O': 0.10
+            }
+            st.rerun()
+    
     # Results status in sidebar
     if st.session_state.results:
         st.sidebar.success("✅ Results Available")
         winner_score = st.session_state.results.get('winner_score', 0)
-        st.sidebar.metric("Winner Score", f"{winner_score:.3f}")
+        st.sidebar.metric("Winner Score", f"{winner_score:.2f}")
         
         processing_time = st.session_state.results.get('processing_time', 0)
         st.sidebar.metric("Processing Time", f"{processing_time:.1f}s")
@@ -168,7 +257,7 @@ def render_main_page():
 
         # Process button
         if st.button("🚀 Start Ensemble Processing", disabled=st.session_state.processing):
-            process_video(uploaded_file, expected_speakers, noise_level, selected_language)
+            process_video(uploaded_file, expected_speakers, noise_level, selected_language, st.session_state.scoring_weights)
 
     # Display processing status
     if st.session_state.processing:
@@ -191,7 +280,7 @@ def render_main_page():
         with col2:
             st.info("💡 Use QC Dashboard to review flagged segments and apply repairs")
 
-def process_video(uploaded_file, expected_speakers, noise_level, selected_language):
+def process_video(uploaded_file, expected_speakers, noise_level, selected_language, scoring_weights):
     """Process the uploaded video through the ensemble pipeline"""
     st.session_state.processing = True
     st.session_state.results = None
@@ -210,7 +299,8 @@ def process_video(uploaded_file, expected_speakers, noise_level, selected_langua
         ensemble_manager = EnsembleManager(
             expected_speakers=expected_speakers,
             noise_level=noise_level.lower(),
-            target_language=selected_language if selected_language != 'auto' else None
+            target_language=selected_language if selected_language != 'auto' else None,
+            scoring_weights=scoring_weights
         )
         
         # Process through ensemble pipeline
@@ -277,7 +367,7 @@ def display_results():
     with col1:
         st.metric(
             "Winner Score",
-            f"{results['winner_score']:.3f}",
+            f"{results['winner_score']:.2f}",
             help="Final confidence score of the winning transcript"
         )
     
@@ -311,7 +401,7 @@ def display_results():
     with col1:
         st.markdown("**Score Components:**")
         for component, score in confidence_data.items():
-            st.write(f"- **{component}**: {score:.3f}")
+            st.write(f"- **{component}**: {score:.2f}")
     
     with col2:
         st.markdown("**Score Weights:**")
@@ -352,7 +442,7 @@ def display_results():
             score = candidate['final_score']
             variant = candidate['variant_info']
             
-            st.write(f"{rank}. **Score: {score:.3f}** - {variant}")
+            st.write(f"{rank}. **Score: {score:.2f}** - {variant}")
 
     # Download section
     st.header("💾 Download Results")

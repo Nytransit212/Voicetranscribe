@@ -10,20 +10,24 @@ from core.diarization_engine import DiarizationEngine
 from core.asr_engine import ASREngine
 from core.confidence_scorer import ConfidenceScorer
 from utils.transcript_formatter import TranscriptFormatter
+from utils.structured_logger import StructuredLogger
 
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
     
-    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None):
+    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None):
         self.expected_speakers = expected_speakers
         self.noise_level = noise_level
         self.target_language = target_language  # None for auto-detect
+        
+        # Initialize structured logging
+        self.structured_logger = StructuredLogger("ensemble_manager")
         
         # Initialize components
         self.audio_processor = AudioProcessor()
         self.diarization_engine = DiarizationEngine(expected_speakers, noise_level)
         self.asr_engine = ASREngine()
-        self.confidence_scorer = ConfidenceScorer()
+        self.confidence_scorer = ConfidenceScorer(scoring_weights=scoring_weights)
         self.transcript_formatter = TranscriptFormatter()
         
         # Working directory for temporary files
@@ -43,16 +47,28 @@ class EnsembleManager:
         """
         start_time = time.time()
         
-        # Create temporary working directory
+        # Create temporary working directory  
         self.work_dir = tempfile.mkdtemp(prefix='ensemble_transcription_')
+        
+        # Log pipeline start
+        self.structured_logger.stage_start("pipeline", "Starting ensemble transcription pipeline", 
+                                         context={'video_path': video_path, 'expected_speakers': self.expected_speakers, 'noise_level': self.noise_level})
         
         try:
             # Step 1: Audio Extraction (0-10%)
             if progress_callback:
                 progress_callback("A", 5, "Extracting audio from video...")
             
+            stage_start_time = time.time()
+            self.structured_logger.stage_start("audio_extraction", "Extracting and cleaning audio from video")
+            
             raw_audio_path, clean_audio_path = self.audio_processor.extract_audio_from_video(video_path)
             self.temp_audio_files.extend([raw_audio_path, clean_audio_path])
+            
+            audio_extraction_time = time.time() - stage_start_time
+            self.structured_logger.stage_complete("audio_extraction", "Audio extraction completed", 
+                                                duration=audio_extraction_time,
+                                                context={'raw_audio_path': raw_audio_path, 'clean_audio_path': clean_audio_path})
             
             # Step 2: Audio Preprocessing (10-15%)
             if progress_callback:
@@ -78,7 +94,16 @@ class EnsembleManager:
             if progress_callback:
                 progress_callback("C", 20, "Creating 5 diarization variants with voting fusion...")
             
+            stage_start_time = time.time()
+            self.structured_logger.stage_start("diarization", "Creating diarization variants with voting fusion",
+                                             context={'audio_duration': audio_duration, 'estimated_noise': estimated_noise})
+            
             diarization_variants = self.diarization_engine.create_diarization_variants(clean_audio_path, use_voting_fusion=True)
+            
+            diarization_time = time.time() - stage_start_time
+            self.structured_logger.stage_complete("diarization", "Diarization variants created", 
+                                                duration=diarization_time,
+                                                metrics={'variants_created': len(diarization_variants)})
             
             if progress_callback:
                 progress_callback("C", 35, f"Diarization complete - {len(diarization_variants)} variants with fusion created")
@@ -87,7 +112,16 @@ class EnsembleManager:
             if progress_callback:
                 progress_callback("D", 40, "Running expanded ASR ensemble (5 passes per diarization)...")
             
+            stage_start_time = time.time()
+            self.structured_logger.stage_start("asr_ensemble", "Running ASR ensemble across all diarization variants",
+                                             context={'diarization_variants': len(diarization_variants), 'target_language': self.target_language})
+            
             candidates = self.asr_engine.run_asr_ensemble(clean_audio_path, diarization_variants, target_language=self.target_language)
+            
+            asr_time = time.time() - stage_start_time
+            self.structured_logger.stage_complete("asr_ensemble", "ASR ensemble processing completed", 
+                                                duration=asr_time,
+                                                metrics={'total_candidates': len(candidates), 'variants_processed': len(diarization_variants)})
             
             if progress_callback:
                 progress_callback("D", 75, f"ASR ensemble complete - {len(candidates)} candidates generated (5×5 matrix)")
@@ -96,13 +130,30 @@ class EnsembleManager:
             if progress_callback:
                 progress_callback("E", 78, "Scoring candidates across 5 confidence dimensions...")
             
+            stage_start_time = time.time()
+            self.structured_logger.stage_start("confidence_scoring", "Scoring all candidates across confidence dimensions")
+            
             scored_candidates = self.confidence_scorer.score_all_candidates(candidates)
+            
+            scoring_time = time.time() - stage_start_time
+            self.structured_logger.stage_complete("confidence_scoring", "Candidate scoring completed", 
+                                                duration=scoring_time,
+                                                metrics={'candidates_scored': len(scored_candidates)})
             
             # Step 6: Winner Selection (85-90%)
             if progress_callback:
                 progress_callback("F", 87, "Selecting winning transcript...")
             
+            stage_start_time = time.time()
+            self.structured_logger.stage_start("winner_selection", "Selecting best transcript from scored candidates")
+            
             winner = self.confidence_scorer.select_winner(scored_candidates)
+            
+            selection_time = time.time() - stage_start_time
+            winner_score = winner.get('composite_score', 0)
+            self.structured_logger.stage_complete("winner_selection", "Winner transcript selected", 
+                                                duration=selection_time,
+                                                metrics={'winner_score': winner_score, 'candidate_id': winner.get('candidate_id')})
             
             # Step 7: Output Generation (90-100%)
             if progress_callback:
@@ -123,6 +174,16 @@ class EnsembleManager:
             # Step 8: Finalization (100%)
             if progress_callback:
                 progress_callback("H", 100, "Processing complete!")
+            
+            # Log successful completion
+            total_time = time.time() - start_time
+            self.structured_logger.stage_complete("pipeline", "Ensemble transcription pipeline completed successfully", 
+                                                duration=total_time,
+                                                metrics={
+                                                    'total_candidates': len(candidates),
+                                                    'winner_score': winner_score,
+                                                    'processing_time': total_time
+                                                })
             
             processing_time = time.time() - start_time
             

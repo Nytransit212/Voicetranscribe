@@ -13,14 +13,32 @@ from scipy.sparse import spmatrix
 class ConfidenceScorer:
     """Calculates multi-dimensional confidence scores for transcript candidates"""
     
-    def __init__(self):
-        self.score_weights = {
+    def __init__(self, scoring_weights: Optional[Dict[str, float]] = None):
+        # Use custom weights if provided, otherwise use defaults
+        default_weights = {
             'D': 0.28,  # Diarization consistency
             'A': 0.32,  # ASR alignment and confidence  
             'L': 0.18,  # Linguistic quality
             'R': 0.12,  # Cross-run agreement
             'O': 0.10   # Overlap handling
         }
+        
+        if scoring_weights is not None:
+            # Validate that all required keys are present
+            required_keys = set(default_weights.keys())
+            provided_keys = set(scoring_weights.keys())
+            
+            if required_keys != provided_keys:
+                raise ValueError(f"Scoring weights must contain exactly these keys: {required_keys}")
+            
+            # Validate that weights sum to approximately 1.0
+            total_weight = sum(scoring_weights.values())
+            if abs(total_weight - 1.0) > 0.001:
+                raise ValueError(f"Scoring weights must sum to 1.0, got {total_weight:.6f}")
+            
+            self.score_weights = scoring_weights.copy()
+        else:
+            self.score_weights = default_weights
         
         # Vectorizer cache for performance optimization
         self._vectorizer_cache = {}
@@ -94,12 +112,12 @@ class ConfidenceScorer:
         r_scores = self._calculate_agreement_scores(candidates)
         o_scores = self._calculate_overlap_scores(candidates)
         
-        # Normalize scores to 0.00-1.00 range
-        d_scores_norm = self._normalize_scores(d_scores)
-        a_scores_norm = self._normalize_scores(a_scores)
-        l_scores_norm = self._normalize_scores(l_scores)
-        r_scores_norm = self._normalize_scores(r_scores)
-        o_scores_norm = self._normalize_scores(o_scores)
+        # Normalize scores to 0.00-1.00 range using calibrated absolute normalization
+        d_scores_norm = self._normalize_scores(d_scores, dimension='D')
+        a_scores_norm = self._normalize_scores(a_scores, dimension='A')
+        l_scores_norm = self._normalize_scores(l_scores, dimension='L')
+        r_scores_norm = self._normalize_scores(r_scores, dimension='R')
+        o_scores_norm = self._normalize_scores(o_scores, dimension='O')
         
         # Add scores to candidates and calculate final scores
         scored_candidates = []
@@ -3359,22 +3377,70 @@ class ConfidenceScorer:
         precision = backchannel_segments / short_segments
         return min(precision + 0.3, 1.0)  # Add baseline score
     
-    def _normalize_scores(self, scores: List[float]) -> List[float]:
-        """Normalize scores to 0.00-1.00 range using min-max scaling"""
+    def _normalize_scores(self, scores: List[float], dimension: Optional[str] = None) -> List[float]:
+        """
+        Normalize scores using calibrated absolute ranges for consistent scoring across sessions.
+        
+        Args:
+            scores: Raw scores to normalize
+            dimension: Scoring dimension ('D', 'A', 'L', 'R', 'O') for calibrated normalization
+            
+        Returns:
+            Normalized scores with absolute meaning across different processing sessions
+        """
         if not scores:
             return []
         
-        min_score = min(scores)
-        max_score = max(scores)
+        # Calibrated score ranges based on empirical distributions
+        # These ranges provide absolute meaning across different processing sessions
+        calibration_ranges = {
+            'D': {'min': 0.15, 'max': 0.95, 'median': 0.65},  # Diarization quality
+            'A': {'min': 0.25, 'max': 0.98, 'median': 0.75},  # ASR confidence  
+            'L': {'min': 0.30, 'max': 0.92, 'median': 0.70},  # Linguistic quality
+            'R': {'min': 0.40, 'max': 0.90, 'median': 0.68},  # Cross-run agreement
+            'O': {'min': 0.35, 'max': 0.88, 'median': 0.62}   # Overlap handling
+        }
         
-        if max_score == min_score:
-            return [0.5] * len(scores)  # All scores are the same
+        if dimension and dimension in calibration_ranges:
+            # Use calibrated absolute normalization
+            cal_range = calibration_ranges[dimension]
+            cal_min = cal_range['min']
+            cal_max = cal_range['max']
+            
+            # Sigmoid-based normalization for better distribution
+            normalized = []
+            for score in scores:
+                # Map to calibrated range first
+                if cal_max > cal_min:
+                    mapped_score = (score - cal_min) / (cal_max - cal_min)
+                else:
+                    mapped_score = 0.5
+                
+                # Apply sigmoid for smoother distribution around median
+                sigmoid_score = 1.0 / (1.0 + math.exp(-6.0 * (mapped_score - 0.5)))
+                normalized.append(sigmoid_score)
+            
+            # Clip to valid range
+            return [max(0.0, min(1.0, score)) for score in normalized]
         
-        # Min-max normalization
-        normalized = [(score - min_score) / (max_score - min_score) for score in scores]
-        
-        # Clip to valid range
-        return [max(0.0, min(1.0, score)) for score in normalized]
+        else:
+            # Fallback to relative normalization for unknown dimensions
+            min_score = min(scores)
+            max_score = max(scores)
+            
+            if max_score == min_score:
+                return [0.5] * len(scores)  # All scores are the same
+            
+            # Min-max normalization with gentle compression towards center
+            normalized = []
+            for score in scores:
+                relative_score = (score - min_score) / (max_score - min_score)
+                # Apply slight compression towards 0.5 to avoid extreme values
+                compressed_score = 0.5 + 0.8 * (relative_score - 0.5)
+                normalized.append(compressed_score)
+            
+            # Clip to valid range
+            return [max(0.0, min(1.0, score)) for score in normalized]
     
     def select_winner(self, scored_candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
         """

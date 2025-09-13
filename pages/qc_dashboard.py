@@ -98,7 +98,7 @@ def render_qc_dashboard():
         with col3:
             st.metric(
                 "Quality Score",
-                f"{assessment.quality_score:.3f}",
+                f"{assessment.quality_score:.2f}",
                 help="Overall quality score (0.0-1.0)"
             )
         
@@ -211,7 +211,7 @@ def render_qc_dashboard():
                         'Segment': issue.segment_index if issue.segment_index >= 0 else 'Overall',
                         'Severity': issue.severity.value.upper(),
                         'Type': issue.issue_type.value.replace('_', ' ').title(),
-                        'Score': f"{issue.confidence_score:.3f}",
+                        'Score': f"{issue.confidence_score:.2f}",
                         'Description': issue.description,
                         'Text': segment_text,
                         'Action': issue.suggested_action
@@ -301,7 +301,7 @@ def render_repair_interface(master_transcript: Dict[str, Any],
         with col2:
             st.write(f"**Speaker:** {original_segment.get('speaker', 'Unknown')}")
         with col3:
-            st.write(f"**Confidence:** {original_segment.get('confidence', 0):.3f}")
+            st.write(f"**Confidence:** {original_segment.get('confidence', 0):.2f}")
         
         st.write(f"**Text:** {original_segment.get('text', '')}")
         
@@ -314,8 +314,8 @@ def render_repair_interface(master_transcript: Dict[str, Any],
                 candidate_data.append({
                     'Rank': i + 1,
                     'Source': candidate['candidate_id'],
-                    'Confidence': f"{candidate['confidence']:.3f}",
-                    'Score': f"{candidate['alternative_score']:.3f}",
+                    'Confidence': f"{candidate['confidence']:.2f}",
+                    'Score': f"{candidate['alternative_score']:.2f}",
                     'Overlap': f"{candidate['overlap_ratio']:.1%}",
                     'Text': candidate['segment'].get('text', '')[:150] + ('...' if len(candidate['segment'].get('text', '')) > 150 else '')
                 })
