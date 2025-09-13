@@ -49,7 +49,7 @@ class AudioProcessor:
             audio_data, sr = librosa.load(raw_audio_path, sr=self.target_sr, mono=True)
             
             # Apply preprocessing
-            cleaned_audio = self._preprocess_audio(audio_data, sr)
+            cleaned_audio = self._preprocess_audio(audio_data, int(sr))
             
             # Save cleaned audio
             import soundfile as sf
