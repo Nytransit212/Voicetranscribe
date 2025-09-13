@@ -2,7 +2,8 @@ import os
 import tempfile
 import json
 import time
-from typing import Dict, Any, List, Callable, Optional
+from typing import Dict, Any, List, Callable, Optional, Union, Tuple
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from core.audio_processor import AudioProcessor
@@ -15,7 +16,7 @@ from utils.structured_logger import StructuredLogger
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
     
-    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None):
+    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None) -> None:
         self.expected_speakers = expected_speakers
         self.noise_level = noise_level
         self.target_language = target_language  # None for auto-detect
@@ -31,10 +32,10 @@ class EnsembleManager:
         self.transcript_formatter = TranscriptFormatter()
         
         # Working directory for temporary files
-        self.work_dir = None
-        self.temp_audio_files = []  # Track temp audio files for cleanup
+        self.work_dir: Optional[str] = None
+        self.temp_audio_files: List[str] = []  # Track temp audio files for cleanup
     
-    def process_video(self, video_path: str, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
+    def process_video(self, video_path: str, progress_callback: Optional[Callable[[str, int, str], None]] = None) -> Dict[str, Any]:
         """
         Process video through complete ensemble pipeline.
         

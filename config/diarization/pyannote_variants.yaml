@@ -1,0 +1,86 @@
+# Diarization Configuration - pyannote.audio Variants
+# Different parameter combinations for ensemble speaker diarization
+
+# @package _global_
+diarization:
+  model: "pyannote/speaker-diarization-3.1"
+  use_auth_token: true
+  enable_voting_fusion: true
+  
+  # Speaker constraints
+  min_speakers: 2
+  max_speakers: 20
+  default_expected_speakers: 10
+  
+  # 5 diarization variants with different approaches
+  variants:
+    conservative:
+      clustering_threshold: 0.7
+      vad_onset: 0.5
+      vad_offset: 0.4
+      min_segment_length: 1.0
+      max_segment_length: 300.0
+      speaker_count_strategy: "strict"
+      description: "Conservative speaker detection with strict boundaries"
+      
+    balanced:
+      clustering_threshold: 0.6
+      vad_onset: 0.4
+      vad_offset: 0.3
+      min_segment_length: 0.5
+      max_segment_length: 180.0
+      speaker_count_strategy: "adaptive"
+      description: "Balanced approach with moderate sensitivity"
+      
+    liberal:
+      clustering_threshold: 0.5
+      vad_onset: 0.3
+      vad_offset: 0.2
+      min_segment_length: 0.3
+      max_segment_length: 120.0
+      speaker_count_strategy: "permissive"
+      description: "Liberal detection with high sensitivity"
+      
+    multi_resolution:
+      clustering_threshold: 0.6
+      vad_onset: 0.35
+      vad_offset: 0.25
+      min_segment_length: 0.4
+      max_segment_length: 200.0
+      speaker_count_strategy: "multi_scale"
+      multi_resolution_windows: [5.0, 15.0, 45.0]
+      description: "Multi-resolution analysis for complex overlaps"
+      
+    ensemble_optimized:
+      clustering_threshold: 0.55
+      vad_onset: 0.38
+      vad_offset: 0.28
+      min_segment_length: 0.6
+      max_segment_length: 150.0
+      speaker_count_strategy: "ensemble"
+      voting_weight: 1.2
+      description: "Optimized for ensemble voting fusion"
+
+  # Voting fusion parameters
+  voting_fusion:
+    enabled: true
+    min_agreement_threshold: 0.6
+    boundary_tolerance_seconds: 0.5
+    speaker_identity_confidence: 0.7
+    overlap_resolution_strategy: "weighted_average"
+    
+  # Mock pipeline settings (fallback)
+  mock_pipeline:
+    enabled_when_unavailable: true
+    speaker_change_intervals: [15, 30, 45, 60, 90]
+    pause_detection_threshold: 2.0
+    synthetic_speaker_count_range: [6, 12]
+    use_intelligent_chunking: true
+    
+  # Audio preprocessing for diarization
+  preprocessing:
+    apply_voice_activity_detection: true
+    noise_reduction_level: "medium"
+    normalization_method: "rms"
+    high_pass_filter_hz: 80
+    low_pass_filter_hz: 8000

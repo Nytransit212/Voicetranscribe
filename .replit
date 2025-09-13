@@ -4,7 +4,7 @@ integrations = ["python_openai:1.0.0"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["ffmpeg-full", "glibcLocales", "libsndfile", "libxcrypt", "pkg-config", "xsimd"]
+packages = ["antlr", "ffmpeg-full", "glibcLocales", "jre", "libsndfile", "libxcrypt", "pkg-config", "xsimd"]
 
 [deployment]
 deploymentTarget = "autoscale"

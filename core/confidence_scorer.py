@@ -1,6 +1,6 @@
 import numpy as np
 import json
-from typing import List, Dict, Any, Optional, Set, Tuple, Union
+from typing import List, Dict, Any, Optional, Set, Tuple, Union, cast
 from collections import Counter, defaultdict
 import re
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -9,11 +9,12 @@ import math
 from difflib import SequenceMatcher
 import string
 from scipy.sparse import spmatrix
+import numpy.typing as npt
 
 class ConfidenceScorer:
     """Calculates multi-dimensional confidence scores for transcript candidates"""
     
-    def __init__(self, scoring_weights: Optional[Dict[str, float]] = None):
+    def __init__(self, scoring_weights: Optional[Dict[str, float]] = None) -> None:
         # Use custom weights if provided, otherwise use defaults
         default_weights = {
             'D': 0.28,  # Diarization consistency
@@ -41,8 +42,8 @@ class ConfidenceScorer:
             self.score_weights = default_weights
         
         # Vectorizer cache for performance optimization
-        self._vectorizer_cache = {}
-        self._fitted_cache = {}
+        self._vectorizer_cache: Dict[Any, TfidfVectorizer] = {}
+        self._fitted_cache: Dict[Any, Tuple[TfidfVectorizer, Any]] = {}
     
     def _get_cached_vectorizer(self, vectorizer_type: str, **kwargs) -> TfidfVectorizer:
         """

@@ -1,0 +1,77 @@
+# Main Configuration File
+# Hydra-based configuration for Advanced Ensemble Transcription System
+
+# Include component configurations using defaults
+defaults:
+  - asr: whisper_variants
+  - diarization: pyannote_variants  
+  - scoring: multi_dimensional
+  - ui: streamlit_ui
+  - _self_
+
+# Runtime Configuration
+app:
+  name: "Advanced Ensemble Transcription System"
+  version: "1.0.0"
+  description: "Generate highly accurate transcripts from long-form MP4 recordings"
+
+# Audio Processing Settings
+audio:
+  sample_rate: 16000
+  channels: 1  # Mono
+  max_duration_seconds: 5400  # 90 minutes
+  target_format: "wav"
+  bit_depth: 16
+
+# File Processing Settings
+files:
+  supported_video_formats: [".mp4"]
+  max_file_size_mb: 2000  # 2GB
+  temp_dir_prefix: "ensemble_transcription_"
+  cleanup_temp_files: true
+
+# Processing Settings  
+processing:
+  max_concurrent_asr_requests: 3
+  asr_timeout_seconds: 300  # 5 minutes
+  diarization_timeout_seconds: 600  # 10 minutes
+  enable_parallel_processing: true
+  chunk_size_seconds: 30  # For large files
+
+# API Configuration
+api:
+  openai:
+    model: "whisper-1"
+    api_key: null  # Set via environment variable
+    max_retries: 3
+    retry_delay_seconds: 1
+    timeout_seconds: 300
+  huggingface:
+    model: "pyannote/speaker-diarization-3.1"
+    auth_token: null  # Set via environment variable
+    use_auth_token: true
+    timeout_seconds: 600
+
+# Quality Gates
+quality:
+  max_timestamp_regression_rate: 0.02  # 2%
+  min_boundary_fit_rate: 0.92  # 92%
+  min_overlap_plausibility: 0.30
+  confidence_threshold: 0.70
+  enable_quality_repair: true
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  structured_logging: true
+  log_to_file: true
+  log_dir: "logs"
+
+# Experimental Features
+experimental:
+  enable_voting_fusion: true
+  enhanced_chunking: true
+  linguistic_scoring: true
+  repair_engine: true
+  quality_controller: true
