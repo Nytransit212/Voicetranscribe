@@ -4,6 +4,8 @@ import tempfile
 import json
 from datetime import datetime
 from core.ensemble_manager import EnsembleManager
+from core.audio_processor import AudioProcessor
+from core.diarization_engine import DiarizationEngine
 from utils.file_handler import FileHandler
 from utils.transcript_formatter import TranscriptFormatter
 from pages.qc_dashboard import render_qc_dashboard
@@ -71,14 +73,70 @@ def render_main_page():
     if not openai_key:
         st.error("⚠️ OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
         st.stop()
+    
+    # Check FFmpeg availability
+    ffmpeg_available, ffmpeg_info = AudioProcessor.check_ffmpeg_availability()
+    if not ffmpeg_available:
+        st.error(f"⚠️ FFmpeg is required but not available: {ffmpeg_info}")
+        with st.expander("📥 FFmpeg Installation Instructions", expanded=True):
+            st.markdown(AudioProcessor.get_ffmpeg_install_instructions())
+        st.stop()
+    else:
+        st.success(f"✅ FFmpeg available: {ffmpeg_info}")
+    
+    # Check diarization capability
+    diarization_engine = DiarizationEngine()
+    if hasattr(diarization_engine, 'pipeline') and hasattr(diarization_engine.pipeline, '__class__'):
+        pipeline_class = diarization_engine.pipeline.__class__.__name__
+        if "Mock" in pipeline_class or not hasattr(diarization_engine, '_validate_hf_token') or not diarization_engine._validate_hf_token(os.getenv("HUGGINGFACE_TOKEN")):
+            st.warning("⚠️ **Using Mock Diarization Pipeline**")
+            st.info("""
+            **Important Notice:**
+            - Real speaker diarization is not available (pyannote.audio not properly configured)
+            - Using mock pipeline with synthetic speaker boundaries
+            - Transcription quality may be reduced
+            - For production use, configure pyannote.audio with valid HUGGINGFACE_TOKEN
+            """)
+        else:
+            st.success("✅ Real diarization pipeline available")
+    else:
+        st.warning("⚠️ Diarization pipeline status unknown")
 
     # File upload section
     st.header("📁 Upload Video File")
-    uploaded_file = st.file_uploader(
-        "Choose an MP4 video file (up to 90 minutes)",
-        type=['mp4'],
-        help="Upload your video file for ensemble transcription processing"
-    )
+    
+    # Language selection
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        uploaded_file = st.file_uploader(
+            "Choose an MP4 video file (up to 90 minutes)",
+            type=['mp4'],
+            help="Upload your video file for ensemble transcription processing"
+        )
+    
+    with col2:
+        language_options = {
+            'auto': 'Auto-detect',
+            'en': 'English',
+            'es': 'Spanish', 
+            'fr': 'French',
+            'de': 'German',
+            'it': 'Italian',
+            'pt': 'Portuguese',
+            'ru': 'Russian',
+            'ja': 'Japanese',
+            'zh': 'Chinese',
+            'ko': 'Korean',
+            'ar': 'Arabic'
+        }
+        
+        selected_language = st.selectbox(
+            "Language",
+            options=list(language_options.keys()),
+            format_func=lambda x: language_options[x],
+            index=0,  # Default to auto-detect
+            help="Select the primary language or use auto-detect"
+        )
 
     if uploaded_file is not None:
         st.session_state.uploaded_file = uploaded_file
@@ -110,7 +168,7 @@ def render_main_page():
 
         # Process button
         if st.button("🚀 Start Ensemble Processing", disabled=st.session_state.processing):
-            process_video(uploaded_file, expected_speakers, noise_level)
+            process_video(uploaded_file, expected_speakers, noise_level, selected_language)
 
     # Display processing status
     if st.session_state.processing:
@@ -133,13 +191,14 @@ def render_main_page():
         with col2:
             st.info("💡 Use QC Dashboard to review flagged segments and apply repairs")
 
-def process_video(uploaded_file, expected_speakers, noise_level):
+def process_video(uploaded_file, expected_speakers, noise_level, selected_language):
     """Process the uploaded video through the ensemble pipeline"""
     st.session_state.processing = True
     st.session_state.results = None
     
     progress_bar = st.progress(0)
     status_text = st.empty()
+    tmp_path = None
     
     try:
         # Save uploaded file temporarily
@@ -150,7 +209,8 @@ def process_video(uploaded_file, expected_speakers, noise_level):
         # Initialize ensemble manager
         ensemble_manager = EnsembleManager(
             expected_speakers=expected_speakers,
-            noise_level=noise_level.lower()
+            noise_level=noise_level.lower(),
+            target_language=selected_language if selected_language != 'auto' else None
         )
         
         # Process through ensemble pipeline
@@ -184,7 +244,7 @@ def process_video(uploaded_file, expected_speakers, noise_level):
         
         # Clean up temporary file if it exists
         try:
-            if 'tmp_path' in locals() and tmp_path:
+            if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
         except:
             pass

@@ -8,17 +8,26 @@ import librosa
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+import logging
+from openai import OpenAIError, RateLimitError, APITimeoutError, APIConnectionError
 
 class ASREngine:
     """Handles Automatic Speech Recognition with ensemble variants"""
     
     def __init__(self):
-        # the newest OpenAI model is "gpt-5" which was released August 7, 2025.
-        # do not change this unless explicitly requested by the user
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.model = "whisper-1"  # Whisper model for transcription
+        self.model = "whisper-1"  # OpenAI Whisper model for audio transcription
+        
+        # Configure logging for detailed retry tracking
+        self.logger = logging.getLogger(__name__)
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+            self.logger.setLevel(logging.INFO)
     
-    def run_asr_ensemble(self, audio_path: str, diarization_variants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def run_asr_ensemble(self, audio_path: str, diarization_variants: List[Dict[str, Any]], target_language: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Run 5 ASR variants for each of the 3 diarization results (15 total candidates).
         
@@ -36,7 +45,7 @@ class ASREngine:
         for i, diar_variant in enumerate(diarization_variants, 1):
             print(f"Processing diarization variant {i}/{len(diarization_variants)}...")
             try:
-                asr_variants = self._create_asr_variants(audio_path, diar_variant)
+                asr_variants = self._create_asr_variants(audio_path, diar_variant, target_language)
                 candidates.extend(asr_variants)
                 print(f"✓ Completed diarization variant {i}: {len(asr_variants)} ASR candidates generated")
             except Exception as e:
@@ -46,7 +55,87 @@ class ASREngine:
         print(f"🎤 ASR ensemble complete: {len(candidates)} total candidates generated")
         return candidates
     
-    def _create_asr_variants(self, audio_path: str, diarization_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _retry_api_call_with_backoff(self, api_call_func, *args, max_retries: int = 5, **kwargs) -> Any:
+        """
+        Execute API call with exponential backoff retry logic.
+        
+        Args:
+            api_call_func: Function to call
+            *args: Arguments for the function
+            max_retries: Maximum number of retry attempts
+            **kwargs: Keyword arguments for the function
+            
+        Returns:
+            API response if successful
+            
+        Raises:
+            Exception: If all retries are exhausted
+        """
+        last_exception = None
+        retry_delays = [1, 2, 4, 8, 16]  # Exponential backoff delays
+        
+        for attempt in range(max_retries + 1):
+            try:
+                if attempt > 0:
+                    delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
+                    # Add jitter to prevent thundering herd
+                    jittered_delay = delay + random.uniform(0, 1)
+                    self.logger.info(f"Retry attempt {attempt}/{max_retries} after {jittered_delay:.1f}s delay")
+                    time.sleep(jittered_delay)
+                
+                # Attempt the API call
+                response = api_call_func(*args, **kwargs)
+                
+                if attempt > 0:
+                    self.logger.info(f"API call succeeded on retry attempt {attempt}")
+                
+                return response
+                
+            except RateLimitError as e:
+                self.logger.warning(f"Rate limit error on attempt {attempt + 1}: {e}")
+                last_exception = e
+                if attempt == max_retries:
+                    break
+                continue
+                
+            except APITimeoutError as e:
+                self.logger.warning(f"Timeout error on attempt {attempt + 1}: {e}")
+                last_exception = e
+                if attempt == max_retries:
+                    break
+                continue
+                
+            except APIConnectionError as e:
+                self.logger.warning(f"Connection error on attempt {attempt + 1}: {e}")
+                last_exception = e
+                if attempt == max_retries:
+                    break
+                continue
+                
+            except OpenAIError as e:
+                # Check if it's a retriable 5xx error
+                status_code = getattr(e, 'status_code', None)
+                if status_code and 500 <= status_code < 600:
+                    self.logger.warning(f"Server error {status_code} on attempt {attempt + 1}: {e}")
+                    last_exception = e
+                    if attempt == max_retries:
+                        break
+                    continue
+                else:
+                    # Non-retriable error (4xx, etc.)
+                    self.logger.error(f"Non-retriable OpenAI error: {e}")
+                    raise e
+                    
+            except Exception as e:
+                self.logger.error(f"Unexpected error on attempt {attempt + 1}: {e}")
+                last_exception = e
+                break
+        
+        # All retries exhausted
+        self.logger.error(f"All {max_retries} retry attempts failed. Last error: {last_exception}")
+        raise Exception(f"OpenAI API call failed after {max_retries} retries: {str(last_exception)}")
+    
+    def _create_asr_variants(self, audio_path: str, diarization_data: Dict[str, Any], target_language: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Create 5 ASR variants for a single diarization result.
         
@@ -59,40 +148,48 @@ class ASREngine:
         """
         variants = []
         
-        # Define 5 different ASR parameter sets
+        # Define 5 different ASR parameter sets with language support
+        # Implement proper auto-detection ensemble when target_language is None
+        if target_language is not None:
+            # User specified language - use it for most variants with None for comparison
+            lang_variants = [target_language, target_language, target_language, None, target_language]
+        else:
+            # Auto-detection mode - use diverse language assumptions for better ensemble
+            lang_variants = [None, 'en', None, None, 'es']  # None for auto-detect, common languages as fallbacks
+        
         asr_configs = [
             {
                 'variant_id': 1,
                 'temperature': 0.0,
-                'language': 'en',
+                'language': lang_variants[0],
                 'prompt': "The following is a recording of a meeting with multiple speakers.",
                 'response_format': 'verbose_json'
             },
             {
                 'variant_id': 2, 
                 'temperature': 0.1,
-                'language': 'en',
+                'language': lang_variants[1],
                 'prompt': "This is a multi-speaker conversation with clear speaker changes.",
                 'response_format': 'verbose_json'
             },
             {
                 'variant_id': 3,
                 'temperature': 0.2,
-                'language': 'en', 
+                'language': lang_variants[2], 
                 'prompt': "Transcribe this meeting recording with multiple participants.",
                 'response_format': 'verbose_json'
             },
             {
                 'variant_id': 4,
                 'temperature': 0.0,
-                'language': None,  # Let Whisper auto-detect
+                'language': lang_variants[3],  # Always None for auto-detect comparison
                 'prompt': "",
                 'response_format': 'verbose_json'
             },
             {
                 'variant_id': 5,
                 'temperature': 0.3,
-                'language': 'en',
+                'language': lang_variants[4],
                 'prompt': "This recording contains multiple speakers in a meeting discussion.",
                 'response_format': 'verbose_json'
             }
@@ -157,17 +254,18 @@ class ASREngine:
             if config['prompt']:
                 transcription_params['prompt'] = config['prompt']
             
-            # Open and transcribe audio file with timeout handling
+            # Open and transcribe audio file with robust retry handling
             with open(audio_path, 'rb') as audio_file:
-                try:
-                    response = self.client.audio.transcriptions.create(
+                # Define the API call function for retry mechanism
+                def make_transcription_call():
+                    return self.client.audio.transcriptions.create(
                         file=audio_file,
                         timeout=60.0,  # 60 second timeout
                         **transcription_params
                     )
-                except Exception as api_error:
-                    print(f"OpenAI API error: {api_error}")
-                    raise Exception(f"OpenAI Whisper API failed: {str(api_error)}")
+                
+                # Execute with retry logic
+                response = self._retry_api_call_with_backoff(make_transcription_call)
             
             # Extract word-level timestamps if available
             if hasattr(response, 'words') and response.words:

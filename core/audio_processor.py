@@ -3,6 +3,7 @@ import numpy as np
 import ffmpeg
 import tempfile
 import os
+import subprocess
 from typing import Tuple, Optional
 
 class AudioProcessor:
@@ -10,6 +11,78 @@ class AudioProcessor:
     
     def __init__(self, target_sr: int = 16000):
         self.target_sr = target_sr
+    
+    @staticmethod
+    def check_ffmpeg_availability() -> Tuple[bool, str]:
+        """
+        Check if FFmpeg is available and get version info.
+        
+        Returns:
+            Tuple of (is_available, version_or_error_message)
+        """
+        try:
+            # Try to run ffmpeg -version
+            result = subprocess.run(
+                ['ffmpeg', '-version'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                # Extract version from first line
+                version_line = result.stdout.split('\n')[0]
+                return True, version_line
+            else:
+                return False, f"FFmpeg returned error code {result.returncode}"
+                
+        except FileNotFoundError:
+            return False, "FFmpeg not found in system PATH"
+        except subprocess.TimeoutExpired:
+            return False, "FFmpeg command timed out"
+        except Exception as e:
+            return False, f"Error checking FFmpeg: {str(e)}"
+    
+    @staticmethod
+    def get_ffmpeg_install_instructions() -> str:
+        """
+        Get installation instructions for FFmpeg based on the environment.
+        
+        Returns:
+            Installation instructions string
+        """
+        return """
+**FFmpeg Installation Instructions:**
+
+**For Replit:**
+1. Add `ffmpeg` to your system dependencies in `pyproject.toml`:
+   ```toml
+   [build-system]
+   requires = ["poetry-core"]
+   build-backend = "poetry.core.masonry.api"
+   
+   [tool.poetry.dependencies]
+   python = "^3.11"
+   # ... other dependencies ...
+   
+   [tool.poetry.group.dev.dependencies]
+   # Add this line:
+   ffmpeg = "*"
+   ```
+
+2. Or use the Replit package manager:
+   - Open the "Packages" tab in Replit
+   - Search for "ffmpeg"
+   - Click "Install"
+
+**For local development:**
+- **Ubuntu/Debian:** `sudo apt update && sudo apt install ffmpeg`
+- **macOS:** `brew install ffmpeg`
+- **Windows:** Download from https://ffmpeg.org/download.html
+
+**Verification:**
+Run `ffmpeg -version` in your terminal to verify installation.
+        """
     
     def extract_audio_from_video(self, video_path: str) -> Tuple[str, str]:
         """
@@ -25,11 +98,12 @@ class AudioProcessor:
         raw_audio_fd, raw_audio_path = tempfile.mkstemp(suffix='_raw.wav')
         clean_audio_fd, clean_audio_path = tempfile.mkstemp(suffix='_clean.wav')
         
+        # Close file descriptors immediately (we just need the paths)
+        os.close(raw_audio_fd)
+        os.close(clean_audio_fd)
+        
+        success = False
         try:
-            # Close file descriptors (we just need the paths)
-            os.close(raw_audio_fd)
-            os.close(clean_audio_fd)
-            
             # Extract raw audio using ffmpeg
             (
                 ffmpeg
@@ -55,14 +129,21 @@ class AudioProcessor:
             import soundfile as sf
             sf.write(clean_audio_path, cleaned_audio, sr)
             
+            success = True
             return raw_audio_path, clean_audio_path
             
         except Exception as e:
-            # Clean up on error
-            for path in [raw_audio_path, clean_audio_path]:
-                if os.path.exists(path):
-                    os.unlink(path)
             raise Exception(f"Audio extraction failed: {str(e)}")
+            
+        finally:
+            # Clean up temp files only on failure
+            if not success:
+                for path in [raw_audio_path, clean_audio_path]:
+                    if os.path.exists(path):
+                        try:
+                            os.unlink(path)
+                        except OSError:
+                            pass  # Best effort cleanup
     
     def _preprocess_audio(self, audio_data: np.ndarray, sr: int) -> np.ndarray:
         """
@@ -172,6 +253,22 @@ class AudioProcessor:
                 output_audio[i:i + window_samples] *= gain
         
         return output_audio
+    
+    
+    def cleanup_temp_files(self, *file_paths: str) -> None:
+        """
+        Clean up temporary files safely.
+        
+        Args:
+            *file_paths: Paths to temporary files to clean up
+        """
+        for path in file_paths:
+            if path and os.path.exists(path):
+                try:
+                    os.unlink(path)
+                    print(f"Cleaned up temp file: {path}")
+                except OSError as e:
+                    print(f"Warning: Could not clean up temp file {path}: {e}")
     
     def estimate_noise_level(self, audio_path: str) -> str:
         """

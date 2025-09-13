@@ -14,9 +14,10 @@ from utils.transcript_formatter import TranscriptFormatter
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
     
-    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium'):
+    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None):
         self.expected_speakers = expected_speakers
         self.noise_level = noise_level
+        self.target_language = target_language  # None for auto-detect
         
         # Initialize components
         self.audio_processor = AudioProcessor()
@@ -27,6 +28,7 @@ class EnsembleManager:
         
         # Working directory for temporary files
         self.work_dir = None
+        self.temp_audio_files = []  # Track temp audio files for cleanup
     
     def process_video(self, video_path: str, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
         """
@@ -50,6 +52,7 @@ class EnsembleManager:
                 progress_callback("A", 5, "Extracting audio from video...")
             
             raw_audio_path, clean_audio_path = self.audio_processor.extract_audio_from_video(video_path)
+            self.temp_audio_files.extend([raw_audio_path, clean_audio_path])
             
             # Step 2: Audio Preprocessing (10-15%)
             if progress_callback:
@@ -57,6 +60,19 @@ class EnsembleManager:
             
             audio_duration = self.audio_processor.get_audio_duration(clean_audio_path)
             estimated_noise = self.audio_processor.estimate_noise_level(clean_audio_path)
+            
+            # Handle edge cases for audio content
+            if audio_duration < 5.0:
+                if progress_callback:
+                    progress_callback("WARN", 15, f"Very short audio ({audio_duration:.1f}s) - results may be limited")
+            elif audio_duration > 5400:  # 90 minutes
+                if progress_callback:
+                    progress_callback("WARN", 15, f"Very long audio ({audio_duration/60:.1f}min) - processing may take extended time")
+            
+            # Check for silent content
+            if self._is_mostly_silent(clean_audio_path):
+                if progress_callback:
+                    progress_callback("WARN", 15, "Audio appears mostly silent - transcription results may be minimal")
             
             # Step 3: Diarization Variants (15-35%)
             if progress_callback:
@@ -71,7 +87,7 @@ class EnsembleManager:
             if progress_callback:
                 progress_callback("D", 40, "Running expanded ASR ensemble (5 passes per diarization)...")
             
-            candidates = self.asr_engine.run_asr_ensemble(clean_audio_path, diarization_variants)
+            candidates = self.asr_engine.run_asr_ensemble(clean_audio_path, diarization_variants, target_language=self.target_language)
             
             if progress_callback:
                 progress_callback("D", 75, f"ASR ensemble complete - {len(candidates)} candidates generated (5×5 matrix)")
@@ -268,9 +284,46 @@ class EnsembleManager:
     
     def _cleanup_temp_files(self):
         """Clean up temporary files and directories"""
+        # Clean up audio temp files
+        if hasattr(self, 'temp_audio_files'):
+            self.audio_processor.cleanup_temp_files(*self.temp_audio_files)
+            self.temp_audio_files.clear()
+        
+        # Clean up work directory
         if self.work_dir and os.path.exists(self.work_dir):
             try:
                 import shutil
                 shutil.rmtree(self.work_dir)
+                print(f"Cleaned up work directory: {self.work_dir}")
             except Exception as e:
                 print(f"Warning: Could not clean up temporary directory: {e}")
+            finally:
+                self.work_dir = None
+    
+    def _is_mostly_silent(self, audio_path: str) -> bool:
+        """
+        Check if audio file is mostly silent or very low volume.
+        
+        Args:
+            audio_path: Path to audio file
+            
+        Returns:
+            True if audio appears mostly silent
+        """
+        try:
+            import soundfile as sf
+            import numpy as np
+            
+            # Read first 30 seconds for analysis
+            audio_data, sr = sf.read(audio_path, frames=30 * 16000)  # 30 seconds at 16kHz
+            
+            # Calculate RMS energy
+            rms = np.sqrt(np.mean(audio_data ** 2))
+            
+            # Check if RMS is below silence threshold
+            silence_threshold = 0.01  # Adjust based on testing
+            
+            return rms < silence_threshold
+        except Exception as e:
+            print(f"Warning: Could not analyze audio silence: {e}")
+            return False
