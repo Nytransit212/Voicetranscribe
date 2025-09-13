@@ -6,18 +6,17 @@ from datetime import datetime
 from core.ensemble_manager import EnsembleManager
 from utils.file_handler import FileHandler
 from utils.transcript_formatter import TranscriptFormatter
+from pages.qc_dashboard import render_qc_dashboard
 import traceback
 
 st.set_page_config(
     page_title="Advanced Ensemble Transcription System",
     page_icon="🎯",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 def main():
-    st.title("🎯 Advanced Ensemble Transcription System")
-    st.markdown("Generate 15 candidate transcripts with multi-dimensional confidence scoring")
-    
     # Initialize session state
     if 'processing' not in st.session_state:
         st.session_state.processing = False
@@ -25,6 +24,47 @@ def main():
         st.session_state.results = None
     if 'uploaded_file' not in st.session_state:
         st.session_state.uploaded_file = None
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = 'main'
+    
+    # Sidebar navigation
+    st.sidebar.title("🎯 Navigation")
+    
+    # Page selection
+    page_options = {
+        'main': '🏠 Main Processing',
+        'qc': '🔍 Quality Control'
+    }
+    
+    selected_page = st.sidebar.radio(
+        "Select Page",
+        options=list(page_options.keys()),
+        format_func=lambda x: page_options[x],
+        index=0 if st.session_state.current_page == 'main' else 1
+    )
+    
+    st.session_state.current_page = selected_page
+    
+    # Results status in sidebar
+    if st.session_state.results:
+        st.sidebar.success("✅ Results Available")
+        winner_score = st.session_state.results.get('winner_score', 0)
+        st.sidebar.metric("Winner Score", f"{winner_score:.3f}")
+        
+        processing_time = st.session_state.results.get('processing_time', 0)
+        st.sidebar.metric("Processing Time", f"{processing_time:.1f}s")
+    else:
+        st.sidebar.info("ℹ️ No results yet")
+    
+    # Route to appropriate page
+    if selected_page == 'main':
+        render_main_page()
+    elif selected_page == 'qc':
+        render_qc_dashboard()
+
+def render_main_page():
+    st.title("🎯 Advanced Ensemble Transcription System")
+    st.markdown("Generate 15 candidate transcripts with multi-dimensional confidence scoring")
 
     # Check for required API key
     openai_key = os.getenv("OPENAI_API_KEY")
@@ -79,6 +119,19 @@ def main():
     # Display results
     if st.session_state.results:
         display_results()
+        
+        # QC Navigation
+        st.header("🔍 Quality Control")
+        st.markdown("Review and improve transcript quality with automated QC and targeted repairs")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔍 Open Quality Control Dashboard", type="primary"):
+                st.session_state.current_page = 'qc'
+                st.rerun()
+        
+        with col2:
+            st.info("💡 Use QC Dashboard to review flagged segments and apply repairs")
 
 def process_video(uploaded_file, expected_speakers, noise_level):
     """Process the uploaded video through the ensemble pipeline"""
