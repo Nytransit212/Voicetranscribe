@@ -13,7 +13,10 @@ from core.diarization_engine import DiarizationEngine
 from core.asr_engine import ASREngine
 from core.confidence_scorer import ConfidenceScorer
 from utils.transcript_formatter import TranscriptFormatter
-from utils.structured_logger import StructuredLogger
+from utils.enhanced_structured_logger import create_enhanced_logger
+from utils.observability import initialize_observability, trace_stage, track_cost
+from utils.profiling_manager import get_profiling_manager
+from utils.observability_reporter import get_observability_reporter
 from utils.dvc_versioning import DVCVersioningManager
 from utils.metrics_registry import MetricsRegistryManager
 
@@ -30,8 +33,19 @@ class EnsembleManager:
         # Generate unique run ID for this processing session
         self.run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
-        # Initialize structured logging
-        self.structured_logger = StructuredLogger("ensemble_manager")
+        # Initialize enhanced observability system
+        self.obs_manager = initialize_observability(
+            service_name="ensemble-transcription",
+            enable_profiling=True,
+            log_level="INFO"
+        )
+        
+        # Initialize enhanced structured logging with run context
+        self.structured_logger = create_enhanced_logger("ensemble_manager", run_id=self.run_id)
+        
+        # Initialize profiling manager and reporter
+        self.profiling_manager = get_profiling_manager()
+        self.observability_reporter = get_observability_reporter()
         
         # Initialize versioning system
         if self.enable_versioning:
@@ -70,6 +84,7 @@ class EnsembleManager:
         self.intermediate_artifacts: Dict[str, Any] = {}
         self.output_artifacts: Dict[str, Any] = {}
     
+    @trace_stage("video_processing_pipeline")
     def process_video(self, video_path: str, progress_callback: Optional[Callable[[str, int, str], None]] = None) -> Dict[str, Any]:
         """
         Process video through complete ensemble pipeline.
@@ -244,7 +259,11 @@ class EnsembleManager:
             
             processing_time = time.time() - start_time
             
-            # Compile results
+            # Get comprehensive cost and performance summary
+            cost_summary = self.structured_logger.get_session_cost_summary()
+            system_metrics = self.structured_logger.get_system_metrics()
+            
+            # Compile results with enhanced observability data
             results = {
                 'winner_transcript': winner_transcript_json,
                 'winner_transcript_txt': winner_transcript_txt,
@@ -265,6 +284,24 @@ class EnsembleManager:
                 'diarization_variants': len(diarization_variants),
                 'voting_fusion_applied': any(v.get('fusion_applied', False) for v in diarization_variants),
                     'processing_timestamp': time.time()
+                },
+                # Enhanced observability data
+                'cost_summary': cost_summary,
+                'system_metrics': system_metrics,
+                'observability_metadata': {
+                    'run_id': self.run_id,
+                    'session_id': self.structured_logger.session_id,
+                    'service_name': 'ensemble-transcription',
+                    'pipeline_stages': [
+                        'audio_extraction', 'diarization', 'asr_ensemble', 
+                        'confidence_scoring', 'winner_selection', 'output_generation'
+                    ],
+                    'instrumentation_enabled': True,
+                    'cost_tracking_enabled': True,
+                    'profiling_enabled': hasattr(self, 'obs_manager') and self.obs_manager.enable_profiling,
+                    'total_cost_usd': cost_summary.get('total_cost_usd', 0.0),
+                    'total_api_calls': cost_summary.get('total_api_calls', 0),
+                    'peak_memory_mb': system_metrics.get('memory_rss_mb', 0)
                 }
             }
             
@@ -320,6 +357,28 @@ class EnsembleManager:
                 
                 self.structured_logger.info("Run manifest created", 
                                            context={'run_id': self.run_id, 'manifest_path': manifest_path})
+            
+            # Generate comprehensive observability reports
+            profiling_summary = self.profiling_manager.get_profiling_summary()
+            report_files = self.observability_reporter.generate_comprehensive_report(results, profiling_summary)
+            
+            # Add report files to results
+            results['observability_reports'] = report_files
+            
+            # Log final completion with observability metrics
+            final_metrics = {
+                'total_cost_usd': cost_summary.get('total_cost_usd', 0.0),
+                'total_api_calls': cost_summary.get('total_api_calls', 0),
+                'memory_peak_mb': system_metrics.get('memory_rss_mb', 0),
+                'reports_generated': len(report_files),
+                'observability_enabled': True
+            }
+            
+            self.structured_logger.info(
+                f"Observability reports generated: {len(report_files)} files, ${cost_summary.get('total_cost_usd', 0.0):.4f} total cost",
+                metrics=final_metrics,
+                report_files=list(report_files.keys())
+            )
             
             return results
             

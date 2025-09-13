@@ -12,7 +12,8 @@ import time
 import logging
 from openai import OpenAIError, RateLimitError, APITimeoutError, APIConnectionError
 
-from utils.structured_logger import StructuredLogger
+from utils.enhanced_structured_logger import create_enhanced_logger
+from utils.observability import get_observability_manager, trace_stage, track_cost
 from utils.reliability_config import get_concurrency_config, get_timeout_config
 from utils.resilient_api import openai_retry
 from core.circuit_breaker import CircuitBreakerOpenException
@@ -28,8 +29,9 @@ class ASREngine:
         self.concurrency_config = get_concurrency_config()
         self.timeout_config = get_timeout_config()
         
-        # Initialize structured logging
-        self.structured_logger = StructuredLogger("asr_engine")
+        # Initialize enhanced observability
+        self.obs_manager = get_observability_manager()
+        self.structured_logger = create_enhanced_logger("asr_engine")
         
         # Configure basic logging for detailed retry tracking
         self.logger = logging.getLogger(__name__)
@@ -40,6 +42,7 @@ class ASREngine:
             self.logger.addHandler(handler)
             self.logger.setLevel(logging.INFO)
     
+    @trace_stage("asr_ensemble_processing")
     def run_asr_ensemble(self, audio_path: str, diarization_variants: List[Dict[str, Any]], target_language: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Run 5 ASR variants for each of the 3 diarization results (15 total candidates).
@@ -93,9 +96,11 @@ class ASREngine:
         return candidates
     
     @openai_retry
+    @trace_stage("openai_transcription_api")
     def _make_transcription_api_call(self, audio_file_path: str, **transcription_params) -> Any:
         """
         Make OpenAI transcription API call with tenacity retry and circuit breaker protection.
+        Enhanced with cost tracking and OpenTelemetry tracing.
         
         Args:
             audio_file_path: Path to audio file
@@ -107,12 +112,57 @@ class ASREngine:
         Raises:
             Various OpenAI exceptions if call fails after retries
         """
+        import librosa
+        
+        # Calculate audio duration for cost tracking
+        try:
+            audio_duration = librosa.get_duration(path=audio_file_path)
+        except Exception:
+            # Fallback estimation
+            import os
+            file_size = os.path.getsize(audio_file_path)
+            audio_duration = file_size / 32000  # Rough estimate for 16kHz mono
+        
+        start_time = time.time()
+        
         with open(audio_file_path, 'rb') as audio_file:
-            return self.client.audio.transcriptions.create(
+            response = self.client.audio.transcriptions.create(
                 file=audio_file,
                 timeout=self.timeout_config.api_request,
                 **transcription_params
             )
+        
+        api_duration = time.time() - start_time
+        
+        # Track cost and usage
+        usage_data = {
+            "audio_duration_seconds": audio_duration,
+            "model": transcription_params.get('model', self.model),
+            "language": transcription_params.get('language', 'auto'),
+            "temperature": transcription_params.get('temperature', 0.0)
+        }
+        
+        cost = self.structured_logger.track_api_cost(
+            service="openai_whisper",
+            model=self.model,
+            usage_data=usage_data,
+            duration=api_duration,
+            stage="asr_transcription"
+        )
+        
+        # Log detailed API call info
+        self.structured_logger.info(
+            f"OpenAI Whisper API call completed",
+            api_duration=api_duration,
+            audio_duration=audio_duration,
+            cost_usd=cost,
+            model=self.model,
+            response_format=transcription_params.get('response_format', 'json'),
+            language=transcription_params.get('language', 'auto'),
+            temperature=transcription_params.get('temperature', 0.0)
+        )
+        
+        return response
     
     def _create_asr_variants(self, audio_path: str, diarization_data: Dict[str, Any], target_language: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -260,6 +310,7 @@ class ASREngine:
             # Re-raise with variant info for better error handling
             raise Exception(f"ASR variant {config['variant_id']} failed: {str(e)}")
     
+    @trace_stage("asr_variant_processing")
     def _run_asr_variant(self, audio_path: str, diarization_data: Dict[str, Any], 
                         config: Dict[str, Any]) -> Dict[str, Any]:
         """

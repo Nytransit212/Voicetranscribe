@@ -324,6 +324,10 @@ def process_video(uploaded_file, expected_speakers, noise_level, selected_langua
         status_text.text("✅ Processing completed successfully!")
         
         st.success("🎉 Ensemble transcription completed! Check the results below.")
+        
+        # Display cost and performance metrics first
+        display_cost_performance_metrics(results)
+        
         st.rerun()
         
     except Exception as e:
@@ -357,6 +361,98 @@ def display_processing_status():
         6. **Winner Selection** - Selecting best transcript using weighted formula
         7. **Output Generation** - Creating final transcripts and subtitles
         """)
+
+def display_cost_performance_metrics(results):
+    """Display real-time cost and performance metrics from observability system"""
+    if not results or 'cost_summary' not in results:
+        return
+    
+    st.header("💰 Cost & Performance Analytics")
+    
+    cost_summary = results.get('cost_summary', {})
+    system_metrics = results.get('system_metrics', {})
+    obs_metadata = results.get('observability_metadata', {})
+    
+    # Cost metrics row
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_cost = cost_summary.get('total_cost_usd', 0.0)
+        st.metric(
+            "💰 Total Cost",
+            f"${total_cost:.4f}",
+            help="Total API costs for this processing session"
+        )
+    
+    with col2:
+        api_calls = cost_summary.get('total_api_calls', 0)
+        st.metric(
+            "📞 API Calls",
+            str(api_calls),
+            help="Total number of API calls made"
+        )
+    
+    with col3:
+        memory_peak = system_metrics.get('memory_rss_mb', 0)
+        st.metric(
+            "🧠 Peak Memory",
+            f"{memory_peak:.1f} MB",
+            help="Peak memory usage during processing"
+        )
+    
+    with col4:
+        session_duration = system_metrics.get('session_duration', 0)
+        st.metric(
+            "⏱️ Session Duration",
+            f"{session_duration:.1f}s",
+            help="Total session duration including overhead"
+        )
+    
+    # Cost breakdown
+    cost_breakdown = cost_summary.get('cost_breakdown', {})
+    if cost_breakdown:
+        st.subheader("📊 Cost Breakdown by Service")
+        
+        breakdown_data = []
+        for service, data in cost_breakdown.items():
+            breakdown_data.append({
+                'Service': service.replace('_', ' ').title(),
+                'Cost (USD)': f"${data['cost']:.4f}",
+                'Calls': data['calls'],
+                'Avg Cost/Call': f"${data['avg_cost_per_call']:.4f}",
+                'Duration (s)': f"{data['total_duration']:.1f}"
+            })
+        
+        if breakdown_data:
+            import pandas as pd
+            df = pd.DataFrame(breakdown_data)
+            st.dataframe(df, use_container_width=True)
+    
+    # Performance insights
+    with st.expander("🔍 Performance Insights", expanded=False):
+        st.markdown("**Observability Metadata:**")
+        if obs_metadata:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write(f"• **Run ID:** {obs_metadata.get('run_id', 'N/A')}")
+                st.write(f"• **Session ID:** {obs_metadata.get('session_id', 'N/A')}")
+                st.write(f"• **Instrumentation:** {'✅ Enabled' if obs_metadata.get('instrumentation_enabled', False) else '❌ Disabled'}")
+                st.write(f"• **Cost Tracking:** {'✅ Enabled' if obs_metadata.get('cost_tracking_enabled', False) else '❌ Disabled'}")
+            
+            with col2:
+                st.write(f"• **Profiling:** {'✅ Enabled' if obs_metadata.get('profiling_enabled', False) else '❌ Disabled'}")
+                st.write(f"• **Pipeline Stages:** {len(obs_metadata.get('pipeline_stages', []))}")
+                stages = obs_metadata.get('pipeline_stages', [])
+                if stages:
+                    st.write(f"• **Stages:** {', '.join(stages)}")
+        
+        # System performance summary
+        st.markdown("**System Performance:**")
+        if system_metrics:
+            st.write(f"• **CPU Usage:** {system_metrics.get('cpu_percent', 0):.1f}%")
+            st.write(f"• **Memory VMS:** {system_metrics.get('memory_vms_mb', 0):.1f} MB")
+            st.write(f"• **Timestamp:** {system_metrics.get('timestamp', 'N/A')}")
 
 def display_results():
     """Display processing results and download options"""
