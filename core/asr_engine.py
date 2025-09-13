@@ -29,13 +29,21 @@ class ASREngine:
         Returns:
             List of 15 candidate transcripts with ASR and diarization data
         """
+        print(f"🎤 Starting ASR ensemble processing for {len(diarization_variants)} diarization variants...")
         candidates = []
         
         # For each diarization variant, run 5 ASR passes
-        for diar_variant in diarization_variants:
-            asr_variants = self._create_asr_variants(audio_path, diar_variant)
-            candidates.extend(asr_variants)
+        for i, diar_variant in enumerate(diarization_variants, 1):
+            print(f"Processing diarization variant {i}/{len(diarization_variants)}...")
+            try:
+                asr_variants = self._create_asr_variants(audio_path, diar_variant)
+                candidates.extend(asr_variants)
+                print(f"✓ Completed diarization variant {i}: {len(asr_variants)} ASR candidates generated")
+            except Exception as e:
+                print(f"⚠ Error processing diarization variant {i}: {e}")
+                continue
         
+        print(f"🎤 ASR ensemble complete: {len(candidates)} total candidates generated")
         return candidates
     
     def _create_asr_variants(self, audio_path: str, diarization_data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -90,10 +98,13 @@ class ASREngine:
             }
         ]
         
-        # Run each ASR variant
-        for config in asr_configs:
+        # Run each ASR variant with progress tracking
+        for j, config in enumerate(asr_configs, 1):
             try:
+                print(f"  Running ASR variant {j}/5 (temp={config['temperature']})...")
+                start_time = time.time()
                 asr_result = self._run_asr_variant(audio_path, diarization_data, config)
+                elapsed = time.time() - start_time
                 
                 # Combine diarization and ASR data
                 candidate = {
@@ -110,9 +121,10 @@ class ASREngine:
                 }
                 
                 variants.append(candidate)
+                print(f"  ✓ ASR variant {j} completed in {elapsed:.1f}s")
                 
             except Exception as e:
-                print(f"ASR variant {config['variant_id']} failed: {e}")
+                print(f"  ⚠ ASR variant {j} failed: {e}")
                 # Continue with other variants
                 continue
         
@@ -145,12 +157,17 @@ class ASREngine:
             if config['prompt']:
                 transcription_params['prompt'] = config['prompt']
             
-            # Open and transcribe audio file
+            # Open and transcribe audio file with timeout handling
             with open(audio_path, 'rb') as audio_file:
-                response = self.client.audio.transcriptions.create(
-                    file=audio_file,
-                    **transcription_params
-                )
+                try:
+                    response = self.client.audio.transcriptions.create(
+                        file=audio_file,
+                        timeout=60.0,  # 60 second timeout
+                        **transcription_params
+                    )
+                except Exception as api_error:
+                    print(f"OpenAI API error: {api_error}")
+                    raise Exception(f"OpenAI Whisper API failed: {str(api_error)}")
             
             # Extract word-level timestamps if available
             if hasattr(response, 'words') and response.words:
