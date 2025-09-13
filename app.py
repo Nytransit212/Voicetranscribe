@@ -1,0 +1,321 @@
+import streamlit as st
+import os
+import tempfile
+import json
+from datetime import datetime
+from core.ensemble_manager import EnsembleManager
+from utils.file_handler import FileHandler
+from utils.transcript_formatter import TranscriptFormatter
+import traceback
+
+st.set_page_config(
+    page_title="Advanced Ensemble Transcription System",
+    page_icon="🎯",
+    layout="wide"
+)
+
+def main():
+    st.title("🎯 Advanced Ensemble Transcription System")
+    st.markdown("Generate 15 candidate transcripts with multi-dimensional confidence scoring")
+    
+    # Initialize session state
+    if 'processing' not in st.session_state:
+        st.session_state.processing = False
+    if 'results' not in st.session_state:
+        st.session_state.results = None
+    if 'uploaded_file' not in st.session_state:
+        st.session_state.uploaded_file = None
+
+    # Check for required API key
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if not openai_key:
+        st.error("⚠️ OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
+        st.stop()
+
+    # File upload section
+    st.header("📁 Upload Video File")
+    uploaded_file = st.file_uploader(
+        "Choose an MP4 video file (up to 90 minutes)",
+        type=['mp4'],
+        help="Upload your video file for ensemble transcription processing"
+    )
+
+    if uploaded_file is not None:
+        st.session_state.uploaded_file = uploaded_file
+        
+        # Display file info
+        file_size_mb = uploaded_file.size / (1024 * 1024)
+        st.info(f"📄 File: {uploaded_file.name} ({file_size_mb:.1f} MB)")
+        
+        # Processing parameters
+        st.header("⚙️ Processing Configuration")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            expected_speakers = st.slider(
+                "Expected number of speakers",
+                min_value=2,
+                max_value=20,
+                value=10,
+                help="Approximate number of participants in the recording"
+            )
+            
+        with col2:
+            noise_level = st.selectbox(
+                "Room noise level",
+                ["Low", "Medium", "High"],
+                index=1,
+                help="Background noise level in the recording environment"
+            )
+
+        # Process button
+        if st.button("🚀 Start Ensemble Processing", disabled=st.session_state.processing):
+            process_video(uploaded_file, expected_speakers, noise_level)
+
+    # Display processing status
+    if st.session_state.processing:
+        display_processing_status()
+    
+    # Display results
+    if st.session_state.results:
+        display_results()
+
+def process_video(uploaded_file, expected_speakers, noise_level):
+    """Process the uploaded video through the ensemble pipeline"""
+    st.session_state.processing = True
+    st.session_state.results = None
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    try:
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
+            tmp_file.write(uploaded_file.read())
+            tmp_path = tmp_file.name
+        
+        # Initialize ensemble manager
+        ensemble_manager = EnsembleManager(
+            expected_speakers=expected_speakers,
+            noise_level=noise_level.lower()
+        )
+        
+        # Process through ensemble pipeline
+        def update_progress(step, progress, message):
+            progress_bar.progress(progress)
+            status_text.text(f"Step {step}: {message}")
+        
+        results = ensemble_manager.process_video(tmp_path, update_progress)
+        
+        # Clean up temporary file
+        os.unlink(tmp_path)
+        
+        # Store results
+        st.session_state.results = results
+        st.session_state.processing = False
+        
+        progress_bar.progress(100)
+        status_text.text("✅ Processing completed successfully!")
+        
+        st.success("🎉 Ensemble transcription completed! Check the results below.")
+        st.rerun()
+        
+    except Exception as e:
+        st.session_state.processing = False
+        progress_bar.empty()
+        status_text.empty()
+        
+        st.error(f"❌ Processing failed: {str(e)}")
+        st.error("📋 Error details:")
+        st.code(traceback.format_exc())
+        
+        # Clean up temporary file if it exists
+        try:
+            if 'tmp_path' in locals() and tmp_path:
+                os.unlink(tmp_path)
+        except:
+            pass
+
+def display_processing_status():
+    """Display current processing status"""
+    st.header("🔄 Processing Status")
+    st.info("Ensemble processing is running... This may take several minutes for long videos.")
+    
+    with st.expander("📊 Processing Steps", expanded=True):
+        st.markdown("""
+        1. **Audio Extraction** - Converting MP4 to 16kHz mono WAV
+        2. **Audio Preprocessing** - Noise reduction and normalization
+        3. **Diarization Variants** - Creating 3 speaker diarization variants
+        4. **ASR Ensemble** - Running 5 ASR passes per diarization (15 total)
+        5. **Confidence Scoring** - Evaluating candidates across 5 dimensions
+        6. **Winner Selection** - Selecting best transcript using weighted formula
+        7. **Output Generation** - Creating final transcripts and subtitles
+        """)
+
+def display_results():
+    """Display processing results and download options"""
+    results = st.session_state.results
+    
+    st.header("🏆 Ensemble Results")
+    
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            "Winner Score",
+            f"{results['winner_score']:.3f}",
+            help="Final confidence score of the winning transcript"
+        )
+    
+    with col2:
+        st.metric(
+            "Candidates Generated",
+            "15",
+            help="Total number of candidate transcripts evaluated"
+        )
+    
+    with col3:
+        st.metric(
+            "Processing Time",
+            f"{results['processing_time']:.1f}s",
+            help="Total time spent processing the video"
+        )
+    
+    with col4:
+        st.metric(
+            "Speaker Count",
+            results['detected_speakers'],
+            help="Number of unique speakers detected"
+        )
+
+    # Confidence breakdown
+    st.subheader("📈 Confidence Score Breakdown")
+    
+    confidence_data = results['confidence_breakdown']
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Score Components:**")
+        for component, score in confidence_data.items():
+            st.write(f"- **{component}**: {score:.3f}")
+    
+    with col2:
+        st.markdown("**Score Weights:**")
+        weights = {
+            'Diarization (D)': '0.28',
+            'ASR Alignment (A)': '0.32', 
+            'Linguistic Quality (L)': '0.18',
+            'Cross-run Agreement (R)': '0.12',
+            'Overlap Handling (O)': '0.10'
+        }
+        for component, weight in weights.items():
+            st.write(f"- **{component}**: {weight}")
+
+    # Transcript preview
+    st.subheader("📄 Winning Transcript Preview")
+    
+    transcript_preview = results['transcript_preview']
+    with st.expander("View transcript excerpt (first 10 segments)", expanded=True):
+        for segment in transcript_preview:
+            timestamp = segment['timestamp']
+            speaker = segment['speaker']
+            text = segment['text']
+            confidence = segment['confidence']
+            
+            st.write(f"**[{timestamp}] {speaker}** (confidence: {confidence:.2f})")
+            st.write(f"*{text}*")
+            st.write("---")
+
+    # Ensemble audit
+    st.subheader("🔍 Ensemble Audit")
+    
+    audit_data = results['ensemble_audit']
+    
+    with st.expander("View candidate rankings", expanded=False):
+        st.markdown("**Top 5 Candidates:**")
+        for i, candidate in enumerate(audit_data['top_candidates'][:5]):
+            rank = i + 1
+            score = candidate['final_score']
+            variant = candidate['variant_info']
+            
+            st.write(f"{rank}. **Score: {score:.3f}** - {variant}")
+
+    # Download section
+    st.header("💾 Download Results")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.subheader("📋 Transcripts")
+        
+        # JSON transcript
+        if st.download_button(
+            label="📄 Download JSON Transcript",
+            data=json.dumps(results['winner_transcript'], indent=2),
+            file_name=f"transcript_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json"
+        ):
+            st.success("JSON transcript downloaded!")
+        
+        # TXT transcript
+        if st.download_button(
+            label="📝 Download TXT Transcript", 
+            data=results['winner_transcript_txt'],
+            file_name=f"transcript_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            mime="text/plain"
+        ):
+            st.success("TXT transcript downloaded!")
+
+    with col2:
+        st.subheader("🎬 Subtitles")
+        
+        # VTT captions
+        if st.download_button(
+            label="📺 Download WebVTT Captions",
+            data=results['captions_vtt'],
+            file_name=f"captions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.vtt",
+            mime="text/vtt"
+        ):
+            st.success("VTT captions downloaded!")
+        
+        # SRT captions  
+        if st.download_button(
+            label="📺 Download SRT Captions",
+            data=results['captions_srt'],
+            file_name=f"captions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.srt",
+            mime="text/plain"
+        ):
+            st.success("SRT captions downloaded!")
+
+    with col3:
+        st.subheader("📊 Reports")
+        
+        # Ensemble audit
+        if st.download_button(
+            label="📈 Download Ensemble Audit",
+            data=json.dumps(results['ensemble_audit'], indent=2),
+            file_name=f"ensemble_audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json"
+        ):
+            st.success("Audit report downloaded!")
+        
+        # Confidence report
+        if st.download_button(
+            label="🎯 Download Confidence Report",
+            data=json.dumps(results['confidence_breakdown'], indent=2),
+            file_name=f"confidence_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json"
+        ):
+            st.success("Confidence report downloaded!")
+
+    # Reset button
+    st.header("🔄 Process Another File")
+    if st.button("🗑️ Clear Results and Start Over"):
+        st.session_state.results = None
+        st.session_state.uploaded_file = None
+        st.session_state.processing = False
+        st.rerun()
+
+if __name__ == "__main__":
+    main()
