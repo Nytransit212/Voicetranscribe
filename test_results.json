@@ -1,0 +1,97 @@
+{
+  "audio_processor": {
+    "status": "success",
+    "duration": 30.0,
+    "noise_level": "low",
+    "original_samples": 480000,
+    "processed_samples": 479744,
+    "sample_rate": 16000
+  },
+  "diarization_engine": {
+    "status": "error",
+    "error": "'speaker'",
+    "traceback": "Traceback (most recent call last):\n  File \"/home/runner/workspace/test_ensemble_pipeline.py\", line 167, in test_diarization_engine\n    'unique_speakers': len(set(seg['speaker'] for seg in variant['segments'])),\n                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/workspace/test_ensemble_pipeline.py\", line 167, in <genexpr>\n    'unique_speakers': len(set(seg['speaker'] for seg in variant['segments'])),\n                               ~~~^^^^^^^^^^^\nKeyError: 'speaker'\n"
+  },
+  "asr_engine": {
+    "status": "success",
+    "asr_segments": 2,
+    "has_words": true,
+    "language": "english",
+    "duration": 10.0
+  },
+  "confidence_scorer": {
+    "status": "error",
+    "error": "'speaker_id'",
+    "traceback": "Traceback (most recent call last):\n  File \"/home/runner/workspace/test_ensemble_pipeline.py\", line 308, in test_confidence_scorer\n    scored_candidates = scorer.score_all_candidates(candidates)\n                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/workspace/core/confidence_scorer.py\", line 33, in score_all_candidates\n    d_scores = self._calculate_diarization_scores(candidates)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/workspace/core/confidence_scorer.py\", line 100, in _calculate_diarization_scores\n    stability_score = self._calculate_speaker_stability(segments)\n                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/workspace/core/confidence_scorer.py\", line 200, in _calculate_speaker_stability\n    speaker_id = segment['speaker_id']\n                 ~~~~~~~^^^^^^^^^^^^^^\nKeyError: 'speaker_id'\n"
+  },
+  "transcript_formatter": {
+    "status": "success",
+    "txt_length": 828,
+    "vtt_length": 276,
+    "srt_length": 180,
+    "ass_length": 829,
+    "formats_generated": 4
+  },
+  "ensemble_manager": {
+    "status": "success",
+    "processing_time": 37.03463268280029,
+    "progress_steps": 10,
+    "results_keys": [
+      "winner_transcript",
+      "winner_transcript_txt",
+      "captions_vtt",
+      "captions_srt",
+      "captions_ass",
+      "ensemble_audit",
+      "winner_score",
+      "confidence_breakdown",
+      "detected_speakers",
+      "processing_time",
+      "transcript_preview",
+      "session_metadata"
+    ],
+    "winner_score": 0.81,
+    "detected_speakers": 1,
+    "transcript_preview_segments": 1,
+    "ensemble_audit_candidates": 0,
+    "output_formats": {
+      "json": true,
+      "txt": true,
+      "vtt": true,
+      "srt": true,
+      "ass": true
+    }
+  },
+  "summary": {
+    "total_tests": 5,
+    "passed_tests": 4,
+    "failed_tests": 1,
+    "success_rate": 0.8,
+    "test_details": {
+      "audio_processor": {
+        "status": "success",
+        "error": null
+      },
+      "diarization_engine": {
+        "status": "error",
+        "error": "'speaker'"
+      },
+      "asr_engine": {
+        "status": "success",
+        "error": null
+      },
+      "confidence_scorer": {
+        "status": "error",
+        "error": "'speaker_id'"
+      },
+      "transcript_formatter": {
+        "status": "success",
+        "error": null
+      },
+      "ensemble_manager": {
+        "status": "success",
+        "error": null
+      }
+    }
+  }
+}
