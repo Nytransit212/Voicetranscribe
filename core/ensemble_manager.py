@@ -12,6 +12,7 @@ from core.audio_processor import AudioProcessor
 from core.diarization_engine import DiarizationEngine
 from core.asr_engine import ASREngine
 from core.confidence_scorer import ConfidenceScorer
+from core.consensus_module import ConsensusModule
 from utils.transcript_formatter import TranscriptFormatter
 from utils.enhanced_structured_logger import create_enhanced_logger
 from utils.observability import initialize_observability, trace_stage, track_cost
@@ -23,12 +24,14 @@ from utils.metrics_registry import MetricsRegistryManager
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
     
-    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None, enable_versioning: bool = True, domain: str = "general") -> None:
+    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None, enable_versioning: bool = True, domain: str = "general", consensus_strategy: str = "best_single_candidate", calibration_method: str = "registry_based") -> None:
         self.expected_speakers = expected_speakers
         self.noise_level = noise_level
         self.target_language = target_language  # None for auto-detect
         self.domain = domain
         self.enable_versioning = enable_versioning
+        self.consensus_strategy = consensus_strategy
+        self.calibration_method = calibration_method
         
         # Generate unique run ID for this processing session
         self.run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -71,9 +74,18 @@ class EnsembleManager:
             use_registry_calibration=self.enable_versioning,
             domain=domain,
             speaker_count=expected_speakers,
-            noise_level=noise_level
+            noise_level=noise_level,
+            calibration_method=calibration_method
         )
         self.transcript_formatter = TranscriptFormatter()
+        
+        # Initialize consensus module
+        try:
+            self.consensus_module = ConsensusModule(default_strategy=consensus_strategy)
+        except Exception as e:
+            # Fallback to best single candidate if consensus module fails
+            self.structured_logger.warning(f"Failed to initialize consensus module: {e}")
+            self.consensus_module = ConsensusModule(default_strategy="best_single_candidate")
         
         # Working directory for temporary files
         self.work_dir: Optional[str] = None
@@ -212,20 +224,32 @@ class EnsembleManager:
                                                 duration=scoring_time,
                                                 metrics={'candidates_scored': len(scored_candidates)})
             
-            # Step 6: Winner Selection (85-90%)
+            # Step 6: Consensus Processing (85-90%)
             if progress_callback:
-                progress_callback("F", 87, "Selecting winning transcript...")
+                progress_callback("F", 87, f"Running consensus strategy: {self.consensus_strategy}...")
             
             stage_start_time = time.time()
-            self.structured_logger.stage_start("winner_selection", "Selecting best transcript from scored candidates")
+            self.structured_logger.stage_start("consensus_processing", "Processing consensus from scored candidates",
+                                             context={'consensus_strategy': self.consensus_strategy, 'candidates_count': len(scored_candidates)})
             
-            winner = self.confidence_scorer.select_winner(scored_candidates)
+            # Use consensus module for winner selection
+            consensus_result = self.consensus_module.process_consensus(
+                candidates=scored_candidates,
+                strategy=self.consensus_strategy
+            )
+            
+            winner = consensus_result.winner_candidate
             
             selection_time = time.time() - stage_start_time
-            winner_score = winner.get('composite_score', 0)
-            self.structured_logger.stage_complete("winner_selection", "Winner transcript selected", 
+            winner_score = winner.get('confidence_scores', {}).get('final_score', 0)
+            self.structured_logger.stage_complete("consensus_processing", "Consensus processing completed", 
                                                 duration=selection_time,
-                                                metrics={'winner_score': winner_score, 'candidate_id': winner.get('candidate_id')})
+                                                metrics={
+                                                    'winner_score': winner_score, 
+                                                    'candidate_id': winner.get('candidate_id'),
+                                                    'consensus_strategy': consensus_result.consensus_method,
+                                                    'consensus_confidence': consensus_result.consensus_confidence
+                                                })
             
             # Step 7: Output Generation (90-100%)
             if progress_callback:
@@ -314,7 +338,7 @@ class EnsembleManager:
                 output_artifacts = self.dvc_manager.track_output_artifacts(results, self.run_id)
                 self.output_artifacts.update(output_artifacts)
                 
-                # Create processing configuration for manifest
+                # Create processing configuration for manifest (includes methodology audit trail)
                 processing_config = {
                     'expected_speakers': self.expected_speakers,
                     'noise_level': self.noise_level,
@@ -324,7 +348,12 @@ class EnsembleManager:
                     'estimated_noise': estimated_noise,
                     'candidates_generated': len(scored_candidates),
                     'diarization_variants': len(diarization_variants),
-                    'scoring_weights': self.confidence_scorer.score_weights
+                    'scoring_weights': self.confidence_scorer.score_weights,
+                    # Methodology audit trail for A/B testing
+                    'consensus_strategy': self.consensus_strategy,
+                    'calibration_method': self.calibration_method,
+                    'consensus_confidence': getattr(consensus_result, 'consensus_confidence', None) if 'consensus_result' in locals() else None,
+                    'consensus_method_used': getattr(consensus_result, 'consensus_method', self.consensus_strategy) if 'consensus_result' in locals() else self.consensus_strategy
                 }
                 
                 # Get metrics registry version

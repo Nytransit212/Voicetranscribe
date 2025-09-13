@@ -1,0 +1,75 @@
+# Consensus Strategies Configuration
+# Configuration for multiple consensus approaches in ensemble transcription
+
+# Default consensus strategy
+default_strategy: "best_single_candidate"
+
+# Available consensus strategies and their parameters
+strategies:
+  
+  # Baseline: Best Single Candidate (current system)
+  best_single_candidate:
+    enabled: true
+    description: "Select highest-scoring candidate with tie-breakers"
+    tie_breaking:
+      - "A_asr_alignment"      # First tie-breaker: ASR quality
+      - "R_agreement"          # Second tie-breaker: Cross-run agreement  
+      - "speaker_switches"     # Third tie-breaker: Fewer speaker switches
+    confidence_threshold: 0.0  # No minimum threshold
+    
+  # Weighted Voting Strategy
+  weighted_voting:
+    enabled: true
+    description: "Weighted consensus from top-performing candidates"
+    confidence_threshold: 0.7  # Minimum confidence to participate in voting
+    top_k: 5                   # Maximum candidates to include in voting
+    fusion_segments: true      # Enable segment-level fusion
+    weight_method: "confidence_score"  # How to weight votes
+    
+  # Multi-dimensional Consensus
+  multidimensional_consensus:
+    enabled: true
+    description: "Consensus based on dimensional excellence patterns"
+    dimension_weights:
+      D: 0.25  # Diarization weight in consensus
+      A: 0.30  # ASR weight in consensus  
+      L: 0.20  # Linguistic weight in consensus
+      R: 0.15  # Agreement weight in consensus
+      O: 0.10  # Overlap weight in consensus
+    leadership_bonus: 0.5      # Bonus for dimensional leadership
+    
+  # Confidence-based Strategy  
+  confidence_based:
+    enabled: true
+    description: "Select based on confidence distribution patterns"
+    confidence_variance_threshold: 0.1  # Low variance threshold
+    stability_weight: 0.3               # Weight for dimensional stability
+    distribution_analysis: true         # Enable score distribution analysis
+
+# A/B Testing Configuration
+ab_testing:
+  enabled: true
+  comparison_strategies:
+    - "best_single_candidate"
+    - "weighted_voting"
+    - "multidimensional_consensus"
+  record_comparisons: true
+  include_metadata: true
+
+# Performance and Quality Settings
+performance:
+  enable_caching: true
+  parallel_processing: false  # Consensus runs sequentially for now
+  timeout_seconds: 30
+  
+quality:
+  minimum_candidates: 3       # Minimum candidates required for consensus
+  fallback_strategy: "best_single_candidate"
+  validate_results: true
+  
+# Logging and Observability
+logging:
+  log_consensus_details: true
+  log_strategy_comparisons: true
+  log_performance_metrics: true
+  structured_logging: true

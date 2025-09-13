@@ -39,6 +39,19 @@ def main():
             'O': 0.10   # Overlap handling
         }
     
+    # Initialize consensus and calibration settings
+    if 'consensus_strategy' not in st.session_state:
+        st.session_state.consensus_strategy = 'best_single_candidate'
+    if 'calibration_method' not in st.session_state:
+        st.session_state.calibration_method = 'registry_based'
+    if 'enable_ab_testing' not in st.session_state:
+        st.session_state.enable_ab_testing = False
+    if 'ab_comparison_methods' not in st.session_state:
+        st.session_state.ab_comparison_methods = {
+            'consensus': ['best_single_candidate', 'weighted_voting'],
+            'calibration': ['registry_based', 'raw_scores']
+        }
+    
     # Sidebar navigation
     st.sidebar.title("🎯 Navigation")
     
@@ -135,6 +148,105 @@ def main():
                 'D': 0.28, 'A': 0.32, 'L': 0.18, 'R': 0.12, 'O': 0.10
             }
             st.rerun()
+    
+    # Consensus Strategy Configuration
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("🤝 Consensus Strategy Configuration", expanded=False):
+        st.markdown("**Select consensus approach for final transcript:**")
+        
+        consensus_options = {
+            'best_single_candidate': '🏆 Best Single Candidate (Default)',
+            'weighted_voting': '🗳️ Weighted Voting',
+            'multidimensional_consensus': '📊 Multi-dimensional Consensus',
+            'confidence_based': '📈 Confidence-based Selection'
+        }
+        
+        selected_consensus = st.selectbox(
+            "Consensus Strategy",
+            options=list(consensus_options.keys()),
+            format_func=lambda x: consensus_options[x],
+            index=list(consensus_options.keys()).index(st.session_state.consensus_strategy),
+            help="Choose how multiple candidate transcripts are combined into final result"
+        )
+        
+        st.session_state.consensus_strategy = selected_consensus
+        
+        # Show strategy description
+        descriptions = {
+            'best_single_candidate': 'Select highest-scoring candidate with tie-breaking rules (current system)',
+            'weighted_voting': 'Weighted combination of top-performing candidates',
+            'multidimensional_consensus': 'Selection based on dimensional excellence patterns',
+            'confidence_based': 'Selection based on confidence distribution analysis'
+        }
+        st.info(descriptions[selected_consensus])
+    
+    # Calibration Method Configuration
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("📏 Calibration Method Configuration", expanded=False):
+        st.markdown("**Select score calibration approach:**")
+        
+        calibration_options = {
+            'registry_based': '📊 Registry-based (Default)',
+            'isotonic_regression': '📈 Isotonic Regression',
+            'per_domain': '🏷️ Per-domain Calibration',
+            'raw_scores': '🔢 Raw Scores (No Calibration)'
+        }
+        
+        selected_calibration = st.selectbox(
+            "Calibration Method",
+            options=list(calibration_options.keys()),
+            format_func=lambda x: calibration_options[x],
+            index=list(calibration_options.keys()).index(st.session_state.calibration_method),
+            help="Choose how raw confidence scores are normalized for consistency"
+        )
+        
+        st.session_state.calibration_method = selected_calibration
+        
+        # Show calibration description
+        cal_descriptions = {
+            'registry_based': 'Use historical statistics for z-score normalization',
+            'isotonic_regression': 'Use trained isotonic regression models',
+            'per_domain': 'Domain-specific adjustments with registry baseline',
+            'raw_scores': 'Pass through raw scores with simple clipping'
+        }
+        st.info(cal_descriptions[selected_calibration])
+    
+    # A/B Testing Configuration
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("🧪 A/B Testing Configuration", expanded=False):
+        st.markdown("**Enable methodology comparison:**")
+        
+        enable_ab = st.checkbox(
+            "Enable A/B Testing",
+            value=st.session_state.enable_ab_testing,
+            help="Compare multiple consensus and calibration methods simultaneously"
+        )
+        st.session_state.enable_ab_testing = enable_ab
+        
+        if enable_ab:
+            st.markdown("**Consensus Methods to Compare:**")
+            consensus_compare = st.multiselect(
+                "Select consensus strategies",
+                options=list(consensus_options.keys()),
+                default=st.session_state.ab_comparison_methods['consensus'],
+                format_func=lambda x: consensus_options[x]
+            )
+            st.session_state.ab_comparison_methods['consensus'] = consensus_compare
+            
+            st.markdown("**Calibration Methods to Compare:**")
+            calibration_compare = st.multiselect(
+                "Select calibration methods",
+                options=list(calibration_options.keys()),
+                default=st.session_state.ab_comparison_methods['calibration'],
+                format_func=lambda x: calibration_options[x]
+            )
+            st.session_state.ab_comparison_methods['calibration'] = calibration_compare
+            
+            if consensus_compare and calibration_compare:
+                total_combinations = len(consensus_compare) * len(calibration_compare)
+                st.success(f"Will test {total_combinations} method combinations")
+            else:
+                st.warning("Select at least one method from each category for A/B testing")
     
     # Results status in sidebar
     if st.session_state.results:
@@ -296,13 +408,15 @@ def process_video(uploaded_file, expected_speakers, noise_level, selected_langua
             tmp_file.write(uploaded_file.read())
             tmp_path = tmp_file.name
         
-        # Initialize ensemble manager with versioning enabled
+        # Initialize ensemble manager with versioning enabled and selected methods
         ensemble_manager = EnsembleManager(
             expected_speakers=expected_speakers,
             noise_level=noise_level.lower(),
             target_language=selected_language if selected_language != 'auto' else None,
             scoring_weights=scoring_weights,
             enable_versioning=True,
+            consensus_strategy=st.session_state.consensus_strategy,
+            calibration_method=st.session_state.calibration_method,
             domain="meeting"  # Default domain for UI uploads
         )
         

@@ -11,6 +11,7 @@ import string
 from scipy.sparse import spmatrix
 import numpy.typing as npt
 from utils.metrics_registry import MetricsRegistryManager
+from core.calibration_module import CalibrationModule
 
 class ConfidenceScorer:
     """Calculates multi-dimensional confidence scores for transcript candidates"""
@@ -19,7 +20,8 @@ class ConfidenceScorer:
                  use_registry_calibration: bool = True,
                  domain: str = "general",
                  speaker_count: int = 10,
-                 noise_level: str = "medium") -> None:
+                 noise_level: str = "medium",
+                 calibration_method: str = "registry_based") -> None:
         # Use custom weights if provided, otherwise use defaults
         default_weights = {
             'D': 0.28,  # Diarization consistency
@@ -29,12 +31,26 @@ class ConfidenceScorer:
             'O': 0.10   # Overlap handling
         }
         
-        # Initialize metrics registry for calibrated scoring
+        # Initialize calibration system
         self.use_registry_calibration = use_registry_calibration
         self.domain = domain
         self.speaker_count = speaker_count
         self.noise_level = noise_level
+        self.calibration_method = calibration_method
         
+        # Initialize calibration module
+        try:
+            self.calibration_module = CalibrationModule(
+                default_strategy=calibration_method,
+                domain=domain,
+                speaker_count=speaker_count,
+                noise_level=noise_level
+            )
+        except Exception as e:
+            # Fallback to raw scores if calibration module fails
+            self.calibration_module = CalibrationModule(default_strategy="raw_scores")
+        
+        # Legacy support for existing registry-based calibration
         if self.use_registry_calibration:
             try:
                 self.metrics_registry = MetricsRegistryManager()
@@ -139,12 +155,12 @@ class ConfidenceScorer:
         r_scores = self._calculate_agreement_scores(candidates)
         o_scores = self._calculate_overlap_scores(candidates)
         
-        # Normalize scores to 0.00-1.00 range using calibrated absolute normalization
-        d_scores_norm = self._normalize_scores(d_scores, dimension='D')
-        a_scores_norm = self._normalize_scores(a_scores, dimension='A')
-        l_scores_norm = self._normalize_scores(l_scores, dimension='L')
-        r_scores_norm = self._normalize_scores(r_scores, dimension='R')
-        o_scores_norm = self._normalize_scores(o_scores, dimension='O')
+        # Normalize scores to 0.00-1.00 range using calibration module
+        d_scores_norm = self._calibrate_dimension_scores(d_scores, dimension='D')
+        a_scores_norm = self._calibrate_dimension_scores(a_scores, dimension='A')
+        l_scores_norm = self._calibrate_dimension_scores(l_scores, dimension='L')
+        r_scores_norm = self._calibrate_dimension_scores(r_scores, dimension='R')
+        o_scores_norm = self._calibrate_dimension_scores(o_scores, dimension='O')
         
         # Add scores to candidates and calculate final scores
         scored_candidates = []
@@ -3418,16 +3434,43 @@ class ConfidenceScorer:
         precision = backchannel_segments / short_segments
         return min(precision + 0.3, 1.0)  # Add baseline score
     
-    def _normalize_scores(self, scores: List[float], dimension: Optional[str] = None) -> List[float]:
+    def _calibrate_dimension_scores(self, scores: List[float], dimension: Optional[str] = None) -> List[float]:
         """
-        Normalize scores using calibrated absolute ranges or metrics registry for consistent scoring.
+        Calibrate dimension scores using the CalibrationModule.
         
         Args:
-            scores: Raw scores to normalize
+            scores: Raw scores to calibrate
             dimension: Scoring dimension ('D', 'A', 'L', 'R', 'O') for calibrated normalization
             
         Returns:
-            Normalized scores with absolute meaning across different processing sessions
+            Calibrated scores with consistent meaning across processing sessions
+        """
+        if not scores:
+            return []
+        
+        try:
+            # Use calibration module for score calibration
+            calibration_result = self.calibration_module.calibrate_scores(
+                scores=scores,
+                dimension=dimension,
+                strategy=self.calibration_method
+            )
+            return calibration_result.calibrated_scores
+            
+        except Exception as e:
+            # Fallback to legacy normalization if calibration module fails
+            return self._legacy_normalize_scores(scores, dimension)
+    
+    def _legacy_normalize_scores(self, scores: List[float], dimension: Optional[str] = None) -> List[float]:
+        """
+        Legacy normalization method for backward compatibility.
+        
+        Args:
+            scores: Raw scores to normalize
+            dimension: Scoring dimension for calibrated normalization
+            
+        Returns:
+            Normalized scores using legacy method
         """
         if not scores:
             return []
@@ -3469,7 +3512,7 @@ class ConfidenceScorer:
             final_scores = np.clip(normalized_scores, 0.0, 1.0)
             return final_scores.tolist()
         
-        # Fallback to original calibrated absolute normalization
+        # Fallback to absolute calibration ranges
         calibration_ranges = {
             'D': {'min': 0.15, 'max': 0.95, 'median': 0.65},  # Diarization quality
             'A': {'min': 0.25, 'max': 0.98, 'median': 0.75},  # ASR confidence  
