@@ -13,6 +13,8 @@ import time
 from utils.resilient_api import huggingface_retry
 from core.circuit_breaker import CircuitBreakerOpenException
 from utils.structured_logger import StructuredLogger
+from utils.deterministic_processing import get_deterministic_processor, set_global_seed
+from utils.intelligent_cache import get_cache_manager, cached_operation
 
 # Define base classes and types for both real and mock implementations
 class BaseAnnotation:
@@ -143,10 +145,11 @@ class DiarizationEngine:
             
             def _generate_intelligent_mock_diarization(self, audio_file, min_speakers, max_speakers, seed=None):
                 """Generate mock diarization with pause detection and flexible chunking"""
-                # Set deterministic seed for reproducible mock results
+                # Set deterministic seed for reproducible mock results using new system
                 if seed is not None:
-                    random.seed(seed)
-                    np.random.seed(seed)
+                    set_global_seed("mock_diarization", {"file": str(audio_file), "seed": seed})
+                else:
+                    set_global_seed("mock_diarization", {"file": str(audio_file)})
                 
                 # Create annotation
                 annotation = Annotation()
@@ -196,23 +199,26 @@ class DiarizationEngine:
                 return max(min_chunk, min(chunk_size, max_chunk))
             
             def _create_segments_with_pause_detection(self, duration, num_speakers, chunk_duration):
-                """Create segments with simulated pause detection and VAD"""
+                """Create segments with simulated pause detection and VAD - now fully deterministic"""
                 segments = []
                 current_time = 0.0
                 speaker_id = 0
                 
-                # Simulate natural speech patterns
+                # Simulate natural speech patterns with deterministic values
                 base_segment_length = 8.0  # Base segment length
                 pause_probability = 0.15  # Probability of pause
                 speaker_change_prob = 0.25  # Probability of speaker change
                 
+                # Use deterministic random number generator
+                rng = np.random.RandomState()  # Will use global seed set by deterministic processor
+                
                 while current_time < duration:
-                    # Variable segment length with pauses
-                    segment_length = base_segment_length + random.uniform(-3.0, 7.0)
+                    # Variable segment length with pauses (deterministic)
+                    segment_length = base_segment_length + rng.uniform(-3.0, 7.0)
                     
-                    # Add occasional pauses
-                    if random.random() < pause_probability:
-                        pause_duration = random.uniform(0.5, 2.0)
+                    # Add occasional pauses (deterministic)
+                    if rng.random() < pause_probability:
+                        pause_duration = rng.uniform(0.5, 2.0)
                         current_time += pause_duration
                     
                     # Calculate end time
@@ -225,8 +231,8 @@ class DiarizationEngine:
                             'speaker_id': f"SPEAKER_{speaker_id:02d}"
                         })
                     
-                    # Occasionally change speakers
-                    if random.random() < speaker_change_prob:
+                    # Occasionally change speakers (deterministic)
+                    if rng.random() < speaker_change_prob:
                         speaker_id = (speaker_id + 1) % num_speakers
                     
                     current_time = end_time

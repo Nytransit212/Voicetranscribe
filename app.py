@@ -9,6 +9,9 @@ from core.diarization_engine import DiarizationEngine
 from utils.file_handler import FileHandler
 from utils.transcript_formatter import TranscriptFormatter
 from pages.qc_dashboard import render_qc_dashboard
+from utils.intelligent_cache import get_cache_manager
+from utils.segment_worklist import get_worklist_manager
+from utils.selective_asr import get_selective_asr_processor
 import traceback
 
 st.set_page_config(
@@ -52,20 +55,39 @@ def main():
             'calibration': ['registry_based', 'raw_scores']
         }
     
+    # U7 Upgrade: Initialize U7 system settings
+    if 'u7_enable_caching' not in st.session_state:
+        st.session_state.u7_enable_caching = True
+    if 'u7_enable_selective_reprocessing' not in st.session_state:
+        st.session_state.u7_enable_selective_reprocessing = True
+    if 'u7_confidence_threshold' not in st.session_state:
+        st.session_state.u7_confidence_threshold = 0.65
+    if 'u7_max_segments_for_reprocessing' not in st.session_state:
+        st.session_state.u7_max_segments_for_reprocessing = 10
+    if 'u7_enable_deterministic_processing' not in st.session_state:
+        st.session_state.u7_enable_deterministic_processing = True
+    
     # Sidebar navigation
     st.sidebar.title("🎯 Navigation")
     
     # Page selection
     page_options = {
         'main': '🏠 Main Processing',
-        'qc': '🔍 Quality Control'
+        'qc': '🔍 Quality Control',
+        'u7': '⚡ U7 System Management'
     }
+    
+    current_page_index = 0
+    if st.session_state.current_page == 'qc':
+        current_page_index = 1
+    elif st.session_state.current_page == 'u7':
+        current_page_index = 2
     
     selected_page = st.sidebar.radio(
         "Select Page",
         options=list(page_options.keys()),
         format_func=lambda x: page_options[x],
-        index=0 if st.session_state.current_page == 'main' else 1
+        index=current_page_index
     )
     
     st.session_state.current_page = selected_page
@@ -248,6 +270,65 @@ def main():
             else:
                 st.warning("Select at least one method from each category for A/B testing")
     
+    # U7 System Configuration  
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("⚡ U7 System Configuration", expanded=False):
+        st.markdown("**Advanced system controls:**")
+        
+        # Caching controls
+        enable_caching = st.checkbox(
+            "Enable Intelligent Caching",
+            value=st.session_state.u7_enable_caching,
+            help="Cache expensive operations for significant performance improvement"
+        )
+        st.session_state.u7_enable_caching = enable_caching
+        
+        # Deterministic processing
+        enable_deterministic = st.checkbox(
+            "Enable Deterministic Processing",
+            value=st.session_state.u7_enable_deterministic_processing,
+            help="Ensure identical results for same inputs using fixed seeds"
+        )
+        st.session_state.u7_enable_deterministic_processing = enable_deterministic
+        
+        # Selective reprocessing
+        enable_selective = st.checkbox(
+            "Enable Selective Reprocessing",
+            value=st.session_state.u7_enable_selective_reprocessing,
+            help="Automatically reprocess low-confidence segments for quality improvement"
+        )
+        st.session_state.u7_enable_selective_reprocessing = enable_selective
+        
+        if enable_selective:
+            # Confidence threshold
+            confidence_threshold = st.slider(
+                "Confidence Threshold for Flagging",
+                min_value=0.0,
+                max_value=1.0,
+                value=st.session_state.u7_confidence_threshold,
+                step=0.01,
+                help="Segments below this confidence will be flagged for reprocessing"
+            )
+            st.session_state.u7_confidence_threshold = confidence_threshold
+            
+            # Max segments for reprocessing
+            max_segments = st.number_input(
+                "Max Segments for Reprocessing",
+                min_value=1,
+                max_value=50,
+                value=st.session_state.u7_max_segments_for_reprocessing,
+                help="Maximum number of flagged segments to reprocess automatically"
+            )
+            st.session_state.u7_max_segments_for_reprocessing = max_segments
+        
+        if st.button("🔄 Reset U7 to Defaults"):
+            st.session_state.u7_enable_caching = True
+            st.session_state.u7_enable_selective_reprocessing = True
+            st.session_state.u7_confidence_threshold = 0.65
+            st.session_state.u7_max_segments_for_reprocessing = 10
+            st.session_state.u7_enable_deterministic_processing = True
+            st.rerun()
+    
     # Results status in sidebar
     if st.session_state.results:
         st.sidebar.success("✅ Results Available")
@@ -264,6 +345,8 @@ def main():
         render_main_page()
     elif selected_page == 'qc':
         render_qc_dashboard()
+    elif selected_page == 'u7':
+        render_u7_system_management()
 
 def render_main_page():
     st.title("🎯 Advanced Ensemble Transcription System")
@@ -408,7 +491,7 @@ def process_video(uploaded_file, expected_speakers, noise_level, selected_langua
             tmp_file.write(uploaded_file.read())
             tmp_path = tmp_file.name
         
-        # Initialize ensemble manager with versioning enabled and selected methods
+        # Initialize ensemble manager with versioning enabled, selected methods, and U7 settings
         ensemble_manager = EnsembleManager(
             expected_speakers=expected_speakers,
             noise_level=noise_level.lower(),
@@ -419,6 +502,12 @@ def process_video(uploaded_file, expected_speakers, noise_level, selected_langua
             calibration_method=st.session_state.calibration_method,
             domain="meeting"  # Default domain for UI uploads
         )
+        
+        # U7 Upgrade: Configure U7 settings from session state
+        ensemble_manager.enable_caching = st.session_state.u7_enable_caching
+        ensemble_manager.enable_selective_reprocessing = st.session_state.u7_enable_selective_reprocessing
+        ensemble_manager.confidence_threshold_for_flagging = st.session_state.u7_confidence_threshold
+        ensemble_manager.max_segments_for_selective_reprocessing = st.session_state.u7_max_segments_for_reprocessing
         
         # Process through ensemble pipeline
         def update_progress(step, progress, message):
@@ -732,6 +821,256 @@ def display_results():
         st.session_state.uploaded_file = None
         st.session_state.processing = False
         st.rerun()
+
+def render_u7_system_management():
+    """Render U7 System Management page with cache management, worklist review, and manual flagging"""
+    st.title("⚡ U7 System Management")
+    st.markdown("Advanced system controls for caching, worklist management, and targeted reprocessing")
+    
+    # Initialize U7 managers
+    cache_manager = get_cache_manager()
+    worklist_manager = get_worklist_manager()
+    selective_asr_processor = get_selective_asr_processor()
+    
+    # Create tabs for different U7 features
+    tab1, tab2, tab3, tab4 = st.tabs(["🗄️ Cache Management", "📋 Worklist Review", "🎯 Manual Flagging", "📊 System Status"])
+    
+    with tab1:
+        st.header("🗄️ Intelligent Cache Management")
+        
+        # Cache statistics
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Cache Statistics")
+            try:
+                stats = cache_manager.get_statistics()
+                
+                st.metric("Memory Cache Hits", stats.get('memory_hits', 0))
+                st.metric("Disk Cache Hits", stats.get('disk_hits', 0))
+                st.metric("Cache Misses", stats.get('misses', 0))
+                st.metric("Cache Sets", stats.get('cache_sets', 0))
+                
+                # Calculate hit rate
+                total_requests = stats.get('memory_hits', 0) + stats.get('disk_hits', 0) + stats.get('misses', 0)
+                if total_requests > 0:
+                    hit_rate = (stats.get('memory_hits', 0) + stats.get('disk_hits', 0)) / total_requests * 100
+                    st.metric("Hit Rate", f"{hit_rate:.1f}%")
+                
+            except Exception as e:
+                st.error(f"Error retrieving cache statistics: {e}")
+        
+        with col2:
+            st.subheader("Cache Management")
+            
+            if st.button("🧹 Clear All Cache", type="secondary"):
+                try:
+                    cache_manager.clear_all()
+                    st.success("All cache cleared successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error clearing cache: {e}")
+            
+            if st.button("📊 Refresh Cache Stats", type="primary"):
+                st.rerun()
+            
+            # Cache size information
+            try:
+                cache_info = cache_manager.get_cache_info()
+                st.info(f"**Cache Directory:** {cache_info.get('cache_dir', 'N/A')}")
+                st.info(f"**Max Memory Cache:** {cache_info.get('max_memory_mb', 'N/A')} MB")
+                st.info(f"**Max Disk Cache:** {cache_info.get('max_disk_gb', 'N/A')} GB")
+            except Exception as e:
+                st.warning(f"Could not retrieve cache info: {e}")
+    
+    with tab2:
+        st.header("📋 Segment Worklist Review")
+        
+        # Display existing worklists
+        try:
+            available_worklists = worklist_manager.list_available_worklists()
+            
+            if available_worklists:
+                st.subheader("Available Worklists")
+                
+                selected_worklist = st.selectbox(
+                    "Select a worklist to review:",
+                    options=available_worklists,
+                    format_func=lambda x: f"{x['file_name']} - {x['total_segments_flagged']} flagged segments"
+                )
+                
+                if selected_worklist:
+                    # Load and display worklist details
+                    worklist_data = worklist_manager.load_worklist(selected_worklist['file_path'])
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("Total Segments", len(worklist_data.get('segments', [])))
+                    with col2:
+                        st.metric("Flagged Segments", worklist_data.get('total_segments_flagged', 0))
+                    with col3:
+                        st.metric("Average Confidence", f"{worklist_data.get('average_confidence', 0):.2f}")
+                    
+                    # Display flagged segments
+                    flagged_segments = [seg for seg in worklist_data.get('segments', []) if seg.get('flagged', False)]
+                    
+                    if flagged_segments:
+                        st.subheader("Flagged Segments")
+                        
+                        for i, segment in enumerate(flagged_segments):
+                            with st.expander(f"Segment {i+1}: {segment.get('start', 0):.1f}s - {segment.get('end', 0):.1f}s (Confidence: {segment.get('confidence', 0):.2f})"):
+                                st.text(f"Text: {segment.get('text', 'N/A')}")
+                                st.text(f"Speaker: {segment.get('speaker_id', 'N/A')}")
+                                st.text(f"Reason: {segment.get('flagging_reason', 'N/A')}")
+                                
+                                # Option to unflag segment
+                                if st.button(f"🔓 Unflag Segment {i+1}", key=f"unflag_{i}"):
+                                    try:
+                                        worklist_manager.unflag_segment(selected_worklist['file_path'], segment.get('segment_id'))
+                                        st.success("Segment unflagged successfully!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error unflagging segment: {e}")
+                    else:
+                        st.info("No flagged segments in this worklist")
+            else:
+                st.info("No worklists available. Process a video first to generate worklists.")
+                
+        except Exception as e:
+            st.error(f"Error loading worklists: {e}")
+    
+    with tab3:
+        st.header("🎯 Manual Segment Flagging")
+        
+        # Check if we have results to work with
+        if 'results' not in st.session_state or not st.session_state.results:
+            st.warning("⚠️ No transcript results available. Please process a video first from the main page.")
+        else:
+            results = st.session_state.results
+            master_transcript = results['winner_transcript']
+            segments = master_transcript.get('segments', [])
+            
+            st.subheader("Select Segments to Flag for Reprocessing")
+            
+            # Filter segments by confidence
+            confidence_filter = st.slider(
+                "Show segments with confidence below:",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.8,
+                step=0.05,
+                help="Display segments below this confidence threshold"
+            )
+            
+            filtered_segments = [seg for seg in segments if seg.get('confidence', 1.0) <= confidence_filter]
+            
+            if filtered_segments:
+                st.info(f"Found {len(filtered_segments)} segments below confidence threshold")
+                
+                # Display segments for manual flagging
+                for i, segment in enumerate(filtered_segments):
+                    with st.expander(f"Segment {i+1}: {segment.get('start', 0):.1f}s - {segment.get('end', 0):.1f}s (Confidence: {segment.get('confidence', 0):.2f})"):
+                        st.text(f"Speaker: {segment.get('speaker', 'Unknown')}")
+                        st.text_area(f"Text:", value=segment.get('text', ''), key=f"text_{i}", disabled=True)
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            flag_reason = st.selectbox(
+                                "Flagging Reason:",
+                                options=["Low Confidence", "Transcription Error", "Speaker Mismatch", "Audio Quality", "Custom"],
+                                key=f"reason_{i}"
+                            )
+                        
+                        with col2:
+                            if st.button(f"🚩 Flag for Reprocessing", key=f"flag_{i}", type="secondary"):
+                                try:
+                                    # Add segment to worklist manually
+                                    worklist_manager.flag_segment_manually(
+                                        segment_id=f"manual_{i}_{segment.get('start', 0)}",
+                                        start=segment.get('start', 0),
+                                        end=segment.get('end', 0),
+                                        text=segment.get('text', ''),
+                                        confidence=segment.get('confidence', 0),
+                                        speaker_id=segment.get('speaker_id', 'unknown'),
+                                        reason=flag_reason
+                                    )
+                                    st.success(f"Segment {i+1} flagged successfully!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error flagging segment: {e}")
+            else:
+                st.info("No segments found below the confidence threshold")
+    
+    with tab4:
+        st.header("📊 U7 System Status")
+        
+        # Display U7 system configuration
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Current Configuration")
+            
+            config_data = {
+                "Intelligent Caching": "✅ Enabled" if st.session_state.u7_enable_caching else "❌ Disabled",
+                "Deterministic Processing": "✅ Enabled" if st.session_state.u7_enable_deterministic_processing else "❌ Disabled", 
+                "Selective Reprocessing": "✅ Enabled" if st.session_state.u7_enable_selective_reprocessing else "❌ Disabled",
+                "Confidence Threshold": f"{st.session_state.u7_confidence_threshold:.2f}",
+                "Max Segments for Reprocessing": str(st.session_state.u7_max_segments_for_reprocessing)
+            }
+            
+            for key, value in config_data.items():
+                st.text(f"**{key}:** {value}")
+        
+        with col2:
+            st.subheader("System Performance")
+            
+            # Try to get performance metrics
+            try:
+                # Display worklist statistics
+                worklist_stats = worklist_manager.get_statistics()
+                
+                st.metric("Total Files Processed", worklist_stats.get('total_files_processed', 0))
+                st.metric("Total Segments Flagged", worklist_stats.get('total_segments_flagged', 0))
+                st.metric("Total Segments Reprocessed", worklist_stats.get('total_segments_reprocessed', 0))
+                st.metric("Total Segments Improved", worklist_stats.get('total_segments_improved', 0))
+                
+                avg_improvement = worklist_stats.get('average_improvement_score', 0)
+                if avg_improvement > 0:
+                    st.metric("Average Improvement Score", f"{avg_improvement:.3f}")
+                
+            except Exception as e:
+                st.warning(f"Could not retrieve performance metrics: {e}")
+        
+        # System health check
+        st.subheader("System Health Check")
+        
+        health_checks = []
+        
+        # Check cache manager
+        try:
+            cache_manager.get_statistics()
+            health_checks.append(("Cache Manager", "✅ Healthy"))
+        except Exception as e:
+            health_checks.append(("Cache Manager", f"❌ Error: {e}"))
+        
+        # Check worklist manager
+        try:
+            worklist_manager.get_statistics()
+            health_checks.append(("Worklist Manager", "✅ Healthy"))
+        except Exception as e:
+            health_checks.append(("Worklist Manager", f"❌ Error: {e}"))
+        
+        # Check selective ASR processor
+        try:
+            selective_asr_processor.get_status()
+            health_checks.append(("Selective ASR Processor", "✅ Healthy"))
+        except Exception as e:
+            health_checks.append(("Selective ASR Processor", f"❌ Error: {e}"))
+        
+        for component, status in health_checks:
+            st.text(f"**{component}:** {status}")
 
 if __name__ == "__main__":
     main()

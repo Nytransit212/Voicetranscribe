@@ -20,6 +20,11 @@ from utils.profiling_manager import get_profiling_manager
 from utils.observability_reporter import get_observability_reporter
 from utils.dvc_versioning import DVCVersioningManager
 from utils.metrics_registry import MetricsRegistryManager
+from utils.intelligent_cache import get_cache_manager, cached_operation
+from utils.deterministic_processing import get_deterministic_processor, ensure_deterministic_run_id
+from utils.segment_worklist import get_worklist_manager, SegmentWorklistManager
+from utils.selective_asr import get_selective_asr_processor, SelectiveASRProcessor
+from utils.advanced_asr_scheduler import get_asr_scheduler, AdvancedASRScheduler
 
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
@@ -33,8 +38,22 @@ class EnsembleManager:
         self.consensus_strategy = consensus_strategy
         self.calibration_method = calibration_method
         
-        # Generate unique run ID for this processing session
-        self.run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        # U7 Upgrade: Initialize deterministic processing and other systems first
+        # (run_id will be set later based on input for deterministic processing)
+        self.run_id = None  # Will be set in process_video method
+        
+        # Initialize U7 systems
+        self.cache_manager = get_cache_manager()
+        self.deterministic_processor = get_deterministic_processor()
+        self.worklist_manager = get_worklist_manager()
+        self.selective_asr_processor = get_selective_asr_processor()
+        self.asr_scheduler = get_asr_scheduler()
+        
+        # U7 configuration
+        self.enable_caching = True
+        self.enable_selective_reprocessing = True
+        self.confidence_threshold_for_flagging = 0.65
+        self.max_segments_for_selective_reprocessing = 10
         
         # Initialize enhanced observability system
         self.obs_manager = initialize_observability(
@@ -118,6 +137,30 @@ class EnsembleManager:
                                          context={'video_path': video_path, 'expected_speakers': self.expected_speakers, 'noise_level': self.noise_level})
         
         try:
+            # U7 Step 0: Generate deterministic run_id based on input hash and configuration
+            processing_config = {
+                'expected_speakers': self.expected_speakers,
+                'noise_level': self.noise_level,
+                'target_language': self.target_language,
+                'domain': self.domain,
+                'consensus_strategy': self.consensus_strategy,
+                'calibration_method': self.calibration_method,
+                'confidence_threshold': self.confidence_threshold_for_flagging
+            }
+            
+            self.run_id = ensure_deterministic_run_id(video_path, processing_config)
+            self.structured_logger = create_enhanced_logger("ensemble_manager", run_id=self.run_id)
+            
+            self.structured_logger.info("U7: Generated deterministic run_id", 
+                                      context={'run_id': self.run_id, 'config_hash': str(hash(str(processing_config)))})
+            
+            # Check if complete result is cached
+            if self.enable_caching:
+                cached_result = self.cache_manager.get("complete_ensemble_processing", video_path, processing_config)
+                if cached_result is not None:
+                    self.structured_logger.info("U7: Complete processing result found in cache - returning cached result")
+                    return cached_result
+            
             # Step 0: Track input video (versioning)
             if self.enable_versioning and self.dvc_manager:
                 tracked_input_path, input_artifact = self.dvc_manager.track_input_file(video_path, self.run_id)
@@ -250,6 +293,69 @@ class EnsembleManager:
                                                     'consensus_strategy': consensus_result.consensus_method,
                                                     'consensus_confidence': consensus_result.consensus_confidence
                                                 })
+            
+            # U7 Step 6.5: Worklist Creation and Selective Reprocessing (87-90%)
+            if progress_callback:
+                progress_callback("F2", 87, "Creating segment worklist for quality improvement...")
+            
+            stage_start_time = time.time()
+            self.structured_logger.stage_start("worklist_creation", "Creating segment worklist and selective reprocessing")
+            
+            # Create worklist from candidates and winner
+            try:
+                worklist_entry = self.worklist_manager.create_worklist_from_candidates(
+                    file_path=video_path,
+                    run_id=self.run_id,
+                    candidates=scored_candidates,
+                    winner_candidate=winner
+                )
+                
+                self.structured_logger.info("U7: Segment worklist created", 
+                                          context={'flagged_segments': worklist_entry.total_segments_flagged,
+                                                 'confidence_threshold': self.confidence_threshold_for_flagging})
+                
+                # Selective reprocessing if enabled and flagged segments exist
+                if (self.enable_selective_reprocessing and 
+                    worklist_entry.total_segments_flagged > 0 and 
+                    worklist_entry.total_segments_flagged <= self.max_segments_for_selective_reprocessing):
+                    
+                    if progress_callback:
+                        progress_callback("F3", 89, f"Reprocessing {worklist_entry.total_segments_flagged} flagged segments...")
+                    
+                    self.structured_logger.info("U7: Starting selective reprocessing", 
+                                              context={'segments_to_reprocess': worklist_entry.total_segments_flagged})
+                    
+                    # Perform selective reprocessing
+                    reprocess_results = self.selective_asr_processor.process_flagged_segments(
+                        file_path=video_path,
+                        run_id=self.run_id,
+                        max_segments=self.max_segments_for_selective_reprocessing,
+                        progress_callback=lambda msg, pct, detail: progress_callback("F3", 89 + int(pct * 0.01), detail) if progress_callback else None
+                    )
+                    
+                    if 'error' not in reprocess_results:
+                        self.structured_logger.info("U7: Selective reprocessing completed", 
+                                                   context={'segments_improved': reprocess_results.get('segments_improved', 0),
+                                                          'total_improvement': reprocess_results.get('total_improvement', 0.0)})
+                    else:
+                        self.structured_logger.warning("U7: Selective reprocessing failed", 
+                                                     context={'error': reprocess_results['error']})
+                else:
+                    if worklist_entry.total_segments_flagged > self.max_segments_for_selective_reprocessing:
+                        self.structured_logger.info("U7: Skipping selective reprocessing - too many flagged segments", 
+                                                   context={'flagged': worklist_entry.total_segments_flagged, 
+                                                          'max_allowed': self.max_segments_for_selective_reprocessing})
+                    elif not self.enable_selective_reprocessing:
+                        self.structured_logger.info("U7: Selective reprocessing disabled")
+                    else:
+                        self.structured_logger.info("U7: No segments flagged for reprocessing")
+                
+            except Exception as e:
+                self.structured_logger.warning(f"U7: Worklist creation/selective reprocessing failed: {e}")
+            
+            worklist_time = time.time() - stage_start_time
+            self.structured_logger.stage_complete("worklist_creation", "Worklist creation and selective reprocessing completed", 
+                                                duration=worklist_time)
             
             # Step 7: Output Generation (90-100%)
             if progress_callback:
@@ -408,6 +514,11 @@ class EnsembleManager:
                 metrics=final_metrics,
                 report_files=list(report_files.keys())
             )
+            
+            # U7: Cache the complete processing result for future use
+            if self.enable_caching:
+                self.cache_manager.set("complete_ensemble_processing", results, video_path, processing_config)
+                self.structured_logger.info("U7: Complete processing result cached for future reuse")
             
             return results
             
