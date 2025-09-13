@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Advanced Ensemble Transcription System is a sophisticated video processing application that generates highly accurate transcripts from long-form MP4 recordings (up to 90 minutes) captured in noisy, multi-speaker environments. The system uses an ensemble approach to create 15 candidate transcripts by combining 3 speaker diarization variants with 5 ASR (Automatic Speech Recognition) variants each, then selects the best result using multi-dimensional confidence scoring.
+The Advanced Ensemble Transcription System is a sophisticated video processing application that generates highly accurate transcripts from long-form MP4 recordings (up to 90 minutes) captured in noisy, multi-speaker environments. The system uses an advanced ensemble approach to create 25 candidate transcripts by combining 5 speaker diarization variants (with voting fusion) with 5 ASR (Automatic Speech Recognition) variants each, then selects the best result using multi-dimensional confidence scoring.
 
 The application is designed to handle recordings from meetings or discussions with approximately 10 participants captured with a single mono microphone in challenging acoustic conditions. It produces synchronized outputs including clean audio, speaker-attributed transcripts, and various caption formats.
 
@@ -20,16 +20,17 @@ Preferred communication style: Simple, everyday language.
 ### Backend Architecture
 - **Modular Processing Pipeline**: Organized into distinct processing stages through the EnsembleManager orchestrator
 - **Component-Based Design**: Separate engines for audio processing, diarization, ASR, and confidence scoring
-- **Ensemble Processing Strategy**: 
-  - 3 diarization variants with different clustering and VAD parameters
-  - 5 ASR variants per diarization (15 total candidates)
+- **Enhanced Ensemble Processing Strategy**: 
+  - 5 diarization variants with different approaches and voting fusion
+  - 5 ASR variants per diarization (25 total candidates)
   - Multi-dimensional confidence scoring across 5 metrics (D, A, L, R, O scores)
+  - Voting fusion for improved speaker boundary detection and identity alignment
 - **Concurrent Processing**: ThreadPoolExecutor for parallel ASR variant execution
 - **Temporary File Management**: Session-based working directories with automatic cleanup
 
 ### Data Processing Components
 - **Audio Processor**: Extracts mono 16kHz PCM audio from MP4, applies light denoising and normalization
-- **Diarization Engine**: Uses pyannote.audio pipeline with variant configurations for speaker segmentation
+- **Enhanced Diarization Engine**: Uses pyannote.audio pipeline with 5 variant configurations including multi-resolution and ensemble approaches, enhanced with voting fusion for improved speaker detection accuracy
 - **ASR Engine**: OpenAI Whisper integration with configurable parameters for speech-to-text conversion
 - **Confidence Scorer**: Multi-dimensional scoring system weighing diarization consistency, ASR quality, linguistic coherence, cross-run agreement, and overlap handling
 

@@ -60,21 +60,21 @@ class EnsembleManager:
             
             # Step 3: Diarization Variants (15-35%)
             if progress_callback:
-                progress_callback("C", 20, "Creating 3 diarization variants...")
+                progress_callback("C", 20, "Creating 5 diarization variants with voting fusion...")
             
-            diarization_variants = self.diarization_engine.create_diarization_variants(clean_audio_path)
+            diarization_variants = self.diarization_engine.create_diarization_variants(clean_audio_path, use_voting_fusion=True)
             
             if progress_callback:
-                progress_callback("C", 35, f"Diarization complete - {len(diarization_variants)} variants created")
+                progress_callback("C", 35, f"Diarization complete - {len(diarization_variants)} variants with fusion created")
             
             # Step 4: ASR Ensemble (35-75%)
             if progress_callback:
-                progress_callback("D", 40, "Running ASR ensemble (5 passes per diarization)...")
+                progress_callback("D", 40, "Running expanded ASR ensemble (5 passes per diarization)...")
             
             candidates = self.asr_engine.run_asr_ensemble(clean_audio_path, diarization_variants)
             
             if progress_callback:
-                progress_callback("D", 75, f"ASR ensemble complete - {len(candidates)} candidates generated")
+                progress_callback("D", 75, f"ASR ensemble complete - {len(candidates)} candidates generated (5×5 matrix)")
             
             # Step 5: Confidence Scoring (75-85%)
             if progress_callback:
@@ -128,6 +128,8 @@ class EnsembleManager:
                     'estimated_noise_level': estimated_noise,
                     'expected_speakers': self.expected_speakers,
                     'candidates_generated': len(scored_candidates),
+                'diarization_variants': len(diarization_variants),
+                'voting_fusion_applied': any(v.get('fusion_applied', False) for v in diarization_variants),
                     'processing_timestamp': time.time()
                 }
             }
