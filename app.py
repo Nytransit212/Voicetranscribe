@@ -421,12 +421,6 @@ def render_main_page():
     
     if st.session_state.drive_file_info:
         
-        # Simple button test
-        st.write("**Button Test:**")
-        if st.button("TEST BUTTON - Click Me", key="test_button"):
-            st.write("✅ TEST BUTTON WORKS!")
-            st.balloons()
-        
         # Processing parameters
         st.header("⚙️ Processing Configuration")
         col1, col2 = st.columns(2)
@@ -451,8 +445,6 @@ def render_main_page():
         # Process button
         if st.button("🚀 Start Ensemble Processing", disabled=st.session_state.processing, key="start_processing"):
             st.session_state.processing = True
-            st.write("Debug: Processing button clicked!")
-            st.write(f"Debug: Drive file info = {st.session_state.drive_file_info}")
             try:
                 process_video_from_drive(st.session_state.drive_file_info, expected_speakers, noise_level, st.session_state.scoring_weights)
             except Exception as e:

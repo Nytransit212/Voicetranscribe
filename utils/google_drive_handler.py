@@ -232,7 +232,8 @@ class GoogleDriveHandler:
                 if progress_callback:
                     progress_callback(file_path.stat().st_size, file_path.stat().st_size)
                 
-                # File remains private - no public sharing
+                # Ensure service account has read access
+                self._ensure_service_account_access(file_obj['id'])
                 
                 return {
                     'status': 'success',
@@ -300,7 +301,8 @@ class GoogleDriveHandler:
                         else:
                             raise
                 
-                # File remains private - no public sharing
+                # Ensure service account has read access
+                self._ensure_service_account_access(response['id'])
                 
                 logger.info(f"Upload completed: {response['name']}")
                 
@@ -317,6 +319,42 @@ class GoogleDriveHandler:
             logger.error(f"Resumable upload failed: {e}")
             raise
     
+    
+    def _ensure_service_account_access(self, file_id: str) -> None:
+        """Ensure the service account has read access to the file"""
+        try:
+            if self.service is None:
+                logger.warning("Cannot ensure service account access: service not initialized")
+                return
+            
+            # Get current service account email
+            service_account_email = self.credentials.service_account_email
+            
+            # Check if service account already has access
+            permissions = self.service.permissions().list(fileId=file_id).execute()
+            
+            for permission in permissions.get('permissions', []):
+                if permission.get('emailAddress') == service_account_email:
+                    logger.debug(f"Service account already has access to {file_id}")
+                    return
+            
+            # Grant read access to service account
+            permission = {
+                'type': 'user',
+                'role': 'reader',
+                'emailAddress': service_account_email
+            }
+            
+            self.service.permissions().create(
+                fileId=file_id,
+                body=permission,
+                sendNotificationEmail=False
+            ).execute()
+            
+            logger.info(f"Granted read access to service account for file {file_id}")
+            
+        except Exception as e:
+            logger.warning(f"Could not ensure service account access to {file_id}: {e}")
     
     def download_file(
         self, 
