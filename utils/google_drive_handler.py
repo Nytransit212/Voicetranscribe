@@ -44,15 +44,28 @@ class GoogleDriveHandler:
         """Initialize Google Drive API client using service account credentials"""
         try:
             # Get service account credentials from environment variable
-            service_account_key = os.getenv('GOOGLE_SERVICE_ACCOUNT_KEY')
+            service_account_key = os.getenv('GOOGLE_SERVICE_ACCOUNT_KEY', '').strip()
+            
+            # Check if environment variable is properly set
             if not service_account_key:
-                raise ValueError("GOOGLE_SERVICE_ACCOUNT_KEY environment variable not set")
+                raise ValueError("GOOGLE_SERVICE_ACCOUNT_KEY environment variable is not set or is empty")
+            
+            # Validate that it looks like JSON
+            if not service_account_key.startswith('{') or not service_account_key.endswith('}'):
+                raise ValueError("GOOGLE_SERVICE_ACCOUNT_KEY does not appear to contain valid JSON (should start with '{' and end with '}')")
             
             # Parse JSON credentials
             try:
                 service_account_info = json.loads(service_account_key)
             except json.JSONDecodeError as e:
+                logger.error(f"JSON parsing failed. First 100 chars of key: {service_account_key[:100]}")
                 raise ValueError(f"Invalid JSON in GOOGLE_SERVICE_ACCOUNT_KEY: {e}")
+            
+            # Validate required fields in service account JSON
+            required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email']
+            missing_fields = [field for field in required_fields if field not in service_account_info]
+            if missing_fields:
+                raise ValueError(f"Service account JSON is missing required fields: {missing_fields}")
             
             # Create credentials from service account info
             self.credentials = service_account.Credentials.from_service_account_info(
@@ -64,15 +77,20 @@ class GoogleDriveHandler:
             self.service = build('drive', 'v3', credentials=self.credentials)
             
             # Get target folder ID from environment variable
-            self.folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
+            self.folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID', '').strip()
             if not self.folder_id:
                 logger.warning("GOOGLE_DRIVE_FOLDER_ID not set - files will be uploaded to root")
+            else:
+                logger.info(f"Google Drive folder ID configured: {self.folder_id}")
             
             logger.info("Google Drive client initialized successfully")
             
         except Exception as e:
             logger.error(f"Failed to initialize Google Drive client: {e}")
-            raise
+            # Don't re-raise the exception - allow the app to continue without Google Drive
+            self.service = None
+            self.credentials = None
+            self.folder_id = None
     
     def verify_credentials(self) -> Dict[str, Any]:
         """Verify service account credentials and folder access"""
@@ -474,11 +492,19 @@ class GoogleDriveHandler:
 # Singleton instance for easy access
 _drive_handler = None
 
-def get_drive_handler() -> GoogleDriveHandler:
-    """Get singleton Google Drive handler instance"""
+def get_drive_handler() -> Optional[GoogleDriveHandler]:
+    """Get singleton Google Drive handler instance, returns None if not available"""
     global _drive_handler
     if _drive_handler is None:
-        _drive_handler = GoogleDriveHandler()
+        try:
+            _drive_handler = GoogleDriveHandler()
+            # Verify that the handler was properly initialized
+            if _drive_handler.service is None:
+                logger.warning("Google Drive handler created but service is not available")
+                return None
+        except Exception as e:
+            logger.warning(f"Google Drive handler not available: {e}")
+            return None
     return _drive_handler
 
 # Convenience functions for Streamlit integration
@@ -499,6 +525,15 @@ def upload_file_to_drive(
         Upload result dictionary
     """
     drive_handler = get_drive_handler()
+    
+    if drive_handler is None:
+        error_msg = "Google Drive is not available - please check your configuration"
+        if show_progress:
+            st.error(f"❌ {error_msg}")
+        return {
+            'status': 'error',
+            'error': error_msg
+        }
     
     if show_progress:
         progress_bar = st.progress(0)
@@ -542,6 +577,11 @@ def download_file_from_drive(
     """
     drive_handler = get_drive_handler()
     
+    if drive_handler is None:
+        if show_progress:
+            st.error("❌ Google Drive is not available - please check your configuration")
+        return False
+    
     # Extract file ID if URL provided
     file_id = drive_handler.extract_file_id_from_url(file_id_or_url)
     if not file_id:
@@ -577,6 +617,11 @@ def verify_drive_setup() -> Dict[str, Any]:
     """Verify Google Drive setup and return status"""
     try:
         drive_handler = get_drive_handler()
+        if drive_handler is None:
+            return {
+                'status': 'error',
+                'error': 'Google Drive handler not available - check service account configuration'
+            }
         return drive_handler.verify_credentials()
     except Exception as e:
         return {
