@@ -27,10 +27,11 @@ logger = logging.getLogger(__name__)
 class GoogleDriveHandler:
     """Handles Google Drive operations with service account authentication"""
     
-    # Google Drive API scopes
+    # Google Drive API scopes - includes readonly for downloading shared files
     SCOPES = [
-        'https://www.googleapis.com/auth/drive.file',
-        'https://www.googleapis.com/auth/drive.metadata'
+        'https://www.googleapis.com/auth/drive.readonly',  # Allows downloading shared files
+        'https://www.googleapis.com/auth/drive.file',      # Allows uploading new files
+        'https://www.googleapis.com/auth/drive.metadata'   # Allows reading metadata
     ]
     
     def __init__(self):
@@ -90,9 +91,6 @@ class GoogleDriveHandler:
                 logger.info(f"Google Drive folder ID configured: {self.folder_id}")
             
             logger.info("Google Drive client initialized successfully")
-            
-            # Automatically ensure folder is shared with service account
-            self._ensure_folder_shared_with_service_account()
             
         except Exception as e:
             logger.error(f"Failed to initialize Google Drive client: {e}")
@@ -396,7 +394,7 @@ class GoogleDriveHandler:
             logger.info(f"Downloading {file_metadata['name']} ({file_size:,} bytes)")
             
             # Create download request
-            request = self.service.files().get_media(fileId=file_id)
+            request = self.service.files().get_media(fileId=file_id, supportsAllDrives=True)
             
             # Download with progress tracking
             with open(local_path, 'wb') as local_file:
