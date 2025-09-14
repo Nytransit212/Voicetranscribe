@@ -408,10 +408,6 @@ def render_main_page():
     
     upload_complete = False
     
-    # Debug: Show current state
-    if upload_result:
-        st.write(f"Debug: upload_result status = {upload_result.get('status', 'None')}")
-    
     if upload_result and upload_result['status'] == 'success':
         st.session_state.drive_file_info = upload_result
         upload_complete = True
@@ -425,9 +421,6 @@ def render_main_page():
             st.info("📤 File uploaded to Google Drive")
         else:
             st.info("🔗 Using existing Google Drive file")
-            
-        # Force rerun to update UI
-        st.rerun()
     
     if upload_complete and st.session_state.drive_file_info:
         
@@ -454,7 +447,13 @@ def render_main_page():
 
         # Process button
         if st.button("🚀 Start Ensemble Processing", disabled=st.session_state.processing):
-            process_video_from_drive(st.session_state.drive_file_info, expected_speakers, noise_level, st.session_state.scoring_weights)
+            st.write("Debug: Processing button clicked!")
+            st.write(f"Debug: Drive file info = {st.session_state.drive_file_info}")
+            try:
+                process_video_from_drive(st.session_state.drive_file_info, expected_speakers, noise_level, st.session_state.scoring_weights)
+            except Exception as e:
+                st.error(f"Processing error: {e}")
+                st.code(traceback.format_exc())
 
     # Display processing status
     if st.session_state.processing:
