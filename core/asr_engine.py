@@ -17,11 +17,12 @@ from utils.observability import get_observability_manager, trace_stage, track_co
 from utils.reliability_config import get_concurrency_config, get_timeout_config
 from utils.resilient_api import openai_retry
 from core.circuit_breaker import CircuitBreakerOpenException
+from core.decode_strategy_enhancer import DecodeStrategyEnhancer, DecodeResult
 
 class ASREngine:
     """Handles Automatic Speech Recognition with ensemble variants"""
     
-    def __init__(self):
+    def __init__(self, enable_enhanced_decode: bool = True):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.model = "whisper-1"  # OpenAI Whisper model for audio transcription
         
@@ -32,6 +33,19 @@ class ASREngine:
         # Initialize enhanced observability
         self.obs_manager = get_observability_manager()
         self.structured_logger = create_enhanced_logger("asr_engine")
+        
+        # Initialize enhanced decode strategy enhancer
+        self.enable_enhanced_decode = enable_enhanced_decode
+        if self.enable_enhanced_decode:
+            try:
+                self.decode_enhancer = DecodeStrategyEnhancer()
+                print("✅ Enhanced decode strategy system initialized")
+            except Exception as e:
+                print(f"⚠️ Failed to initialize enhanced decode system: {e}")
+                self.enable_enhanced_decode = False
+                self.decode_enhancer = None
+        else:
+            self.decode_enhancer = None
         
         # Configure basic logging for detailed retry tracking
         self.logger = logging.getLogger(__name__)
@@ -166,7 +180,7 @@ class ASREngine:
     
     def _create_asr_variants(self, audio_path: str, diarization_data: Dict[str, Any], target_language: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Create 5 ASR variants for a single diarization result using parallel processing.
+        Create 5 ASR variants for a single diarization result using enhanced decode strategies or traditional processing.
         
         Args:
             audio_path: Path to audio file
@@ -175,6 +189,74 @@ class ASREngine:
             
         Returns:
             List of 5 ASR variant results
+        """
+        # Use enhanced decode strategy system if available
+        if self.enable_enhanced_decode and self.decode_enhancer:
+            return self._create_enhanced_asr_variants(audio_path, diarization_data, target_language)
+        else:
+            return self._create_traditional_asr_variants(audio_path, diarization_data, target_language)
+    
+    def _create_enhanced_asr_variants(self, audio_path: str, diarization_data: Dict[str, Any], target_language: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Create ASR variants using enhanced decode strategy system with domain lexicon and context awareness.
+        
+        Args:
+            audio_path: Path to audio file
+            diarization_data: Single diarization variant data
+            target_language: Optional target language for transcription
+            
+        Returns:
+            List of ASR variant results with enhanced decode information
+        """
+        print(f"  Running enhanced decode strategies with domain lexicon...")
+        start_time = time.time()
+        
+        try:
+            # Use decode strategy enhancer to process audio with enhanced strategies
+            if not self.decode_enhancer:
+                raise Exception("Decode enhancer not initialized")
+            
+            decode_results = self.decode_enhancer.process_audio_with_enhanced_decode(
+                audio_path=audio_path,
+                diarization_data=diarization_data,
+                asr_variant_id=diarization_data.get('variant_id', 1),
+                target_language=target_language
+            )
+            
+            # Convert decode results to expected ASR variant format
+            variants = []
+            for i, decode_result in enumerate(decode_results, 1):
+                variant = self._convert_decode_result_to_asr_variant(
+                    decode_result, diarization_data, i
+                )
+                variants.append(variant)
+            
+            elapsed = time.time() - start_time
+            print(f"  ✓ Enhanced decode strategies completed in {elapsed:.1f}s ({len(variants)} strategies executed)")
+            
+            # Log enhanced decode metrics
+            if self.decode_enhancer:
+                session_summary = self.decode_enhancer.get_session_summary()
+                self.structured_logger.info("Enhanced decode session summary", context=session_summary)
+            
+            return variants
+            
+        except Exception as e:
+            self.structured_logger.error(f"Enhanced decode failed, falling back to traditional: {e}")
+            print(f"  ⚠ Enhanced decode failed, falling back to traditional ASR: {e}")
+            return self._create_traditional_asr_variants(audio_path, diarization_data, target_language)
+    
+    def _create_traditional_asr_variants(self, audio_path: str, diarization_data: Dict[str, Any], target_language: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Create ASR variants using traditional approach (fallback method).
+        
+        Args:
+            audio_path: Path to audio file
+            diarization_data: Single diarization variant data
+            target_language: Optional target language for transcription
+            
+        Returns:
+            List of 5 traditional ASR variant results
         """
         # Define 5 different ASR parameter sets with language support
         # Implement proper auto-detection ensemble when target_language is None
@@ -224,7 +306,7 @@ class ASREngine:
         ]
         
         # Run ASR variants in parallel with rate limiting
-        print(f"  Running 5 ASR variants in parallel...")
+        print(f"  Running 5 traditional ASR variants in parallel...")
         start_time = time.time()
         
         # Use bounded thread pool executor with configurable concurrency and queue limits
@@ -272,6 +354,65 @@ class ASREngine:
         print(f"  ✓ All ASR variants completed in {elapsed:.1f}s ({len(variants)}/{len(asr_configs)} successful)")
         
         return variants
+    
+    def _convert_decode_result_to_asr_variant(self, decode_result: 'DecodeResult', diarization_data: Dict[str, Any], variant_id: int) -> Dict[str, Any]:
+        """
+        Convert a DecodeResult to the expected ASR variant format for compatibility with the rest of the system.
+        
+        Args:
+            decode_result: Enhanced decode result
+            diarization_data: Diarization data for this variant
+            variant_id: Sequential variant ID
+            
+        Returns:
+            Dictionary in expected ASR variant format
+        """
+        # Create ASR result data in expected format
+        asr_result = {
+            'variant_id': variant_id,
+            'text': decode_result.transcript_text,
+            'words': decode_result.words,
+            'segments': decode_result.segments,
+            'language': decode_result.language,
+            'duration': sum(w.get('end', 0) - w.get('start', 0) for w in decode_result.words) if decode_result.words else 0.0,
+            'confidence_scores': decode_result.confidence_scores,
+            # Enhanced decode specific data
+            'decode_strategy': decode_result.strategy_id,
+            'decode_parameters': decode_result.decode_parameters,
+            'lexicon_usage': decode_result.lexicon_usage,
+            'diversity_metrics': decode_result.diversity_metrics
+        }
+        
+        # Combine diarization and ASR data in expected format
+        candidate = {
+            'candidate_id': f"diar_{diarization_data['variant_id']}_asr_{variant_id}_enhanced_{decode_result.strategy_id}",
+            'diarization_variant_id': diarization_data['variant_id'],
+            'asr_variant_id': variant_id,
+            'diarization_data': diarization_data,
+            'asr_data': asr_result,
+            'aligned_segments': self._align_asr_to_diarization(asr_result, diarization_data),
+            'parameters': {
+                'diarization': diarization_data['parameters'],
+                'asr': {
+                    'variant_id': variant_id,
+                    'temperature': decode_result.decode_parameters.get('temperature', 0.0),
+                    'language': decode_result.language,
+                    'response_format': 'verbose_json',
+                    'decode_strategy': decode_result.strategy_id,
+                    'enhanced_decode': True
+                }
+            },
+            # Enhanced decode metadata
+            'enhanced_decode_metadata': {
+                'strategy_id': decode_result.strategy_id,
+                'lexicon_terms_used': decode_result.lexicon_usage.get('priming_terms_used', 0),
+                'lexicon_effectiveness': decode_result.lexicon_usage.get('lexicon_effectiveness', 0.0),
+                'diversity_score': sum(decode_result.diversity_metrics.values()) / max(len(decode_result.diversity_metrics), 1) if decode_result.diversity_metrics else 0.0,
+                'decode_parameters': decode_result.decode_parameters
+            }
+        }
+        
+        return candidate
     
     def _run_asr_variant_with_metadata(self, audio_path: str, diarization_data: Dict[str, Any], 
                                      config: Dict[str, Any]) -> Dict[str, Any]:

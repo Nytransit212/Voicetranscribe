@@ -5,10 +5,12 @@
 defaults:
   - asr: whisper_variants
   - diarization: pyannote_variants  
+  - speaker_mapping: consistency_config
   - scoring: multi_dimensional
   - consensus: strategies
   - calibration: methods
   - ui: streamlit_ui
+  - decode_strategies
   - _self_
 
 # Runtime Configuration
@@ -137,6 +139,7 @@ experimental:
   linguistic_scoring: true
   repair_engine: true
   quality_controller: true
+  enhanced_decode_strategies: true  # Enable enhanced decode strategy system
 
 # Consensus and Calibration Integration
 consensus:
@@ -157,3 +160,4 @@ pipeline:
   calibration_integration_point: "pre_final_score"  # When to apply calibration
   enable_methodology_comparison: true
   record_processing_metadata: true
+  enable_enhanced_decode: true  # Enable enhanced decode strategy system in pipeline

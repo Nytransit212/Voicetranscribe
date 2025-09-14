@@ -29,7 +29,7 @@ from utils.advanced_asr_scheduler import get_asr_scheduler, AdvancedASRScheduler
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
     
-    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None, enable_versioning: bool = True, domain: str = "general", consensus_strategy: str = "best_single_candidate", calibration_method: str = "registry_based") -> None:
+    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None, enable_versioning: bool = True, domain: str = "general", consensus_strategy: str = "best_single_candidate", calibration_method: str = "registry_based", enable_speaker_mapping: bool = True, speaker_mapping_config: Optional[Dict[str, Any]] = None, chunked_processing_threshold: float = 900.0) -> None:
         self.expected_speakers = expected_speakers
         self.noise_level = noise_level
         self.target_language = target_language  # None for auto-detect
@@ -37,6 +37,17 @@ class EnsembleManager:
         self.enable_versioning = enable_versioning
         self.consensus_strategy = consensus_strategy
         self.calibration_method = calibration_method
+        
+        # Speaker mapping configuration
+        self.enable_speaker_mapping = enable_speaker_mapping
+        self.speaker_mapping_config = speaker_mapping_config or {
+            'similarity_threshold': 0.7,
+            'embedding_dim': 128,
+            'min_segment_duration': 1.0,
+            'cache_embeddings': True,
+            'enable_metrics': True
+        }
+        self.chunked_processing_threshold = chunked_processing_threshold  # Seconds (15 minutes default)
         
         # U7 Upgrade: Initialize deterministic processing and other systems first
         # (run_id will be set later based on input for deterministic processing)
@@ -86,7 +97,12 @@ class EnsembleManager:
         
         # Initialize components with versioning context
         self.audio_processor = AudioProcessor()
-        self.diarization_engine = DiarizationEngine(expected_speakers, noise_level)
+        self.diarization_engine = DiarizationEngine(
+            expected_speakers=expected_speakers, 
+            noise_level=noise_level,
+            enable_speaker_mapping=enable_speaker_mapping,
+            speaker_mapping_config=self.speaker_mapping_config
+        )
         self.asr_engine = ASREngine()
         self.confidence_scorer = ConfidenceScorer(
             scoring_weights=scoring_weights,
@@ -145,7 +161,10 @@ class EnsembleManager:
                 'domain': self.domain,
                 'consensus_strategy': self.consensus_strategy,
                 'calibration_method': self.calibration_method,
-                'confidence_threshold': self.confidence_threshold_for_flagging
+                'confidence_threshold': self.confidence_threshold_for_flagging,
+                'enable_speaker_mapping': self.enable_speaker_mapping,
+                'speaker_mapping_config': self.speaker_mapping_config,
+                'chunked_processing_threshold': self.chunked_processing_threshold
             }
             
             self.run_id = ensure_deterministic_run_id(video_path, processing_config)
@@ -215,7 +234,20 @@ class EnsembleManager:
             self.structured_logger.stage_start("diarization", "Creating diarization variants with voting fusion",
                                              context={'audio_duration': audio_duration, 'estimated_noise': estimated_noise})
             
-            diarization_variants = self.diarization_engine.create_diarization_variants(clean_audio_path, use_voting_fusion=True)
+            # Determine if chunked processing with speaker mapping should be used
+            enable_chunked_processing = (self.enable_speaker_mapping and 
+                                       audio_duration > self.chunked_processing_threshold)
+            
+            if enable_chunked_processing:
+                self.structured_logger.info(f"🧩 Enabling chunked processing with speaker mapping for {audio_duration/60:.1f}min audio")
+                if progress_callback:
+                    progress_callback("C", 22, f"Processing {audio_duration/60:.1f}min audio in chunks with speaker mapping...")
+            
+            diarization_variants = self.diarization_engine.create_diarization_variants(
+                clean_audio_path, 
+                use_voting_fusion=True,
+                enable_chunked_processing=enable_chunked_processing
+            )
             
             # Track diarization artifacts (versioning)
             if self.enable_versioning and self.dvc_manager:

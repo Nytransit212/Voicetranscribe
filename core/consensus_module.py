@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 import math
 from difflib import SequenceMatcher
 from utils.enhanced_structured_logger import create_enhanced_logger
+from core.alignment_fusion import AlignmentAwareFusionEngine, AlignmentFusionResult
 
 @dataclass
 class ConsensusResult:
@@ -364,6 +365,187 @@ class ConfidenceBasedStrategy(ConsensusStrategy):
         most_stable_idx = np.argmax(stability_scores)
         return candidates[most_stable_idx]
 
+class AlignmentAwareFusionStrategy(ConsensusStrategy):
+    """Advanced consensus strategy using alignment-aware fusion with confusion sets"""
+    
+    def __init__(self, 
+                 timestamp_tolerance: float = 0.3,
+                 confidence_threshold: float = 0.1,
+                 fusion_strategy: str = "confidence_weighted"):
+        """
+        Initialize alignment-aware fusion strategy
+        
+        Args:
+            timestamp_tolerance: Maximum time difference for word alignment (seconds)
+            confidence_threshold: Minimum confidence difference to consider significant
+            fusion_strategy: Strategy for fusion ('confidence_weighted', 'majority_vote', 'hybrid')
+        """
+        self.timestamp_tolerance = timestamp_tolerance
+        self.confidence_threshold = confidence_threshold
+        self.fusion_strategy = fusion_strategy
+        
+        # Initialize fusion engine
+        self.fusion_engine = AlignmentAwareFusionEngine(
+            timestamp_tolerance=timestamp_tolerance,
+            confidence_threshold=confidence_threshold,
+            fusion_strategy=fusion_strategy
+        )
+        
+        self.logger = create_enhanced_logger("consensus_alignment_fusion")
+    
+    def name(self) -> str:
+        return "alignment_aware_fusion"
+    
+    def select_consensus(self, candidates: List[Dict[str, Any]]) -> ConsensusResult:
+        """
+        Select consensus using alignment-aware fusion with confusion sets
+        
+        Args:
+            candidates: List of scored candidate transcripts
+            
+        Returns:
+            ConsensusResult with fused transcript and alignment metadata
+        """
+        if not candidates:
+            raise ValueError("No candidates provided for alignment-aware fusion")
+        
+        self.logger.info(f"Starting alignment-aware fusion of {len(candidates)} candidates", 
+                        context={'candidates_count': len(candidates)})
+        
+        try:
+            # Perform alignment-aware fusion
+            fusion_result = self.fusion_engine.fuse_candidates_with_alignment(candidates)
+            
+            # Create a synthetic winner candidate from the fused result
+            winner_candidate = self._create_winner_from_fusion(fusion_result, candidates)
+            
+            # Calculate consensus confidence based on fusion metrics
+            consensus_confidence = fusion_result.confidence_weighted_score
+            
+            # Prepare metadata
+            consensus_metadata = {
+                'fusion_strategy': self.fusion_strategy,
+                'timestamp_tolerance': self.timestamp_tolerance,
+                'alignment_metrics': fusion_result.alignment_metrics.__dict__,
+                'word_alignments_count': len(fusion_result.word_alignments),
+                'confusion_sets_count': len(fusion_result.confusion_sets),
+                'fusion_effectiveness': fusion_result.alignment_metrics.fusion_effectiveness,
+                'token_oscillation_reduction': fusion_result.alignment_metrics.token_oscillation_reduction,
+                'numeric_consistency_score': fusion_result.alignment_metrics.numeric_consistency_score,
+                'alignment_coverage': fusion_result.alignment_metrics.alignment_coverage
+            }
+            
+            self.logger.info(f"Alignment-aware fusion completed", 
+                            context={
+                                'consensus_confidence': consensus_confidence,
+                                'word_alignments': len(fusion_result.word_alignments),
+                                'confusion_sets': len(fusion_result.confusion_sets),
+                                'fusion_effectiveness': fusion_result.alignment_metrics.fusion_effectiveness
+                            })
+            
+            return ConsensusResult(
+                winner_candidate=winner_candidate,
+                consensus_method=self.name(),
+                consensus_confidence=consensus_confidence,
+                consensus_metadata=consensus_metadata,
+                alternative_candidates=self._get_alternative_candidates(candidates),
+                fused_segments=fusion_result.fused_segments
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Alignment-aware fusion failed: {e}")
+            
+            # Fallback to best single candidate
+            self.logger.warning("Falling back to best single candidate selection")
+            return self._fallback_to_best_candidate(candidates)
+    
+    def _create_winner_from_fusion(self, 
+                                 fusion_result: AlignmentFusionResult,
+                                 original_candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Create a winner candidate from fusion result"""
+        
+        # Use the highest scoring original candidate as base
+        best_candidate = max(original_candidates, 
+                           key=lambda x: x.get('confidence_scores', {}).get('final_score', 0.0))
+        
+        # Create new candidate with fused data
+        winner_candidate = best_candidate.copy()
+        
+        # Update with fused transcript data
+        winner_candidate['candidate_id'] = f"fusion_{len(original_candidates)}_candidates"
+        winner_candidate['aligned_segments'] = fusion_result.fused_segments
+        
+        # Update ASR data with fused transcript
+        if 'asr_data' in winner_candidate:
+            winner_candidate['asr_data'] = winner_candidate['asr_data'].copy()
+            winner_candidate['asr_data']['text'] = fusion_result.fused_transcript
+            
+            # Extract words from fused segments
+            fused_words = []
+            for segment in fusion_result.fused_segments:
+                if 'words' in segment:
+                    fused_words.extend(segment['words'])
+            
+            winner_candidate['asr_data']['words'] = fused_words
+        
+        # Update confidence scores to reflect fusion quality
+        if 'confidence_scores' in winner_candidate:
+            confidence_scores = winner_candidate['confidence_scores'].copy()
+            
+            # Boost final score based on fusion effectiveness
+            fusion_boost = fusion_result.alignment_metrics.fusion_effectiveness * 0.1
+            confidence_scores['final_score'] = min(1.0, confidence_scores['final_score'] + fusion_boost)
+            
+            # Add fusion-specific scores
+            confidence_scores['alignment_quality'] = fusion_result.alignment_metrics.fusion_effectiveness
+            confidence_scores['confusion_resolution_rate'] = (
+                fusion_result.alignment_metrics.confusion_sets_resolved / 
+                max(fusion_result.alignment_metrics.confusion_sets_created, 1)
+            )
+            
+            winner_candidate['confidence_scores'] = confidence_scores
+        
+        # Add fusion metadata
+        winner_candidate['fusion_metadata'] = {
+            'fusion_applied': True,
+            'alignment_metrics': fusion_result.alignment_metrics.__dict__,
+            'original_candidates_count': len(original_candidates),
+            'fusion_confidence': fusion_result.confidence_weighted_score
+        }
+        
+        return winner_candidate
+    
+    def _get_alternative_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Get alternative candidates sorted by confidence"""
+        sorted_candidates = sorted(
+            candidates,
+            key=lambda x: x.get('confidence_scores', {}).get('final_score', 0.0),
+            reverse=True
+        )
+        return sorted_candidates[:5]  # Top 5 alternatives
+    
+    def _fallback_to_best_candidate(self, candidates: List[Dict[str, Any]]) -> ConsensusResult:
+        """Fallback to best single candidate selection"""
+        if not candidates:
+            raise ValueError("No candidates available for fallback")
+        
+        best_candidate = max(candidates, 
+                           key=lambda x: x.get('confidence_scores', {}).get('final_score', 0.0))
+        
+        final_score = best_candidate.get('confidence_scores', {}).get('final_score', 0.0)
+        
+        return ConsensusResult(
+            winner_candidate=best_candidate,
+            consensus_method=f"{self.name()}_fallback",
+            consensus_confidence=final_score,
+            consensus_metadata={
+                'fallback_used': True,
+                'fallback_reason': 'alignment_fusion_failed',
+                'original_strategy': self.name()
+            },
+            alternative_candidates=self._get_alternative_candidates(candidates)
+        )
+
 class ConsensusModule:
     """Main consensus processing module"""
     
@@ -372,7 +554,8 @@ class ConsensusModule:
             "best_single_candidate": BestSingleCandidateStrategy(),
             "weighted_voting": WeightedVotingStrategy(),
             "multidimensional_consensus": MultiDimensionalConsensusStrategy(),
-            "confidence_based": ConfidenceBasedStrategy()
+            "confidence_based": ConfidenceBasedStrategy(),
+            "alignment_aware_fusion": AlignmentAwareFusionStrategy()
         }
         self.default_strategy = default_strategy
         self.logger = create_enhanced_logger("consensus_module")
@@ -411,14 +594,14 @@ class ConsensusModule:
             self._apply_strategy_params(consensus_strategy, strategy_params)
         
         self.logger.info(f"Processing consensus with strategy: {strategy_name}", 
-                        candidates_count=len(candidates), strategy=strategy_name)
+                        context={'candidates_count': len(candidates), 'strategy': strategy_name})
         
         try:
             result = consensus_strategy.select_consensus(candidates)
             
             self.logger.info(f"Consensus processing completed successfully", 
-                           strategy=strategy_name, 
-                           consensus_confidence=result.consensus_confidence)
+                           context={'strategy': strategy_name, 
+                                   'consensus_confidence': result.consensus_confidence})
             
             return result
             

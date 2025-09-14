@@ -15,6 +15,8 @@ from core.circuit_breaker import CircuitBreakerOpenException
 from utils.structured_logger import StructuredLogger
 from utils.deterministic_processing import get_deterministic_processor, set_global_seed
 from utils.intelligent_cache import get_cache_manager, cached_operation
+from core.turn_stabilizer import TurnStabilizer, StabilizationConfig
+from core.speaker_mapper import SpeakerMapper, ConsistencyMetrics
 
 # Define base classes and types for both real and mock implementations
 class BaseAnnotation:
@@ -70,10 +72,28 @@ except ImportError as e:
 class DiarizationEngine:
     """Handles speaker diarization with multiple variants for ensemble processing"""
     
-    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium'):
+    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium',
+                 enable_turn_stabilization: bool = True, stabilization_config: Optional[StabilizationConfig] = None,
+                 enable_speaker_mapping: bool = True, speaker_mapping_config: Optional[Dict[str, Any]] = None):
         self.expected_speakers = expected_speakers
         self.noise_level = noise_level
         self.pipeline = None
+        
+        # Turn stabilization configuration
+        self.enable_turn_stabilization = enable_turn_stabilization
+        self.stabilization_config = stabilization_config or StabilizationConfig()
+        self.turn_stabilizer = TurnStabilizer(self.stabilization_config) if enable_turn_stabilization else None
+        
+        # Speaker mapping configuration
+        self.enable_speaker_mapping = enable_speaker_mapping
+        self.speaker_mapping_config = speaker_mapping_config or {
+            'similarity_threshold': 0.7,
+            'embedding_dim': 128,
+            'min_segment_duration': 1.0,
+            'cache_embeddings': True,
+            'enable_metrics': True
+        }
+        self.speaker_mapper = SpeakerMapper(**self.speaker_mapping_config) if enable_speaker_mapping else None
         
         # Performance optimization caches
         self._vad_cache = {}  # Cache for VAD analysis results
@@ -260,17 +280,24 @@ class DiarizationEngine:
             use_auth_token=hf_token
         )
     
-    def create_diarization_variants(self, audio_path: str, use_voting_fusion: bool = True) -> List[Dict[str, Any]]:
+    def create_diarization_variants(self, audio_path: str, use_voting_fusion: bool = True, 
+                                  enable_chunked_processing: bool = False, chunk_boundaries: Optional[List[float]] = None) -> List[Dict[str, Any]]:
         """
         Create 5 diarization variants with different parameters and optional voting fusion.
         
         Args:
             audio_path: Path to cleaned audio file
             use_voting_fusion: Whether to apply voting fusion for improved accuracy
+            enable_chunked_processing: Whether to process audio in chunks with speaker mapping
+            chunk_boundaries: Optional list of chunk boundary timestamps
             
         Returns:
-            List of 5 diarization variant results, optionally enhanced with voting fusion
+            List of 5 diarization variant results, optionally enhanced with voting fusion and speaker mapping
         """
+        # Check if chunked processing with speaker mapping is requested
+        if enable_chunked_processing and self.enable_speaker_mapping and self.speaker_mapper:
+            return self._create_chunked_diarization_variants(audio_path, use_voting_fusion, chunk_boundaries)
+        
         variants = []
         
         # Variant 1: Conservative (fewer speakers expected)
@@ -344,12 +371,282 @@ class DiarizationEngine:
             consensus_threshold=0.6
         ))
         
+        # Apply turn stabilization to all variants if enabled
+        if self.enable_turn_stabilization and self.turn_stabilizer:
+            print(f"🔧 Applying turn stabilization to {len(variants)} diarization variants...")
+            variants = self.turn_stabilizer.batch_stabilize_variants(variants)
+            
+            # Log stabilization summary
+            stabilization_summary = self._generate_stabilization_summary(variants)
+            print(f"✅ Turn stabilization complete: {stabilization_summary}")
+        
         # Apply voting fusion if requested
         if use_voting_fusion:
             print(f"🗳️  Applying voting fusion to {len(variants)} diarization variants...")
             variants = self.fuse_diarization_variants(variants, audio_path)
         
         return variants
+    
+    def _create_chunked_diarization_variants(self, audio_path: str, use_voting_fusion: bool = True, 
+                                           chunk_boundaries: Optional[List[float]] = None) -> List[Dict[str, Any]]:
+        """
+        Create diarization variants with chunked processing and speaker mapping consistency.
+        
+        Args:
+            audio_path: Path to cleaned audio file
+            use_voting_fusion: Whether to apply voting fusion for improved accuracy
+            chunk_boundaries: Optional list of chunk boundary timestamps
+            
+        Returns:
+            List of diarization variant results with speaker mapping applied
+        """
+        self.structured_logger.stage_start("chunked_diarization", "Starting chunked diarization with speaker mapping")
+        
+        # Generate chunk boundaries if not provided
+        if chunk_boundaries is None:
+            chunk_boundaries = self.find_optimal_chunk_boundaries(audio_path)
+        
+        # Create temporary audio chunks
+        chunk_audio_paths = self._create_audio_chunks(audio_path, chunk_boundaries)
+        
+        try:
+            # Process each variant with chunked processing
+            variants = []
+            
+            for variant_config in self._get_variant_configs():
+                variant_id = variant_config['variant_id']
+                variant_name = variant_config['variant_name']
+                
+                self.structured_logger.info(f"Processing chunked variant {variant_id}: {variant_name}")
+                
+                # Process each chunk for this variant
+                chunk_diarizations = []
+                for chunk_idx, chunk_path in enumerate(chunk_audio_paths):
+                    chunk_result = self._run_diarization_variant(
+                        chunk_path, **variant_config, 
+                        variant_name=f"{variant_name}_chunk_{chunk_idx}"
+                    )
+                    chunk_diarizations.append(chunk_result['segments'])
+                
+                # Apply speaker mapping across chunks
+                if self.speaker_mapper:
+                    self.speaker_mapper.reset()  # Reset for each variant
+                    mapped_segments, consistency_metrics = self.speaker_mapper.map_speakers_across_chunks(
+                        chunk_diarizations, audio_path
+                    )
+                    
+                    # Combine mapped segments from all chunks with time offsets
+                    combined_segments = self._combine_chunk_segments(mapped_segments, chunk_boundaries)
+                else:
+                    # Fallback: combine segments without mapping
+                    combined_segments = self._combine_chunk_segments(chunk_diarizations, chunk_boundaries)
+                    consistency_metrics = self.speaker_mapper._create_empty_metrics() if self.speaker_mapper else None
+                
+                # Create RTTM data for combined result
+                rttm_data = self._create_rttm_data(combined_segments)
+                
+                # Calculate quality metrics
+                quality_metrics = self._calculate_variant_quality_metrics(combined_segments)
+                
+                # Build variant result
+                variant_result = {
+                    'variant_id': variant_id,
+                    'variant_name': variant_name,
+                    'segments': combined_segments,
+                    'speaker_embeddings': {},  # Populated by speaker mapper
+                    'rttm_data': rttm_data,
+                    'parameters': variant_config,
+                    'num_speakers': len(set(seg.get('speaker', seg.get('speaker_id', 'UNKNOWN')) for seg in combined_segments)),
+                    'total_speech_time': sum(seg['end'] - seg['start'] for seg in combined_segments),
+                    'num_segments': len(combined_segments),
+                    'quality_metrics': quality_metrics,
+                    'chunked_processing': True,
+                    'num_chunks': len(chunk_audio_paths),
+                    'chunk_boundaries': chunk_boundaries,
+                    'speaker_consistency_metrics': consistency_metrics.__dict__ if consistency_metrics else None
+                }
+                
+                variants.append(variant_result)
+            
+            # Apply turn stabilization if enabled
+            if self.enable_turn_stabilization and self.turn_stabilizer:
+                self.structured_logger.info("Applying turn stabilization to chunked variants")
+                variants = self.turn_stabilizer.batch_stabilize_variants(variants)
+            
+            # Apply voting fusion if requested
+            if use_voting_fusion:
+                self.structured_logger.info("Applying voting fusion to chunked variants")
+                variants = self.fuse_diarization_variants(variants, audio_path)
+            
+            self.structured_logger.stage_complete("chunked_diarization", "Chunked diarization with speaker mapping completed")
+            
+            return variants
+            
+        finally:
+            # Clean up temporary chunk files
+            self._cleanup_audio_chunks(chunk_audio_paths)
+    
+    def _get_variant_configs(self) -> List[Dict[str, Any]]:
+        """Get configuration dictionaries for all diarization variants."""
+        return [
+            {
+                'variant_id': 1,
+                'variant_name': "Conservative",
+                'min_speakers': max(2, self.expected_speakers - 2),
+                'max_speakers': self.expected_speakers + 1,
+                'clustering_threshold': 0.7,
+                'vad_onset': 0.5,
+                'vad_offset': 0.4,
+                'seed': 42
+            },
+            {
+                'variant_id': 2,
+                'variant_name': "Balanced",
+                'min_speakers': max(2, self.expected_speakers - 1),
+                'max_speakers': self.expected_speakers + 2,
+                'clustering_threshold': 0.6,
+                'vad_onset': 0.4,
+                'vad_offset': 0.3,
+                'seed': 123
+            },
+            {
+                'variant_id': 3,
+                'variant_name': "Liberal",
+                'min_speakers': max(2, self.expected_speakers),
+                'max_speakers': self.expected_speakers + 3,
+                'clustering_threshold': 0.5,
+                'vad_onset': 0.3,
+                'vad_offset': 0.2,
+                'seed': 456
+            },
+            {
+                'variant_id': 4,
+                'variant_name': "Multi-Resolution",
+                'min_speakers': max(2, self.expected_speakers - 1),
+                'max_speakers': self.expected_speakers + 2,
+                'clustering_threshold': 0.55,
+                'vad_onset': 0.45,
+                'vad_offset': 0.25,
+                'seed': 789,
+                'resolution_scales': [0.5, 1.0, 1.5],
+                'merge_strategy': "weighted_average"
+            },
+            {
+                'variant_id': 5,
+                'variant_name': "Ensemble-Based",
+                'min_speakers': max(2, self.expected_speakers - 1),
+                'max_speakers': self.expected_speakers + 2,
+                'clustering_threshold': 0.65,
+                'vad_onset': 0.35,
+                'vad_offset': 0.35,
+                'seed': 999,
+                'ensemble_seeds': [999, 1001, 1003],
+                'consensus_threshold': 0.6
+            }
+        ]
+    
+    def _create_audio_chunks(self, audio_path: str, chunk_boundaries: List[float]) -> List[str]:
+        """
+        Create temporary audio chunk files based on boundaries.
+        
+        Args:
+            audio_path: Path to original audio file
+            chunk_boundaries: List of chunk boundary timestamps
+            
+        Returns:
+            List of paths to temporary chunk audio files
+        """
+        chunk_paths = []
+        
+        try:
+            # Load original audio
+            y, sr = librosa.load(audio_path, sr=None)
+            
+            # Create chunks
+            start_time = 0.0
+            for i, end_time in enumerate(chunk_boundaries):
+                # Convert times to sample indices
+                start_sample = int(start_time * sr)
+                end_sample = int(end_time * sr)
+                
+                # Extract chunk audio
+                chunk_audio = y[start_sample:end_sample]
+                
+                # Create temporary file for this chunk
+                chunk_file = tempfile.NamedTemporaryFile(suffix=f'_chunk_{i}.wav', delete=False)
+                chunk_path = chunk_file.name
+                chunk_file.close()
+                
+                # Save chunk audio
+                import soundfile as sf
+                sf.write(chunk_path, chunk_audio, sr)
+                
+                chunk_paths.append(chunk_path)
+                start_time = end_time
+            
+            self.structured_logger.info(f"Created {len(chunk_paths)} audio chunks")
+            return chunk_paths
+            
+        except Exception as e:
+            # Clean up any created files on error
+            for path in chunk_paths:
+                try:
+                    os.unlink(path)
+                except:
+                    pass
+            raise Exception(f"Failed to create audio chunks: {e}")
+    
+    def _combine_chunk_segments(self, chunk_segments_list: List[List[Dict[str, Any]]], 
+                              chunk_boundaries: List[float]) -> List[Dict[str, Any]]:
+        """
+        Combine segments from multiple chunks with proper time offsets.
+        
+        Args:
+            chunk_segments_list: List of segment lists, one per chunk
+            chunk_boundaries: List of chunk boundary timestamps
+            
+        Returns:
+            Combined list of segments with global timestamps
+        """
+        combined_segments = []
+        
+        start_time = 0.0
+        for chunk_idx, chunk_segments in enumerate(chunk_segments_list):
+            chunk_end_time = chunk_boundaries[chunk_idx] if chunk_idx < len(chunk_boundaries) else float('inf')
+            
+            for segment in chunk_segments:
+                # Adjust segment times to global timeline
+                adjusted_segment = segment.copy()
+                adjusted_segment['start'] = segment['start'] + start_time
+                adjusted_segment['end'] = segment['end'] + start_time
+                
+                # Ensure segment doesn't exceed chunk boundary
+                if adjusted_segment['end'] > chunk_end_time:
+                    adjusted_segment['end'] = chunk_end_time
+                
+                # Only add valid segments
+                if adjusted_segment['start'] < adjusted_segment['end']:
+                    combined_segments.append(adjusted_segment)
+            
+            # Update start time for next chunk
+            if chunk_idx < len(chunk_boundaries):
+                start_time = chunk_boundaries[chunk_idx]
+        
+        # Sort segments by start time
+        combined_segments.sort(key=lambda x: x['start'])
+        
+        self.structured_logger.info(f"Combined {len(combined_segments)} segments from {len(chunk_segments_list)} chunks")
+        return combined_segments
+    
+    def _cleanup_audio_chunks(self, chunk_paths: List[str]):
+        """Clean up temporary audio chunk files."""
+        for chunk_path in chunk_paths:
+            try:
+                os.unlink(chunk_path)
+            except Exception as e:
+                self.structured_logger.warning(f"Failed to remove temporary chunk file {chunk_path}: {e}")
+        
+        self.structured_logger.info(f"Cleaned up {len(chunk_paths)} temporary chunk files")
     
     def _run_diarization_variant(self, audio_path: str, variant_id: int, 
                                min_speakers: int, max_speakers: int,
@@ -1934,3 +2231,49 @@ class DiarizationEngine:
             'avg_segment_length': float(avg_segment_length),
             'total_segments': len(segments)
         }
+    
+    def _generate_stabilization_summary(self, variants: List[Dict[str, Any]]) -> str:
+        """
+        Generate a summary of turn stabilization results across all variants.
+        
+        Args:
+            variants: List of stabilized diarization variants
+            
+        Returns:
+            Human-readable summary string
+        """
+        if not variants:
+            return "No variants to summarize"
+        
+        total_transitions_eliminated = 0
+        total_rapid_transitions_eliminated = 0
+        total_original_segments = 0
+        total_stabilized_segments = 0
+        variants_processed = 0
+        
+        for variant in variants:
+            if variant.get('processed_with_stabilization', False):
+                variants_processed += 1
+                
+                # Extract stabilization metrics
+                stabilization_metrics = variant.get('stabilization_metrics')
+                if stabilization_metrics:
+                    total_transitions_eliminated += stabilization_metrics.transitions_eliminated
+                    total_rapid_transitions_eliminated += stabilization_metrics.rapid_transitions_eliminated
+                    total_original_segments += stabilization_metrics.original_segments_count
+                    total_stabilized_segments += stabilization_metrics.stabilized_segments_count
+        
+        if variants_processed == 0:
+            return "No variants successfully processed with stabilization"
+        
+        # Calculate overall improvement
+        avg_improvement = (total_transitions_eliminated / max(total_original_segments, 1)) * 100
+        
+        summary = (
+            f"{variants_processed}/{len(variants)} variants stabilized, "
+            f"{total_transitions_eliminated} transitions eliminated, "
+            f"{total_rapid_transitions_eliminated} rapid transitions fixed, "
+            f"{avg_improvement:.1f}% improvement"
+        )
+        
+        return summary

@@ -1,0 +1,157 @@
+# Enhanced Decode Strategy Configuration
+# Configuration for domain lexicon extraction and context-aware prompting
+
+decode_strategies:
+  # Global configuration
+  global:
+    enable_enhanced_decode: true
+    max_concurrent_strategies: 3
+    lexicon_update_frequency: 5  # Update lexicon every N segments
+    vocabulary_priming_limit: 10  # Max terms to use in priming
+    
+  # Domain lexicon extraction settings
+  lexicon_extraction:
+    min_term_frequency: 2  # Minimum frequency for domain terms
+    min_term_length: 3     # Minimum term length
+    max_domain_terms: 50   # Maximum domain terms to track
+    max_technical_terms: 30  # Maximum technical terms to track
+    max_proper_nouns: 20   # Maximum proper nouns to track
+    max_recurring_phrases: 20  # Maximum phrases to track
+    
+    # Confidence calculation parameters
+    frequency_weight: 0.7  # Weight for frequency-based confidence
+    length_weight: 0.3     # Weight for length-based confidence
+    
+    # Common word filtering
+    filter_common_words: true
+    common_words_threshold: 100  # Skip most common N English words
+    
+  # Context-aware prompting configuration
+  context_prompting:
+    enable_vocabulary_priming: true
+    enable_domain_context: true
+    enable_speaker_context: true
+    enable_language_adaptation: true
+    
+    # Prompt enhancement settings
+    max_prompt_length: 200  # Maximum prompt length in characters
+    vocabulary_context_limit: 5  # Max domain terms in prompt context
+    
+  # Decode strategy definitions
+  strategies:
+    conservative_standard:
+      enabled: true
+      temperature: 0.0
+      language: null  # Auto-detect
+      base_prompt: ""
+      response_format: "verbose_json"
+      correlation_target: "conservative"
+      priority: 1
+      
+    exploratory_creative:
+      enabled: true
+      temperature: 0.3
+      language: null
+      base_prompt: "This is a dynamic conversation with multiple speakers discussing various topics."
+      response_format: "verbose_json"
+      correlation_target: "exploratory"
+      priority: 2
+      
+    diverse_contextual:
+      enabled: true
+      temperature: 0.15
+      language: null
+      base_prompt: "This recording contains domain-specific terminology and technical discussions."
+      response_format: "verbose_json"
+      correlation_target: "diverse"
+      priority: 3
+      
+    domain_focused:
+      enabled: true
+      temperature: 0.1
+      language: null
+      base_prompt: ""  # Enhanced with domain context
+      response_format: "verbose_json"
+      correlation_target: "diverse"
+      priority: 4
+      enable_vocabulary_priming: true
+      
+    language_adaptive:
+      enabled: true
+      temperature: 0.05
+      language: null  # Set based on previous detections
+      base_prompt: ""  # Enhanced with language context
+      response_format: "verbose_json"
+      correlation_target: "conservative"
+      priority: 5
+      
+  # Diversity metrics configuration
+  diversity_metrics:
+    enable_diversity_calculation: true
+    target_diversity_score: 0.3  # Target diversity across strategies
+    
+    # Diversity calculation weights
+    lexical_diversity_weight: 0.4
+    structural_diversity_weight: 0.3
+    confidence_variance_weight: 0.3
+    
+    # Diversity thresholds
+    min_lexical_diversity: 0.1
+    min_structural_diversity: 0.1
+    min_confidence_variance: 0.05
+    
+  # Parameter sweeping configuration
+  parameter_sweeping:
+    enable_temperature_sweep: true
+    temperature_ranges:
+      conservative: [0.0, 0.05]
+      moderate: [0.1, 0.2]
+      exploratory: [0.25, 0.35]
+      
+    enable_prompt_variation: true
+    max_prompt_variations: 3
+    
+    enable_language_exploration: true
+    language_candidates: ["en", "es", "fr", "de", null]  # null = auto-detect
+    
+  # Session management
+  session:
+    max_session_segments: 20  # Max segments to keep in session context
+    lexicon_cache_duration: 3600  # Cache lexicon for 1 hour
+    enable_session_persistence: false  # Don't persist across app restarts
+    
+  # Performance optimization
+  performance:
+    enable_caching: true
+    cache_strategy_results: true
+    cache_duration: 1800  # Cache results for 30 minutes
+    
+    # Rate limiting
+    max_requests_per_minute: 60
+    request_spacing_ms: 100  # Minimum time between requests
+    
+    # Timeout configuration
+    strategy_timeout: 180  # Per-strategy timeout in seconds
+    total_timeout: 900     # Total timeout for all strategies
+    
+  # Quality control
+  quality:
+    min_strategy_success_rate: 0.6  # Minimum success rate for strategy
+    enable_strategy_fallback: true   # Fallback to basic strategies if enhanced fails
+    
+    # Result validation
+    validate_timestamps: true
+    validate_text_quality: true
+    min_text_length: 5  # Minimum valid transcript length
+    
+  # Logging and monitoring
+  monitoring:
+    log_strategy_performance: true
+    log_lexicon_updates: true
+    log_diversity_metrics: true
+    enable_performance_tracking: true
+    
+    # Debug settings
+    debug_mode: false
+    save_debug_artifacts: false
+    debug_output_dir: "artifacts/decode_debug"

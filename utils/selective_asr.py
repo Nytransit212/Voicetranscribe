@@ -25,6 +25,15 @@ from utils.enhanced_structured_logger import create_enhanced_logger
 # Configure logging
 selective_logger = logging.getLogger(__name__)
 
+# Import enhanced re-ask system (lazy import to avoid circular dependencies)
+def get_enhanced_reask_system():
+    """Lazy import to avoid circular dependencies"""
+    try:
+        from core.enhanced_segment_reask import get_enhanced_reask_system
+        return get_enhanced_reask_system()
+    except ImportError:
+        return None
+
 @dataclass
 class SegmentReprocessRequest:
     """Request for segment reprocessing"""
@@ -80,14 +89,116 @@ class SelectiveASRProcessor:
         
         selective_logger.info("Initialized selective ASR processor")
         selective_logger.info(f"Max concurrent requests: {max_concurrent_requests}")
+        
+        # Enhanced re-ask system integration
+        self.enhanced_reask_enabled = False
+        self._enhanced_reask_system = None
     
+    def enable_enhanced_reask(self, agreement_threshold: float = 0.65,
+                             enable_budget_management: bool = True,
+                             budget_config: Optional[Dict[str, Any]] = None):
+        """
+        Enable enhanced re-ask system with agreement-based processing.
+        
+        Args:
+            agreement_threshold: Threshold below which segments are flagged for reprocessing
+            enable_budget_management: Whether to enable budget-aware processing
+            budget_config: Budget configuration for cost management
+        """
+        try:
+            from core.enhanced_segment_reask import BudgetConfiguration
+            
+            # Convert budget_config dict to BudgetConfiguration if provided
+            budget_conf = None
+            if budget_config:
+                budget_conf = BudgetConfiguration(**budget_config)
+            
+            self._enhanced_reask_system = get_enhanced_reask_system(
+                agreement_threshold=agreement_threshold,
+                enable_budget_management=enable_budget_management,
+                budget_config=budget_conf,
+                target_language=self.target_language
+            )
+            
+            if self._enhanced_reask_system:
+                self.enhanced_reask_enabled = True
+                selective_logger.info("Enhanced re-ask system enabled")
+                selective_logger.info(f"Agreement threshold: {agreement_threshold}")
+            else:
+                selective_logger.warning("Failed to initialize enhanced re-ask system")
+                
+        except Exception as e:
+            selective_logger.error(f"Failed to enable enhanced re-ask system: {e}")
+            self.enhanced_reask_enabled = False
+
+    def process_candidates_with_agreement_analysis(self, candidates: List[Dict[str, Any]], 
+                                                 file_path: str, run_id: str,
+                                                 progress_callback: Optional[callable] = None) -> Dict[str, Any]:
+        """
+        Process candidates using enhanced agreement-based analysis.
+        
+        Args:
+            candidates: List of candidate transcripts from ensemble processing
+            file_path: Path to original audio file
+            run_id: Processing run identifier
+            progress_callback: Optional progress callback
+            
+        Returns:
+            Processing results with agreement analysis and improvements
+        """
+        if not self.enhanced_reask_enabled or not self._enhanced_reask_system:
+            # Fall back to traditional processing
+            return self.process_flagged_segments(file_path, run_id, progress_callback=progress_callback)
+        
+        start_time = time.time()
+        
+        try:
+            # Analyze candidates for per-segment agreement
+            agreement_scores = self._enhanced_reask_system.analyze_candidates_for_agreement(
+                candidates, file_path, run_id
+            )
+            
+            selective_logger.info(f"Agreement analysis found {len(agreement_scores)} segments")
+            
+            # Process segments with enhanced re-ask
+            reask_results = self._enhanced_reask_system.process_segments_with_enhanced_reask(
+                agreement_scores, file_path, run_id, progress_callback
+            )
+            
+            # Update local statistics
+            self.stats['segments_reprocessed'] += reask_results.get('segments_reprocessed', 0)
+            self.stats['segments_improved'] += reask_results.get('segments_improved', 0)
+            self.stats['total_improvement_score'] += reask_results.get('average_improvement', 0.0)
+            
+            processing_time = time.time() - start_time
+            
+            # Combine results with agreement analysis metadata
+            enhanced_results = {
+                'enhanced_reask_used': True,
+                'agreement_analysis': {
+                    'total_segments_analyzed': len(agreement_scores),
+                    'segments_flagged_low_agreement': len([s for s in agreement_scores if s.needs_reprocessing])
+                },
+                'reprocessing_results': reask_results,
+                'processing_time': processing_time,
+                'system_status': self._enhanced_reask_system.get_system_status() if self._enhanced_reask_system else None
+            }
+            
+            return enhanced_results
+            
+        except Exception as e:
+            selective_logger.error(f"Enhanced agreement analysis failed: {e}")
+            # Fall back to traditional processing
+            return self.process_flagged_segments(file_path, run_id, progress_callback=progress_callback)
+
     def get_status(self) -> Dict[str, Any]:
         """Get current status and statistics of the selective ASR processor."""
-        return {
+        base_status = {
             'config': {
                 'target_language': self.target_language,
                 'caching_enabled': self.enable_caching,
-                'max_concurrent_requests': self.max_concurrent_requests
+                'max_concurrent_requests': self.max_concurrent_requests,
+                'enhanced_reask_enabled': self.enhanced_reask_enabled
             },
             'statistics': self.stats.copy(),
             'performance': {
@@ -97,6 +208,12 @@ class SelectiveASRProcessor:
             },
             'status': 'operational'
         }
+        
+        # Add enhanced re-ask system status if enabled
+        if self.enhanced_reask_enabled and self._enhanced_reask_system:
+            base_status['enhanced_reask_status'] = self._enhanced_reask_system.get_system_status()
+        
+        return base_status
     
     def process_flagged_segments(self, file_path: str, run_id: str,
                                max_segments: Optional[int] = None,
