@@ -387,7 +387,8 @@ class GoogleDriveHandler:
             # Get file metadata to check size
             file_metadata = self.service.files().get(
                 fileId=file_id,
-                fields='id,name,size'
+                fields='id,name,size',
+                supportsAllDrives=True
             ).execute()
             
             file_size = int(file_metadata.get('size', 0))
