@@ -406,11 +406,8 @@ def render_main_page():
     if recent_file_result:
         upload_result = recent_file_result
     
-    upload_complete = False
-    
     if upload_result and upload_result['status'] == 'success':
         st.session_state.drive_file_info = upload_result
-        upload_complete = True
         
         # Show file info
         file_size_mb = upload_result['size'] / (1024 * 1024)
@@ -422,7 +419,7 @@ def render_main_page():
         else:
             st.info("🔗 Using existing Google Drive file")
     
-    if upload_complete and st.session_state.drive_file_info:
+    if st.session_state.drive_file_info:
         
         # Processing parameters
         st.header("⚙️ Processing Configuration")
@@ -446,12 +443,14 @@ def render_main_page():
             )
 
         # Process button
-        if st.button("🚀 Start Ensemble Processing", disabled=st.session_state.processing):
+        if st.button("🚀 Start Ensemble Processing", disabled=st.session_state.processing, key="start_processing"):
+            st.session_state.processing = True
             st.write("Debug: Processing button clicked!")
             st.write(f"Debug: Drive file info = {st.session_state.drive_file_info}")
             try:
                 process_video_from_drive(st.session_state.drive_file_info, expected_speakers, noise_level, st.session_state.scoring_weights)
             except Exception as e:
+                st.session_state.processing = False
                 st.error(f"Processing error: {e}")
                 st.code(traceback.format_exc())
 
