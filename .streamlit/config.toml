@@ -4,6 +4,12 @@ address = "0.0.0.0"
 port = 5000
 maxUploadSize = 4000
 maxMessageSize = 2000
+fileWatcherType = "none"
+enableCORS = false
+enableWebsocketCompression = false
+
+[browser]
+gatherUsageStats = false
 
 [theme]
 base = "light"

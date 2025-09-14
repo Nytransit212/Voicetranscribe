@@ -490,6 +490,84 @@ class SegmentWorklistManager:
         
         return removed_count
     
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive worklist statistics."""
+        return {
+            'global': self.stats.copy(),
+            'current_session': {
+                'total_files_processed': self.stats['total_files_processed'],
+                'total_segments_flagged': self.stats['total_segments_flagged'],
+                'average_confidence_threshold': self.confidence_threshold
+            }
+        }
+    
+    def list_available_worklists(self) -> List[Dict[str, Any]]:
+        """List all available worklists with summary information."""
+        worklists = []
+        
+        for worklist_file in self.worklist_dir.glob("worklist_*.json"):
+            try:
+                worklist = self._load_worklist(worklist_file)
+                if worklist:
+                    summary = {
+                        'file_path': worklist.file_path,
+                        'run_id': worklist.run_id,
+                        'total_flagged': worklist.total_segments_flagged,
+                        'processed': worklist.segments_processed,
+                        'improved': worklist.segments_improved,
+                        'pending': len([s for s in worklist.flagged_segments if s.reprocess_count == 0]),
+                        'creation_time': worklist.creation_timestamp,
+                        'last_update': worklist.last_update_timestamp
+                    }
+                    worklists.append(summary)
+            except Exception as e:
+                worklist_logger.warning(f"Error reading worklist {worklist_file}: {e}")
+        
+        return sorted(worklists, key=lambda x: x['creation_time'], reverse=True)
+    
+    def load_worklist(self, file_path: str, run_id: str) -> Optional[WorklistEntry]:
+        """Load a specific worklist by file path and run ID."""
+        worklist_path = self._get_worklist_path(file_path, run_id)
+        
+        if not worklist_path.exists():
+            return None
+        
+        return self._load_worklist(worklist_path)
+    
+    def unflag_segment(self, file_path: str, run_id: str, segment_id: str) -> bool:
+        """Remove a flag from a specific segment."""
+        try:
+            worklist_path = self._get_worklist_path(file_path, run_id)
+            
+            if not worklist_path.exists():
+                return False
+            
+            worklist = self._load_worklist(worklist_path)
+            if not worklist:
+                return False
+            
+            # Find and remove the segment
+            original_count = len(worklist.flagged_segments)
+            worklist.flagged_segments = [s for s in worklist.flagged_segments if s.segment_id != segment_id]
+            
+            if len(worklist.flagged_segments) < original_count:
+                worklist.total_segments_flagged = len(worklist.flagged_segments)
+                worklist.last_update_timestamp = datetime.now().isoformat()
+                self._save_worklist(worklist)
+                
+                worklist_logger.info(f"Unflagged segment {segment_id} from {file_path}")
+                return True
+            
+            return False
+        except Exception as e:
+            worklist_logger.error(f"Error unflagging segment {segment_id}: {e}")
+            return False
+    
+    def flag_segment_manually(self, file_path: str, run_id: str, start_time: float, 
+                            end_time: float, reason: str, priority: int = 5) -> bool:
+        """Manually flag a segment for reprocessing."""
+        return self.manually_flag_segment(file_path, run_id, start_time, end_time, reason, priority)
+    
     def get_global_stats(self) -> Dict[str, Any]:
         """Get global statistics across all worklists."""
         return self.stats.copy()

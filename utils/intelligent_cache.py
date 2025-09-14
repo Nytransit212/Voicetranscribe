@@ -453,6 +453,71 @@ class IntelligentCacheManager:
         
         cache_logger.info(f"Cache cleanup complete. Removed {expired_count} expired entries")
     
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive cache statistics."""
+        return {
+            'memory_cache': {
+                'hit_count': self.stats['memory_hits'],
+                'size_bytes': self.current_memory_cache_size,
+                'max_size_bytes': self.max_memory_cache_size,
+                'entry_count': len(self.memory_cache)
+            },
+            'disk_cache': {
+                'hit_count': self.stats['disk_hits'],
+                'size_bytes': self.disk_cache.volume(),
+                'entry_count': len(self.disk_cache)
+            },
+            'overall': {
+                'total_hits': self.stats['memory_hits'] + self.stats['disk_hits'],
+                'total_misses': self.stats['misses'],
+                'hit_rate': (self.stats['memory_hits'] + self.stats['disk_hits']) / max(1, self.stats['memory_hits'] + self.stats['disk_hits'] + self.stats['misses']),
+                'cache_sets': self.stats['cache_sets'],
+                'evictions': self.stats['evictions']
+            }
+        }
+    
+    def clear_all(self) -> bool:
+        """Clear all cache data (memory and disk)."""
+        try:
+            # Clear memory cache
+            self.memory_cache.clear()
+            self.current_memory_cache_size = 0
+            
+            # Clear disk cache
+            self.disk_cache.clear()
+            
+            # Reset statistics
+            self.stats = {
+                'memory_hits': 0,
+                'disk_hits': 0,
+                'misses': 0,
+                'evictions': 0,
+                'cache_sets': 0
+            }
+            
+            cache_logger.info("All cache data cleared successfully")
+            return True
+        except Exception as e:
+            cache_logger.error(f"Error clearing cache: {e}")
+            return False
+    
+    def get_cache_info(self) -> Dict[str, Any]:
+        """Get detailed cache configuration and status information."""
+        return {
+            'config': {
+                'cache_dir': str(self.cache_dir),
+                'max_memory_cache_mb': self.max_memory_cache_size / (1024 * 1024),
+                'max_disk_cache_gb': self.disk_cache.size_limit / (1024**3),
+                'ttl_hours': self.ttl_seconds / 3600,
+                'compression_enabled': self.enable_compression
+            },
+            'status': {
+                'memory_usage_percent': (self.current_memory_cache_size / self.max_memory_cache_size) * 100,
+                'disk_usage_percent': (self.disk_cache.volume() / self.disk_cache.size_limit) * 100,
+                'total_operations': self.stats['memory_hits'] + self.stats['disk_hits'] + self.stats['misses']
+            }
+        }
+    
     def close(self):
         """Close cache connections and cleanup."""
         try:

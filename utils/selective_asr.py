@@ -81,6 +81,23 @@ class SelectiveASRProcessor:
         selective_logger.info("Initialized selective ASR processor")
         selective_logger.info(f"Max concurrent requests: {max_concurrent_requests}")
     
+    def get_status(self) -> Dict[str, Any]:
+        """Get current status and statistics of the selective ASR processor."""
+        return {
+            'config': {
+                'target_language': self.target_language,
+                'caching_enabled': self.enable_caching,
+                'max_concurrent_requests': self.max_concurrent_requests
+            },
+            'statistics': self.stats.copy(),
+            'performance': {
+                'average_improvement': self.stats['total_improvement_score'] / max(1, self.stats['segments_improved']),
+                'improvement_rate': self.stats['segments_improved'] / max(1, self.stats['segments_reprocessed']),
+                'cache_hit_rate': self.stats['cache_hits'] / max(1, self.stats['cache_hits'] + self.stats['cache_misses'])
+            },
+            'status': 'operational'
+        }
+    
     def process_flagged_segments(self, file_path: str, run_id: str,
                                max_segments: Optional[int] = None,
                                progress_callback: Optional[callable] = None) -> Dict[str, Any]:
