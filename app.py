@@ -408,6 +408,10 @@ def render_main_page():
     
     upload_complete = False
     
+    # Debug: Show current state
+    if upload_result:
+        st.write(f"Debug: upload_result status = {upload_result.get('status', 'None')}")
+    
     if upload_result and upload_result['status'] == 'success':
         st.session_state.drive_file_info = upload_result
         upload_complete = True
@@ -421,6 +425,9 @@ def render_main_page():
             st.info("📤 File uploaded to Google Drive")
         else:
             st.info("🔗 Using existing Google Drive file")
+            
+        # Force rerun to update UI
+        st.rerun()
     
     if upload_complete and st.session_state.drive_file_info:
         
