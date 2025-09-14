@@ -4,7 +4,7 @@
 # Include component configurations using defaults
 defaults:
   - asr: whisper_variants
-  - diarization: pyannote_variants  
+  - diarization: external  # Use external providers for production
   - speaker_mapping: consistency_config
   - scoring: multi_dimensional
   - consensus: strategies
@@ -78,6 +78,12 @@ reliability:
       max_wait: 45.0
       retry_on_status: [429, 500, 502, 503, 504]
       
+    assemblyai:
+      max_attempts: 5
+      initial_wait: 2.0
+      max_wait: 60.0
+      retry_on_status: [429, 500, 502, 503, 504]
+      
     subprocess:
       max_attempts: 3
       initial_wait: 0.5
@@ -102,6 +108,10 @@ reliability:
       failure_threshold: 4      # Model loading can be flaky
       recovery_timeout: 90
       
+    assemblyai:
+      failure_threshold: 3      # API service reliability
+      recovery_timeout: 120     # Longer recovery for external service
+      
     ffmpeg:
       failure_threshold: 2      # System processes should fail fast
       recovery_timeout: 30
@@ -115,6 +125,10 @@ api:
     model: "pyannote/speaker-diarization-3.1"
     auth_token: null  # Set via environment variable
     use_auth_token: true
+  assemblyai:
+    api_key: null  # Set via ASSEMBLYAI_API_KEY environment variable
+    base_url: "https://api.assemblyai.com/v2"
+    enable_diarization: true
 
 # Quality Gates
 quality:

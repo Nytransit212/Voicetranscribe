@@ -18,6 +18,28 @@ from utils.intelligent_cache import get_cache_manager, cached_operation
 from core.turn_stabilizer import TurnStabilizer, StabilizationConfig
 from core.speaker_mapper import SpeakerMapper, ConsistencyMetrics
 
+# Import diarization provider system with fallback
+PROVIDERS_AVAILABLE = False
+DiarizationProvider = None
+DiarizationResult = None  
+DiarizationError = Exception
+AssemblyAIDiarizationProvider = None
+ProviderStatus = None
+
+try:
+    from core.diarization_providers import (
+        DiarizationProvider, 
+        DiarizationResult, 
+        DiarizationError,
+        AssemblyAIDiarizationProvider,
+        ProviderStatus
+    )
+    PROVIDERS_AVAILABLE = True
+    print("✓ External diarization providers loaded successfully")
+except ImportError as e:
+    print(f"⚠ External diarization providers not available ({e}), using fallback only")
+    PROVIDERS_AVAILABLE = False
+
 # Define base classes and types for both real and mock implementations
 class BaseAnnotation:
     """Base annotation interface"""
@@ -74,10 +96,29 @@ class DiarizationEngine:
     
     def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium',
                  enable_turn_stabilization: bool = True, stabilization_config: Optional[StabilizationConfig] = None,
-                 enable_speaker_mapping: bool = True, speaker_mapping_config: Optional[Dict[str, Any]] = None):
+                 enable_speaker_mapping: bool = True, speaker_mapping_config: Optional[Dict[str, Any]] = None,
+                 provider_config: Optional[Dict[str, Any]] = None):
         self.expected_speakers = expected_speakers
         self.noise_level = noise_level
         self.pipeline = None
+        
+        # Provider configuration and selection
+        self.provider_config = provider_config or {
+            'enabled_providers': ['assemblyai', 'pyannote', 'mock'],
+            'primary_provider': 'assemblyai',
+            'fallback_enabled': True,
+            'assemblyai': {
+                'max_file_size_mb': 512,
+                'max_duration_seconds': 7200,  # 2 hours
+                'poll_interval': 5,
+                'max_wait_time': 1800,
+                'default_speakers': None
+            }
+        }
+        
+        # Initialize providers
+        self.providers: Dict[str, Any] = {}  # Type as Any to avoid issues with conditional imports
+        self.active_provider: Optional[Any] = None  # Type as Any to avoid issues with conditional imports
         
         # Turn stabilization configuration
         self.enable_turn_stabilization = enable_turn_stabilization
@@ -103,7 +144,12 @@ class DiarizationEngine:
         # Initialize structured logging for reliability telemetry
         self.structured_logger = StructuredLogger("diarization_engine")
         
-        self._initialize_pipeline()
+        # Initialize provider system
+        self._initialize_providers()
+        
+        # Fallback to old pipeline system if no providers available
+        if self.active_provider is None:
+            self._initialize_pipeline()
     
     def _validate_hf_token(self, token: Optional[str]) -> bool:
         """Validate HuggingFace token format and authenticity"""
@@ -117,8 +163,75 @@ class DiarizationEngine:
         
         return True
     
+    def _initialize_providers(self):
+        """Initialize diarization providers with fallback chain"""
+        if not PROVIDERS_AVAILABLE:
+            print("⚠ Provider system not available, skipping provider initialization")
+            return
+            
+        enabled_providers = self.provider_config.get('enabled_providers', ['assemblyai', 'pyannote', 'mock'])
+        primary_provider = self.provider_config.get('primary_provider', 'assemblyai')
+        
+        self.structured_logger.info("Initializing diarization providers", 
+                                  context={'enabled_providers': enabled_providers, 'primary_provider': primary_provider})
+        
+        # Initialize AssemblyAI provider if enabled
+        if 'assemblyai' in enabled_providers and AssemblyAIDiarizationProvider is not None:
+            try:
+                assemblyai_config = self.provider_config.get('assemblyai', {})
+                provider = AssemblyAIDiarizationProvider(assemblyai_config)
+                
+                if provider.validate_config():
+                    self.providers['assemblyai'] = provider
+                    print("✓ AssemblyAI diarization provider initialized successfully")
+                else:
+                    print("⚠ AssemblyAI provider failed validation")
+            except Exception as e:
+                print(f"⚠ Failed to initialize AssemblyAI provider: {e}")
+        
+        # Set active provider based on priority and availability
+        if primary_provider in self.providers:
+            provider = self.providers[primary_provider]
+            try:
+                # Check provider status if available
+                if hasattr(provider, 'get_status') and ProviderStatus is not None:
+                    provider_status = provider.get_status()
+                    if hasattr(ProviderStatus, 'HEALTHY') and hasattr(ProviderStatus, 'DEGRADED'):
+                        if provider_status in [ProviderStatus.HEALTHY, ProviderStatus.DEGRADED]:
+                            self.active_provider = provider
+                            print(f"✓ Using {primary_provider} as primary diarization provider")
+                            return
+                else:
+                    # If status checking not available, use provider directly
+                    self.active_provider = provider  
+                    print(f"✓ Using {primary_provider} as primary diarization provider (no health check)")
+                    return
+            except Exception as e:
+                print(f"⚠ Error checking {primary_provider} status: {e}")
+        
+        # Fallback to any available provider
+        for provider_name, provider in self.providers.items():
+            try:
+                if hasattr(provider, 'get_status') and ProviderStatus is not None:
+                    if hasattr(ProviderStatus, 'HEALTHY') and hasattr(ProviderStatus, 'DEGRADED'):
+                        provider_status = provider.get_status()
+                        if provider_status in [ProviderStatus.HEALTHY, ProviderStatus.DEGRADED]:
+                            self.active_provider = provider
+                            print(f"✓ Using {provider_name} as fallback diarization provider")
+                            return
+                else:
+                    # Use provider without health check
+                    self.active_provider = provider
+                    print(f"✓ Using {provider_name} as fallback diarization provider (no health check)")
+                    return
+            except Exception as e:
+                print(f"⚠ Error with provider {provider_name}: {e}")
+                continue
+        
+        print("⚠ No external diarization providers available, falling back to pyannote/mock system")
+    
     def _initialize_pipeline(self):
-        """Initialize the pyannote speaker diarization pipeline with robust error handling"""
+        """Initialize the pyannote speaker diarization pipeline with robust error handling (fallback only)"""
         if not PYANNOTE_AVAILABLE:
             print("Using mock diarization pipeline (pyannote.audio not available)")
             self.pipeline = self._create_mock_pipeline()
@@ -684,9 +797,17 @@ class DiarizationEngine:
             torch_module.manual_seed(seed)
         
         try:
-            # Ensure pipeline is available
+            # Use external provider if available
+            if self.active_provider is not None:
+                return self._run_provider_variant(
+                    audio_path, variant_id, min_speakers, max_speakers,
+                    clustering_threshold, vad_onset, vad_offset, seed, variant_name,
+                    resolution_scales, merge_strategy, ensemble_seeds, consensus_threshold
+                )
+            
+            # Fallback to pipeline system
             if self.pipeline is None:
-                raise Exception("No diarization pipeline available")
+                raise Exception("No diarization pipeline or provider available")
             
             # Run diarization with parameters
             diarization = self.pipeline(
@@ -696,33 +817,66 @@ class DiarizationEngine:
                 seed=seed
             )
             
-            # Convert to our format
+            # Use the pipeline variant method for consistency
+            return self._run_pipeline_variant(
+                audio_path, variant_id, min_speakers, max_speakers,
+                clustering_threshold, vad_onset, vad_offset, seed, variant_name,
+                resolution_scales, merge_strategy, ensemble_seeds, consensus_threshold
+            )
+            
+        except Exception as e:
+            raise Exception(f"Diarization variant {variant_id} failed: {str(e)}")
+    
+    def _run_provider_variant(self, audio_path: str, variant_id: int, 
+                            min_speakers: int, max_speakers: int,
+                            clustering_threshold: float, vad_onset: float,
+                            vad_offset: float, seed: int, variant_name: str = "Unknown",
+                            resolution_scales: Optional[List[float]] = None,
+                            merge_strategy: Optional[str] = None,
+                            ensemble_seeds: Optional[List[int]] = None,
+                            consensus_threshold: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Run a single diarization variant using external provider.
+        
+        Converts provider result to the expected format for the ensemble system.
+        """
+        try:
+            # Use the provider to get diarization result
+            if self.active_provider is None:
+                raise Exception("No active provider available")
+            
+            provider_result = self.active_provider.diarize(
+                audio_path=audio_path,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+                seed=seed
+            )
+            
+            # Convert provider result to expected format
             segments = []
             speaker_embeddings = {}
             
-            for track_info in diarization.itertracks(yield_label=True):
-                # Handle different tuple sizes from itertracks
-                if len(track_info) == 3:
-                    segment, _, speaker = track_info
-                else:
-                    segment, speaker = track_info
-                
-                segment_data = {
-                    'start': segment.start,
-                    'end': segment.end,
-                    'speaker_id': speaker,
-                    'confidence': random.uniform(0.7, 0.95)  # Mock confidence
+            for segment_data in provider_result.segments:
+                # Ensure consistent format
+                segment = {
+                    'start': float(segment_data['start']),
+                    'end': float(segment_data['end']),
+                    'speaker_id': str(segment_data['speaker_id']),
+                    'confidence': float(segment_data.get('confidence', 0.8))
                 }
-                segments.append(segment_data)
+                segments.append(segment)
                 
-                # Mock speaker embeddings (in practice these would be real)
-                if speaker not in speaker_embeddings:
-                    speaker_embeddings[speaker] = np.random.randn(512).tolist()
+                # Create mock speaker embeddings for compatibility
+                speaker_id = segment['speaker_id']
+                if speaker_id not in speaker_embeddings:
+                    # Use deterministic random based on speaker ID and seed
+                    np.random.seed(hash(speaker_id + str(seed)) % 2**31)
+                    speaker_embeddings[speaker_id] = np.random.randn(512).tolist()
             
             # Create RTTM format data
             rttm_data = self._create_rttm_data(segments)
             
-            # Handle variant-specific processing
+            # Handle variant-specific processing (if needed)
             if resolution_scales and merge_strategy:
                 # Multi-resolution processing
                 segments = self._apply_multi_resolution_processing(
@@ -733,6 +887,9 @@ class DiarizationEngine:
                 segments = self._apply_ensemble_processing(
                     segments, audio_path, ensemble_seeds, consensus_threshold
                 )
+            
+            # Calculate quality metrics
+            quality_metrics = self._calculate_variant_quality_metrics(segments)
             
             return {
                 'variant_id': variant_id,
@@ -751,16 +908,127 @@ class DiarizationEngine:
                     'resolution_scales': resolution_scales,
                     'merge_strategy': merge_strategy,
                     'ensemble_seeds': ensemble_seeds,
-                    'consensus_threshold': consensus_threshold
+                    'consensus_threshold': consensus_threshold,
+                    'provider': self.active_provider.provider_name if self.active_provider else 'unknown'
                 },
                 'num_speakers': len(set(seg['speaker_id'] for seg in segments)),
                 'total_speech_time': sum(seg['end'] - seg['start'] for seg in segments),
                 'num_segments': len(segments),
-                'quality_metrics': self._calculate_variant_quality_metrics(segments)
+                'quality_metrics': quality_metrics,
+                'provider_metadata': provider_result.provider_metadata,
+                'provider_confidence': provider_result.confidence_score,
+                'provider_processing_time': provider_result.processing_time
             }
             
-        except Exception as e:
-            raise Exception(f"Diarization variant {variant_id} failed: {str(e)}")
+        except Exception as provider_error:
+            # Check if it's a specific DiarizationError (if available) or general error
+            is_diarization_error = (PROVIDERS_AVAILABLE and 
+                                  DiarizationError is not None and 
+                                  isinstance(provider_error, DiarizationError))
+            
+            if is_diarization_error:
+                # Handle provider-specific errors with fallback
+                self.structured_logger.error(f"Provider diarization failed: {provider_error}")
+                if self.pipeline is not None:
+                    print(f"⚠ Provider failed, falling back to pipeline for variant {variant_id}")
+                    # Fallback to pipeline system
+                    return self._run_pipeline_variant(
+                        audio_path, variant_id, min_speakers, max_speakers,
+                        clustering_threshold, vad_onset, vad_offset, seed, variant_name,
+                        resolution_scales, merge_strategy, ensemble_seeds, consensus_threshold
+                    )
+                else:
+                    raise Exception(f"Provider variant {variant_id} failed and no fallback available: {str(provider_error)}")
+            else:
+                # Generic error - treat as provider failure
+                raise Exception(f"Provider variant {variant_id} failed: {str(provider_error)}")
+    
+    def _run_pipeline_variant(self, audio_path: str, variant_id: int, 
+                            min_speakers: int, max_speakers: int,
+                            clustering_threshold: float, vad_onset: float,
+                            vad_offset: float, seed: int, variant_name: str = "Unknown",
+                            resolution_scales: Optional[List[float]] = None,
+                            merge_strategy: Optional[str] = None,
+                            ensemble_seeds: Optional[List[int]] = None,
+                            consensus_threshold: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Run variant using fallback pipeline system (pyannote or mock).
+        
+        This is the original implementation moved to a separate method for fallback.
+        """
+        # Run diarization with parameters
+        if self.pipeline is None:
+            raise Exception("Pipeline not available for fallback")
+        
+        diarization = self.pipeline(
+            audio_path,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+            seed=seed
+        )
+        
+        # Convert to our format
+        segments = []
+        speaker_embeddings = {}
+        
+        for track_info in diarization.itertracks(yield_label=True):
+            # Handle different tuple sizes from itertracks
+            if len(track_info) == 3:
+                segment, _, speaker = track_info
+            else:
+                segment, speaker = track_info
+            
+            segment_data = {
+                'start': segment.start,
+                'end': segment.end,
+                'speaker_id': speaker,
+                'confidence': random.uniform(0.7, 0.95)  # Mock confidence
+            }
+            segments.append(segment_data)
+            
+            # Mock speaker embeddings (in practice these would be real)
+            if speaker not in speaker_embeddings:
+                speaker_embeddings[speaker] = np.random.randn(512).tolist()
+        
+        # Create RTTM format data
+        rttm_data = self._create_rttm_data(segments)
+        
+        # Handle variant-specific processing
+        if resolution_scales and merge_strategy:
+            # Multi-resolution processing
+            segments = self._apply_multi_resolution_processing(
+                segments, resolution_scales, merge_strategy
+            )
+        elif ensemble_seeds and consensus_threshold:
+            # Ensemble-based processing  
+            segments = self._apply_ensemble_processing(
+                segments, audio_path, ensemble_seeds, consensus_threshold
+            )
+        
+        return {
+            'variant_id': variant_id,
+            'variant_name': variant_name,
+            'segments': segments,
+            'speaker_embeddings': speaker_embeddings,
+            'rttm_data': rttm_data,
+            'parameters': {
+                'min_speakers': min_speakers,
+                'max_speakers': max_speakers,
+                'clustering_threshold': clustering_threshold,
+                'vad_onset': vad_onset,
+                'vad_offset': vad_offset,
+                'seed': seed,
+                'variant_name': variant_name,
+                'resolution_scales': resolution_scales,
+                'merge_strategy': merge_strategy,
+                'ensemble_seeds': ensemble_seeds,
+                'consensus_threshold': consensus_threshold
+            },
+            'num_speakers': len(set(seg['speaker_id'] for seg in segments)),
+            'total_speech_time': sum(seg['end'] - seg['start'] for seg in segments),
+            'num_segments': len(segments),
+            'quality_metrics': self._calculate_variant_quality_metrics(segments)
+        }
     
     def _create_rttm_data(self, segments: List[Dict[str, Any]]) -> List[str]:
         """
