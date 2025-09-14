@@ -13,7 +13,7 @@ class FileHandler:
         self.base_dir = base_dir or tempfile.gettempdir()
         self.session_dir = None
     
-    def create_session_directory(self, session_id: str = None) -> str:
+    def create_session_directory(self, session_id: Optional[str] = None) -> str:
         """
         Create a unique session directory for processing files.
         
