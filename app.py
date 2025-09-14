@@ -421,6 +421,12 @@ def render_main_page():
     
     if st.session_state.drive_file_info:
         
+        # Simple button test
+        st.write("**Button Test:**")
+        if st.button("TEST BUTTON - Click Me", key="test_button"):
+            st.write("✅ TEST BUTTON WORKS!")
+            st.balloons()
+        
         # Processing parameters
         st.header("⚙️ Processing Configuration")
         col1, col2 = st.columns(2)
