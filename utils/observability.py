@@ -428,7 +428,7 @@ def trace_stage(stage_name: str):
             if obs_manager:
                 with obs_manager.create_span(stage_name) as span:
                     span.set_attribute("function", func.__name__)
-                    span.set_attribute("component", getattr(self, '__class__', {}).get('__name__', 'unknown'))
+                    span.set_attribute("component", type(self).__name__)
                     
                     start_time = time.time()
                     try:

@@ -54,7 +54,7 @@ class EnhancedStructuredLogger:
         entry: Dict[str, Any] = {
             'session_id': self.session_id,
             'component': self.name,
-            'level': level
+            'severity': level
         }
         
         if self.run_id:
