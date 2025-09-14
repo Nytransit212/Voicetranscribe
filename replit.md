@@ -15,7 +15,7 @@ Preferred communication style: Simple, everyday language.
 ### Frontend Architecture
 - **Streamlit Web Interface**: Single-page application built with Streamlit for file upload and processing visualization
 - **Real-time Progress Tracking**: Session state management for tracking processing stages and displaying results
-- **File Upload Handling**: Support for MP4 video files up to 90 minutes with size validation and metadata display
+- **Simple File Upload**: Standard Streamlit file uploader supporting MP4 video files up to 200MB with type and size validation
 
 ### Backend Architecture
 - **Modular Processing Pipeline**: Organized into distinct processing stages through the EnsembleManager orchestrator
@@ -67,3 +67,4 @@ Preferred communication style: Simple, everyday language.
 ### Authentication Requirements
 - **OPENAI_API_KEY**: Required environment variable for OpenAI Whisper access
 - **HUGGINGFACE_TOKEN**: Required for accessing pyannote.audio models
+- **ASSEMBLYAI_API_KEY**: Required for production-grade speaker diarization service
