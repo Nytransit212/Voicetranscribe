@@ -91,6 +91,9 @@ class GoogleDriveHandler:
             
             logger.info("Google Drive client initialized successfully")
             
+            # Automatically ensure folder is shared with service account
+            self._ensure_folder_shared_with_service_account()
+            
         except Exception as e:
             logger.error(f"Failed to initialize Google Drive client: {e}")
             # Don't re-raise the exception - allow the app to continue without Google Drive
@@ -232,8 +235,7 @@ class GoogleDriveHandler:
                 if progress_callback:
                     progress_callback(file_path.stat().st_size, file_path.stat().st_size)
                 
-                # Ensure service account has read access
-                self._ensure_service_account_access(file_obj['id'])
+                # Note: Folder-level sharing handles file access
                 
                 return {
                     'status': 'success',
@@ -301,8 +303,7 @@ class GoogleDriveHandler:
                         else:
                             raise
                 
-                # Ensure service account has read access
-                self._ensure_service_account_access(response['id'])
+                # Note: Folder-level sharing handles file access
                 
                 logger.info(f"Upload completed: {response['name']}")
                 
@@ -320,25 +321,30 @@ class GoogleDriveHandler:
             raise
     
     
-    def _ensure_service_account_access(self, file_id: str) -> None:
-        """Ensure the service account has read access to the file"""
+    def _ensure_folder_shared_with_service_account(self) -> None:
+        """Ensure the entire Google Drive folder is shared with the service account"""
         try:
-            if self.service is None:
-                logger.warning("Cannot ensure service account access: service not initialized")
+            if self.service is None or not self.folder_id:
+                logger.warning("Cannot ensure folder access: service not initialized or no folder ID")
                 return
             
             # Get current service account email
+            if self.credentials is None:
+                logger.warning("Service account credentials not available")
+                return
+                
             service_account_email = self.credentials.service_account_email
+            logger.info(f"Checking folder access for service account: {service_account_email}")
             
-            # Check if service account already has access
-            permissions = self.service.permissions().list(fileId=file_id).execute()
+            # Check if service account already has access to the folder
+            permissions = self.service.permissions().list(fileId=self.folder_id).execute()
             
             for permission in permissions.get('permissions', []):
                 if permission.get('emailAddress') == service_account_email:
-                    logger.debug(f"Service account already has access to {file_id}")
+                    logger.info(f"Service account already has access to folder {self.folder_id}")
                     return
             
-            # Grant read access to service account
+            # Grant read access to service account for the entire folder
             permission = {
                 'type': 'user',
                 'role': 'reader',
@@ -346,15 +352,17 @@ class GoogleDriveHandler:
             }
             
             self.service.permissions().create(
-                fileId=file_id,
+                fileId=self.folder_id,
                 body=permission,
-                sendNotificationEmail=False
+                sendNotificationEmail=False,
+                supportsAllDrives=True
             ).execute()
             
-            logger.info(f"Granted read access to service account for file {file_id}")
+            logger.info(f"Successfully shared folder {self.folder_id} with service account")
             
         except Exception as e:
-            logger.warning(f"Could not ensure service account access to {file_id}: {e}")
+            logger.warning(f"Could not share folder with service account: {e}")
+            # This is not a critical error - continue with processing
     
     def download_file(
         self, 
