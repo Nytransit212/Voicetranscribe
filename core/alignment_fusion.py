@@ -413,7 +413,7 @@ class TemporalAligner:
         confidence_variance = np.var(confidences)
         consistency = 1.0 / (1.0 + confidence_variance)
         
-        return consistency
+        return float(consistency)
     
     def _calculate_text_agreement(self, word_variants: List[Dict[str, Any]]) -> float:
         """Calculate how much the word texts agree"""
@@ -533,7 +533,7 @@ class ConfusionSetAnalyzer:
         # Calculate metrics
         alignment_distance = self._calculate_alignment_distance(candidates)
         temporal_spread = alignment.timestamp_end - alignment.timestamp_start
-        confidence_variance = np.var([c.get('confidence', 0.0) for c in candidates])
+        confidence_variance = float(np.var([c.get('confidence', 0.0) for c in candidates]))
         
         return ConfusionSet(
             timestamp_start=alignment.timestamp_start,

@@ -4,7 +4,7 @@ integrations = ["python_openai:1.0.0"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["antlr", "ffmpeg-full", "glibcLocales", "jre", "libiconv", "libsndfile", "libxcrypt", "libyaml", "pkg-config", "xsimd"]
+packages = ["antlr", "ffmpeg-full", "glibcLocales", "jre", "libiconv", "libjpeg_turbo", "libpng", "libsndfile", "libxcrypt", "libyaml", "pkg-config", "which", "xsimd"]
 
 [deployment]
 deploymentTarget = "autoscale"
@@ -45,6 +45,10 @@ externalPort = 3000
 [[ports]]
 localPort = 36547
 externalPort = 3003
+
+[[ports]]
+localPort = 37709
+externalPort = 4200
 
 [[ports]]
 localPort = 42979

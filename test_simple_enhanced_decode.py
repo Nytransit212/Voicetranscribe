@@ -121,7 +121,7 @@ def test_core_functionality():
                 from collections import Counter
                 words = re.findall(r'\b[a-zA-Z]{4,}\b', text.lower())
                 word_freq = Counter(words)
-                return set(word for word, freq in word_freq.items() if freq > 1)[:10]
+                return set(list(word for word, freq in word_freq.items() if freq > 1)[:10])
             
             def _extract_technical_terms(self, text):
                 import re

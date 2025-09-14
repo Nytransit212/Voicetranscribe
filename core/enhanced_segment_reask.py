@@ -8,7 +8,7 @@ import tempfile
 import time
 import json
 import math
-from typing import Dict, List, Any, Optional, Tuple, Set, Union
+from typing import Dict, List, Any, Optional, Tuple, Set, Union, Callable
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from collections import defaultdict, Counter
@@ -371,7 +371,7 @@ class EnhancedSegmentReaskSystem:
         # 2. Length consistency
         lengths = [len(text.split()) for text in texts]
         length_std = np.std(lengths) if len(lengths) > 1 else 0.0
-        length_consistency = max(0.0, 1.0 - (length_std / max(np.mean(lengths), 1.0)))
+        length_consistency = max(0.0, 1.0 - (length_std / max(float(np.mean(lengths)), 1.0)))
         
         # 3. Confidence agreement
         confidence_agreement = 1.0 - np.std(confidences) if len(confidences) > 1 else 1.0
@@ -380,10 +380,10 @@ class EnhancedSegmentReaskSystem:
         edit_distance_agreement = self._calculate_edit_distance_agreement(texts)
         
         return {
-            'lexical_similarity': lexical_similarity,
-            'length_consistency': length_consistency,
-            'confidence_agreement': confidence_agreement,
-            'edit_distance_agreement': edit_distance_agreement
+            'lexical_similarity': float(lexical_similarity),
+            'length_consistency': float(length_consistency),
+            'confidence_agreement': float(confidence_agreement),
+            'edit_distance_agreement': float(edit_distance_agreement)
         }
     
     def _calculate_lexical_similarity(self, texts: List[str]) -> float:
@@ -410,7 +410,7 @@ class EnhancedSegmentReaskSystem:
                     similarity = intersection / union if union > 0 else 0.0
                     similarities.append(similarity)
         
-        return np.mean(similarities) if similarities else 0.0
+        return float(np.mean(similarities)) if similarities else 0.0
     
     def _calculate_edit_distance_agreement(self, texts: List[str]) -> float:
         """Calculate agreement based on normalized edit distances."""
@@ -427,7 +427,7 @@ class EnhancedSegmentReaskSystem:
                 similarity = SequenceMatcher(None, text1, text2).ratio()
                 agreements.append(similarity)
         
-        return np.mean(agreements) if agreements else 0.0
+        return float(np.mean(agreements)) if agreements else 0.0
     
     def _calculate_overall_agreement(self, agreement_metrics: Dict[str, float]) -> float:
         """Calculate overall agreement score from individual metrics."""
@@ -477,7 +477,7 @@ class EnhancedSegmentReaskSystem:
         # Adjust for confidence variance (higher variance = higher priority)
         confidences = voter_data['confidences']
         confidence_variance = np.var(confidences) if len(confidences) > 1 else 0.0
-        variance_factor = min(confidence_variance * 5, 1.0)
+        variance_factor = min(float(confidence_variance) * 5, 1.0)
         
         # Calculate final priority
         final_priority = base_priority + duration_factor * 2 + variance_factor * 2
@@ -486,7 +486,7 @@ class EnhancedSegmentReaskSystem:
     
     def process_segments_with_enhanced_reask(self, agreement_scores: List[SegmentAgreementScore],
                                            file_path: str, run_id: str,
-                                           progress_callback: Optional[callable] = None) -> Dict[str, Any]:
+                                           progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
         """
         Process flagged segments using enhanced re-ask with alternative chunking strategies.
         
@@ -535,7 +535,7 @@ class EnhancedSegmentReaskSystem:
             
             try:
                 result = self._reprocess_segment_with_strategies(
-                    segment_score, audio_data, sample_rate, file_path
+                    segment_score, audio_data, int(sample_rate), file_path
                 )
                 
                 if result:
@@ -767,7 +767,7 @@ class EnhancedSegmentReaskSystem:
             similarities.append(similarity)
         
         # Return average similarity as agreement score
-        return np.mean(similarities)
+        return float(np.mean(similarities))
     
     def get_system_status(self) -> Dict[str, Any]:
         """Get current status and statistics of the enhanced re-ask system."""
