@@ -390,38 +390,11 @@ def render_main_page():
     # File upload section
     st.header("📁 Upload Video File")
     
-    # Language selection
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        uploaded_file = st.file_uploader(
-            "Choose an MP4 video file (up to 90 minutes)",
-            type=['mp4'],
-            help="Upload your video file for ensemble transcription processing"
-        )
-    
-    with col2:
-        language_options = {
-            'auto': 'Auto-detect',
-            'en': 'English',
-            'es': 'Spanish', 
-            'fr': 'French',
-            'de': 'German',
-            'it': 'Italian',
-            'pt': 'Portuguese',
-            'ru': 'Russian',
-            'ja': 'Japanese',
-            'zh': 'Chinese',
-            'ko': 'Korean',
-            'ar': 'Arabic'
-        }
-        
-        selected_language = st.selectbox(
-            "Language",
-            options=list(language_options.keys()),
-            format_func=lambda x: language_options[x],
-            index=0,  # Default to auto-detect
-            help="Select the primary language or use auto-detect"
-        )
+    uploaded_file = st.file_uploader(
+        "Choose an MP4 video file (up to 90 minutes)",
+        type=['mp4'],
+        help="Upload your video file for ensemble transcription processing"
+    )
 
     if uploaded_file is not None:
         st.session_state.uploaded_file = uploaded_file
@@ -453,7 +426,7 @@ def render_main_page():
 
         # Process button
         if st.button("🚀 Start Ensemble Processing", disabled=st.session_state.processing):
-            process_video(uploaded_file, expected_speakers, noise_level, selected_language, st.session_state.scoring_weights)
+            process_video(uploaded_file, expected_speakers, noise_level, st.session_state.scoring_weights)
 
     # Display processing status
     if st.session_state.processing:
@@ -476,7 +449,7 @@ def render_main_page():
         with col2:
             st.info("💡 Use QC Dashboard to review flagged segments and apply repairs")
 
-def process_video(uploaded_file, expected_speakers, noise_level, selected_language, scoring_weights):
+def process_video(uploaded_file, expected_speakers, noise_level, scoring_weights):
     """Process the uploaded video through the ensemble pipeline"""
     st.session_state.processing = True
     st.session_state.results = None
@@ -495,7 +468,7 @@ def process_video(uploaded_file, expected_speakers, noise_level, selected_langua
         ensemble_manager = EnsembleManager(
             expected_speakers=expected_speakers,
             noise_level=noise_level.lower(),
-            target_language=selected_language if selected_language != 'auto' else None,
+            target_language="en",  # English only
             scoring_weights=scoring_weights,
             enable_versioning=True,
             consensus_strategy=st.session_state.consensus_strategy,
