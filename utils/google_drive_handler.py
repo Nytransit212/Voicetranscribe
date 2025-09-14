@@ -43,23 +43,29 @@ class GoogleDriveHandler:
     def _initialize_client(self) -> None:
         """Initialize Google Drive API client using service account credentials"""
         try:
-            # Get service account credentials from environment variable
+            # Try to load credentials from environment variable or local file
             service_account_key = os.getenv('GOOGLE_SERVICE_ACCOUNT_KEY', '').strip()
+            service_account_info = None
             
-            # Check if environment variable is properly set
-            if not service_account_key:
-                raise ValueError("GOOGLE_SERVICE_ACCOUNT_KEY environment variable is not set or is empty")
+            # Try environment variable first
+            if service_account_key and service_account_key.startswith('{') and service_account_key.endswith('}'):
+                try:
+                    service_account_info = json.loads(service_account_key)
+                    logger.info("✓ Loaded Google service account from environment variable")
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse environment variable JSON: {e}")
             
-            # Validate that it looks like JSON
-            if not service_account_key.startswith('{') or not service_account_key.endswith('}'):
-                raise ValueError("GOOGLE_SERVICE_ACCOUNT_KEY does not appear to contain valid JSON (should start with '{' and end with '}')")
+            # Fall back to local file
+            if not service_account_info:
+                try:
+                    with open('google-service-account.json', 'r') as f:
+                        service_account_info = json.load(f)
+                    logger.info("✓ Loaded Google service account from local file")
+                except (FileNotFoundError, json.JSONDecodeError) as e:
+                    logger.warning(f"Failed to load from local file: {e}")
             
-            # Parse JSON credentials
-            try:
-                service_account_info = json.loads(service_account_key)
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON parsing failed. First 100 chars of key: {service_account_key[:100]}")
-                raise ValueError(f"Invalid JSON in GOOGLE_SERVICE_ACCOUNT_KEY: {e}")
+            if not service_account_info:
+                raise ValueError("No valid Google service account credentials found")
             
             # Validate required fields in service account JSON
             required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email']
