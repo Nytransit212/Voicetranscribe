@@ -1,4 +1,4 @@
-modules = ["python-3.11"]
+modules = ["python-3.11", "python3"]
 [agent]
 integrations = ["python_openai:1.0.0"]
 
@@ -49,6 +49,10 @@ externalPort = 3003
 [[ports]]
 localPort = 37709
 externalPort = 4200
+
+[[ports]]
+localPort = 37757
+externalPort = 5173
 
 [[ports]]
 localPort = 42979

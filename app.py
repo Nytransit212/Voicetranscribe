@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import os
 import tempfile
 import json
@@ -12,6 +13,7 @@ from pages.qc_dashboard import render_qc_dashboard
 from utils.intelligent_cache import get_cache_manager
 from utils.segment_worklist import get_worklist_manager
 from utils.selective_asr import get_selective_asr_processor
+from utils.s3_direct_upload import create_s3_uploader, check_s3_credentials, get_s3_upload_component, get_streamlit_compatible_s3_upload_component
 import traceback
 
 st.set_page_config(
@@ -29,6 +31,13 @@ def main():
         st.session_state.results = None
     if 'uploaded_file' not in st.session_state:
         st.session_state.uploaded_file = None
+    if 'uploaded_file_path' not in st.session_state:
+        st.session_state.uploaded_file_path = None
+    # S3 upload session state
+    if 's3_upload_info' not in st.session_state:
+        st.session_state.s3_upload_info = None
+    if 's3_key' not in st.session_state:
+        st.session_state.s3_key = None
     if 'current_page' not in st.session_state:
         st.session_state.current_page = 'main'
     
@@ -387,21 +396,184 @@ def render_main_page():
     else:
         st.warning("⚠️ Diarization pipeline status unknown")
 
-    # File upload section
+    # S3 Direct Upload section
     st.header("📁 Upload Video File")
     
-    uploaded_file = st.file_uploader(
-        "Choose an MP4 video file (up to 90 minutes, max 1GB)",
-        type=['mp4'],
-        help="Upload your video file for ensemble transcription processing"
-    )
-
-    if uploaded_file is not None:
-        st.session_state.uploaded_file = uploaded_file
+    # Check S3 credentials
+    s3_configured, s3_msg, s3_status = check_s3_credentials()
+    
+    if not s3_configured:
+        st.error(f"⚠️ S3 Upload Not Available: {s3_msg}")
+        with st.expander("🔧 S3 Configuration Required", expanded=True):
+            st.markdown("""
+            **Required Environment Variables:**
+            - `S3_BUCKET_NAME`: Your S3 bucket name
+            - `AWS_ACCESS_KEY_ID`: Your AWS access key ID  
+            - `AWS_SECRET_ACCESS_KEY`: Your AWS secret access key
+            
+            **Current Status:**
+            """)
+            for var, status in s3_status.items():
+                st.text(f"• {var}: {status}")
+        st.stop()
+    else:
+        st.success(f"✅ S3 Upload Available: {s3_msg}")
         
-        # Display file info
-        file_size_mb = uploaded_file.size / (1024 * 1024)
-        st.info(f"📄 File: {uploaded_file.name} ({file_size_mb:.1f} MB)")
+        # Initialize S3 uploader
+        s3_uploader = create_s3_uploader()
+        if not s3_uploader:
+            st.error("Failed to initialize S3 uploader")
+            st.stop()
+        
+        # Pure Client-Side S3 Upload UI
+        st.subheader("🚀 Pure Client-Side S3 Upload (Up to 5GB)")
+        st.info("📌 **No server limitations:** Files upload directly from your browser to S3, bypassing all server upload limits!")
+        
+        # Handle JavaScript postMessage communication for upload requests
+        if 'upload_request_pending' not in st.session_state:
+            st.session_state.upload_request_pending = None
+        
+        # Check for upload request from JavaScript
+        upload_request = st.session_state.get('upload_request_pending')
+        if upload_request:
+            try:
+                # Generate specific pre-signed URL for the requested file
+                success, msg, upload_info = s3_uploader.generate_specific_presigned_url_for_client(
+                    upload_request['session_id'],
+                    upload_request['file_name'],
+                    upload_request['file_size']
+                )
+                
+                if success:
+                    # Store upload info for JavaScript component to use
+                    st.session_state.s3_upload_info_ready = {
+                        'success': True,
+                        'upload_info': upload_info,
+                        'message': msg
+                    }
+                else:
+                    st.session_state.s3_upload_info_ready = {
+                        'success': False,
+                        'message': msg
+                    }
+                
+                # Clear the request
+                st.session_state.upload_request_pending = None
+                
+            except Exception as e:
+                st.session_state.s3_upload_info_ready = {
+                    'success': False,
+                    'message': f"Error generating upload URL: {str(e)}"
+                }
+                st.session_state.upload_request_pending = None
+        
+        # Display Pure Client-Side S3 upload component
+        s3_upload_component = get_streamlit_compatible_s3_upload_component(s3_uploader)
+        
+        # Add JavaScript message handler for communication with the component
+        message_handler_js = """
+        <script>
+        function handleS3Messages(event) {
+            if (event.data.type === 'S3_UPLOAD_REQUEST') {
+                // Store upload request in Streamlit session state
+                window.streamlitUploadRequest = event.data;
+                
+                // Trigger Streamlit rerun to process the request
+                window.parent.postMessage({
+                    type: 'streamlit:rerun',
+                    upload_request: event.data
+                }, '*');
+            } else if (event.data.type === 'S3_UPLOAD_COMPLETE') {
+                // Store upload completion in Streamlit session state
+                window.streamlitUploadComplete = event.data;
+                
+                // Trigger Streamlit rerun to process completion
+                window.parent.postMessage({
+                    type: 'streamlit:rerun',
+                    upload_complete: event.data
+                }, '*');
+            }
+        }
+        
+        // Add message listener
+        window.addEventListener('message', handleS3Messages);
+        
+        // Send upload info back to component if available
+        if (window.streamlit_upload_info_ready) {
+            // Find the iframe with the upload component and send the info
+            const iframes = document.querySelectorAll('iframe');
+            iframes.forEach(iframe => {
+                if (iframe.contentWindow) {
+                    iframe.contentWindow.postMessage({
+                        type: 'S3_UPLOAD_INFO',
+                        ...window.streamlit_upload_info_ready
+                    }, '*');
+                }
+            });
+            
+            // Clear the info after sending
+            window.streamlit_upload_info_ready = null;
+        }
+        </script>
+        """
+        
+        # Inject message handler
+        components.html(message_handler_js, height=0)
+        
+        # Display the upload component
+        components.html(s3_upload_component, height=500, scrolling=True)
+        
+        # Pass upload info ready state to JavaScript
+        if 's3_upload_info_ready' in st.session_state:
+            upload_info_ready = st.session_state.s3_upload_info_ready
+            components.html(f"""
+            <script>
+            window.streamlit_upload_info_ready = {json.dumps(upload_info_ready)};
+            </script>
+            """, height=0)
+            del st.session_state.s3_upload_info_ready
+        
+        # Handle completed uploads from JavaScript postMessage
+        if 's3_upload_complete' in st.session_state and st.session_state.s3_upload_complete:
+            upload_complete_info = st.session_state.s3_upload_complete
+            
+            # Verify the upload completion
+            verify_success, verify_msg, file_info = s3_uploader.verify_upload_completion(
+                upload_complete_info['s3_key']
+            )
+            
+            if verify_success:
+                st.success(f"✅ Upload verified: {upload_complete_info['file_name']} ({verify_msg})")
+                
+                # Set upload paths for processing
+                st.session_state.uploaded_file_path = f"s3://{upload_complete_info['bucket_name']}/{upload_complete_info['s3_key']}"
+                st.session_state.s3_key = upload_complete_info['s3_key']
+                
+                # Store upload info for reference
+                st.session_state.s3_upload_info = {
+                    's3_key': upload_complete_info['s3_key'],
+                    'file_name': upload_complete_info['file_name'],
+                    'file_size': upload_complete_info['file_size'],
+                    'bucket_name': upload_complete_info['bucket_name']
+                }
+                
+                upload_complete = True
+                uploaded_file_path = st.session_state.uploaded_file_path
+                
+                # Clear the completion flag
+                del st.session_state.s3_upload_complete
+                
+            else:
+                st.error(f"❌ Upload verification failed: {verify_msg}")
+                st.session_state.uploaded_file_path = None
+                st.session_state.s3_key = None
+                upload_complete = False
+                uploaded_file_path = None
+        else:
+            upload_complete = 's3_upload_info' in st.session_state and st.session_state.s3_upload_info
+            uploaded_file_path = st.session_state.get('uploaded_file_path')
+    
+    if upload_complete and uploaded_file_path:
         
         # Processing parameters
         st.header("⚙️ Processing Configuration")
@@ -424,9 +596,39 @@ def render_main_page():
                 help="Background noise level in the recording environment"
             )
 
+        # Add JavaScript to handle S3 upload completion messages
+        # JavaScript message handler for S3 upload completion
+        js_code = f"""
+        <script>
+        window.addEventListener('message', function(event) {{
+            if (event.data.type === 'S3_UPLOAD_COMPLETE') {{
+                // Store upload info in Streamlit
+                window.parent.postMessage({{
+                    type: 'streamlit:setComponentValue',
+                    value: {{
+                        s3_key: event.data.s3_key,
+                        file_name: event.data.file_name,
+                        file_size: event.data.file_size,
+                        bucket_name: '{s3_uploader.bucket_name}'
+                    }}
+                }}, '*');
+                
+                // Trigger Streamlit rerun
+                window.parent.postMessage({{
+                    type: 'streamlit:rerun'
+                }}, '*');
+            }}
+        }});
+        </script>
+        """
+        components.html(js_code, height=0)
+        
         # Process button
         if st.button("🚀 Start Ensemble Processing", disabled=st.session_state.processing):
-            process_video(uploaded_file, expected_speakers, noise_level, st.session_state.scoring_weights)
+            if uploaded_file_path.startswith('s3://'):
+                process_video_from_s3(uploaded_file_path, expected_speakers, noise_level, st.session_state.scoring_weights)
+            else:
+                process_video_from_path(uploaded_file_path, expected_speakers, noise_level, st.session_state.scoring_weights)
 
     # Display processing status
     if st.session_state.processing:
@@ -449,20 +651,87 @@ def render_main_page():
         with col2:
             st.info("💡 Use QC Dashboard to review flagged segments and apply repairs")
 
-def process_video(uploaded_file, expected_speakers, noise_level, scoring_weights):
-    """Process the uploaded video through the ensemble pipeline"""
+def process_video_from_s3(s3_url, expected_speakers, noise_level, scoring_weights):
+    """Process video from S3 by downloading first, then using existing pipeline"""
     st.session_state.processing = True
     st.session_state.results = None
     
     progress_bar = st.progress(0)
     status_text = st.empty()
-    tmp_path = None
     
     try:
-        # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
-            tmp_file.write(uploaded_file.read())
-            tmp_path = tmp_file.name
+        # Extract S3 key from URL (format: s3://bucket/key)
+        s3_key = s3_url.replace(f"s3://{st.session_state.get('s3_uploader', {}).get('bucket_name', '')}/", "")
+        if not s3_key or s3_key == s3_url:
+            # Fallback: parse manually
+            s3_key = st.session_state.get('s3_key', '')
+        
+        if not s3_key:
+            st.error("❌ Could not determine S3 key for download")
+            st.session_state.processing = False
+            return
+        
+        status_text.text("🔽 Downloading video from S3...")
+        progress_bar.progress(10)
+        
+        # Initialize S3 uploader for download
+        from utils.s3_direct_upload import create_s3_uploader
+        s3_uploader = create_s3_uploader()
+        if not s3_uploader:
+            st.error("❌ Failed to initialize S3 uploader for download")
+            st.session_state.processing = False
+            return
+        
+        # Download file from S3 to temporary local path
+        download_success, download_msg, local_path = s3_uploader.download_from_s3(s3_key)
+        
+        if not download_success:
+            st.error(f"❌ S3 download failed: {download_msg}")
+            st.session_state.processing = False
+            return
+        
+        status_text.text(f"✅ Downloaded from S3: {download_msg}")
+        progress_bar.progress(20)
+        
+        # Process using existing pipeline
+        process_video_from_local_path(local_path, expected_speakers, noise_level, scoring_weights, s3_key, progress_bar, status_text, start_progress=20)
+        
+        # Cleanup: Delete downloaded file and S3 object
+        if os.path.exists(local_path):
+            os.unlink(local_path)
+        
+        # Cleanup S3 file (optional - user may want to keep it)
+        cleanup_success, cleanup_msg = s3_uploader.cleanup_uploaded_file(s3_key)
+        if cleanup_success:
+            st.info(f"🗑️ Cleaned up S3 file: {cleanup_msg}")
+        
+    except Exception as e:
+        st.error(f"❌ Error processing S3 video: {str(e)}")
+        st.session_state.processing = False
+        import traceback
+        st.error(traceback.format_exc())
+
+def process_video_from_path(video_file_path, expected_speakers, noise_level, scoring_weights):
+    """Process the video file from local path through the ensemble pipeline"""
+    return process_video_from_local_path(video_file_path, expected_speakers, noise_level, scoring_weights)
+
+def process_video_from_local_path(video_file_path, expected_speakers, noise_level, scoring_weights, s3_key=None, progress_bar=None, status_text=None, start_progress=0):
+    """Process the video file from local path through the ensemble pipeline"""
+    if not progress_bar:
+        progress_bar = st.progress(0)
+    if not status_text:
+        status_text = st.empty()
+    
+    if not st.session_state.processing:
+        st.session_state.processing = True
+        st.session_state.results = None
+    
+    try:
+        # File is available locally, use the path directly
+        tmp_path = video_file_path
+        
+        status_text.text("⚙️ Initializing ensemble manager...")
+        progress_bar.progress(start_progress + 10)
         
         # Initialize ensemble manager with versioning enabled, selected methods, and U7 settings
         ensemble_manager = EnsembleManager(
@@ -484,25 +753,40 @@ def process_video(uploaded_file, expected_speakers, noise_level, scoring_weights
         
         # Process through ensemble pipeline
         def update_progress(step, progress, message):
-            progress_bar.progress(progress)
+            # Scale progress to remaining 70% (20-90%)
+            scaled_progress = start_progress + 20 + int((progress / 100) * 70)
+            progress_bar.progress(min(scaled_progress, 90))
             status_text.text(f"Step {step}: {message}")
+        
+        status_text.text("🚀 Starting ensemble processing...")
+        progress_bar.progress(start_progress + 20)
         
         results = ensemble_manager.process_video(tmp_path, update_progress)
         
-        # Clean up temporary file
-        os.unlink(tmp_path)
+        # Add S3 metadata if provided
+        if s3_key:
+            results['s3_metadata'] = {
+                's3_key': s3_key,
+                'processed_from_s3': True
+            }
+        
+        progress_bar.progress(95)
+        status_text.text("🧹 Cleaning up temporary files...")
+        
+        # Legacy chunked upload cleanup removed - using S3 direct upload
         
         # Store results
         st.session_state.results = results
         st.session_state.processing = False
         
         progress_bar.progress(100)
-        status_text.text("✅ Processing completed successfully!")
+        status_text.text("✅ Processing complete!")
         
-        st.success("🎉 Ensemble transcription completed! Check the results below.")
+        st.success(f"🎉 Ensemble processing completed successfully!")
+        st.success(f"🏆 Winner transcript selected with confidence: {results.get('winner_confidence', 0):.2f}")
         
-        # Display cost and performance metrics first
-        display_cost_performance_metrics(results)
+        if s3_key:
+            st.info("🌩️ Successfully processed video from S3 upload")
         
         st.rerun()
         
@@ -515,10 +799,11 @@ def process_video(uploaded_file, expected_speakers, noise_level, scoring_weights
         st.error("📋 Error details:")
         st.code(traceback.format_exc())
         
-        # Clean up temporary file if it exists
+        # Clean up temporary files on error
         try:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+            # Clean up the video file if it was downloaded/created
+            if 'video_file_path' in locals() and video_file_path and os.path.exists(video_file_path):
+                os.unlink(video_file_path)
         except:
             pass
 
@@ -874,33 +1159,33 @@ def render_u7_system_management():
                 
                 if selected_worklist:
                     # Load and display worklist details
-                    worklist_data = worklist_manager.load_worklist(selected_worklist['file_path'])
+                    worklist_data = worklist_manager.load_worklist(selected_worklist['file_path'], selected_worklist.get('run_id', 'default_run'))
                     
                     col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        st.metric("Total Segments", len(worklist_data.get('segments', [])))
+                        st.metric("Total Segments", len(worklist_data.flagged_segments) if worklist_data else 0)
                     with col2:
-                        st.metric("Flagged Segments", worklist_data.get('total_segments_flagged', 0))
+                        st.metric("Flagged Segments", worklist_data.total_segments_flagged if worklist_data else 0)
                     with col3:
-                        st.metric("Average Confidence", f"{worklist_data.get('average_confidence', 0):.2f}")
+                        st.metric("Average Confidence", f"{getattr(worklist_data, 'average_confidence', 0):.2f}" if worklist_data else "0.00")
                     
                     # Display flagged segments
-                    flagged_segments = [seg for seg in worklist_data.get('segments', []) if seg.get('flagged', False)]
+                    flagged_segments = worklist_data.flagged_segments if worklist_data else []
                     
                     if flagged_segments:
                         st.subheader("Flagged Segments")
                         
                         for i, segment in enumerate(flagged_segments):
-                            with st.expander(f"Segment {i+1}: {segment.get('start', 0):.1f}s - {segment.get('end', 0):.1f}s (Confidence: {segment.get('confidence', 0):.2f})"):
-                                st.text(f"Text: {segment.get('text', 'N/A')}")
-                                st.text(f"Speaker: {segment.get('speaker_id', 'N/A')}")
-                                st.text(f"Reason: {segment.get('flagging_reason', 'N/A')}")
+                            with st.expander(f"Segment {i+1}: {segment.start_time:.1f}s - {segment.end_time:.1f}s (Confidence: {segment.current_confidence:.2f})"):
+                                st.text(f"Text: {getattr(segment, 'original_transcript', 'N/A')}")
+                                st.text(f"Reason: {segment.flag_reason}")
+                                st.text(f"Priority: {segment.processing_priority}")
                                 
                                 # Option to unflag segment
                                 if st.button(f"🔓 Unflag Segment {i+1}", key=f"unflag_{i}"):
                                     try:
-                                        worklist_manager.unflag_segment(selected_worklist['file_path'], segment.get('segment_id'))
+                                        worklist_manager.unflag_segment(selected_worklist['file_path'], selected_worklist.get('run_id', 'default_run'), segment.segment_id)
                                         st.success("Segment unflagged successfully!")
                                         st.rerun()
                                     except Exception as e:
@@ -961,12 +1246,10 @@ def render_u7_system_management():
                                 try:
                                     # Add segment to worklist manually
                                     worklist_manager.flag_segment_manually(
-                                        segment_id=f"manual_{i}_{segment.get('start', 0)}",
-                                        start=segment.get('start', 0),
-                                        end=segment.get('end', 0),
-                                        text=segment.get('text', ''),
-                                        confidence=segment.get('confidence', 0),
-                                        speaker_id=segment.get('speaker_id', 'unknown'),
+                                        file_path=st.session_state.get('uploaded_file_path', 'unknown'),
+                                        run_id=results.get('run_id', 'default_run'),
+                                        start_time=segment.get('start', 0),
+                                        end_time=segment.get('end', 0),
                                         reason=flag_reason
                                     )
                                     st.success(f"Segment {i+1} flagged successfully!")
