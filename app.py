@@ -391,7 +391,7 @@ def render_main_page():
     st.header("📁 Upload Video File")
     
     uploaded_file = st.file_uploader(
-        "Choose an MP4 video file (up to 90 minutes)",
+        "Choose an MP4 video file (up to 90 minutes, max 1GB)",
         type=['mp4'],
         help="Upload your video file for ensemble transcription processing"
     )

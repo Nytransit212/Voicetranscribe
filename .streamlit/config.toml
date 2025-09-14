@@ -2,8 +2,8 @@
 headless = true
 address = "0.0.0.0"
 port = 5000
-maxUploadSize = 4000
-maxMessageSize = 2000
+maxUploadSize = 5000
+maxMessageSize = 5000
 fileWatcherType = "none"
 enableCORS = false
 enableWebsocketCompression = false
