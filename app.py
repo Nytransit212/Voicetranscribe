@@ -13,6 +13,8 @@ from pages.qc_dashboard import render_qc_dashboard
 from utils.intelligent_cache import get_cache_manager
 from utils.segment_worklist import get_worklist_manager
 from utils.selective_asr import get_selective_asr_processor
+from utils.streamlit_drive_uploader import get_drive_uploader
+from utils.google_drive_handler import download_file_from_drive
 import traceback
 
 st.set_page_config(
@@ -32,6 +34,8 @@ def main():
         st.session_state.uploaded_file = None
     if 'uploaded_file_path' not in st.session_state:
         st.session_state.uploaded_file_path = None
+    if 'drive_file_info' not in st.session_state:
+        st.session_state.drive_file_info = None
     if 'current_page' not in st.session_state:
         st.session_state.current_page = 'main'
     
@@ -390,37 +394,35 @@ def render_main_page():
     else:
         st.warning("⚠️ Diarization pipeline status unknown")
 
-    # Upload Video File section
-    st.header("📁 Upload Video File")
-    
-    # Simple file uploader with size limit
-    uploaded_file = st.file_uploader(
-        "Choose an MP4 video file",
-        type=['mp4'],
-        help="Upload an MP4 video file (up to 200MB) for ensemble transcription processing"
+    # Google Drive Upload Section
+    drive_uploader = get_drive_uploader()
+    upload_result = drive_uploader.render_upload_interface(
+        accept_types=['.mp4', '.avi', '.mov', '.mkv', '.webm'],
+        max_size_mb=200.0
     )
     
+    # Show recent uploads for quick access
+    recent_file_result = drive_uploader.show_recent_uploads(max_files=5)
+    if recent_file_result:
+        upload_result = recent_file_result
+    
     upload_complete = False
-    uploaded_file_path = None
     
-    if uploaded_file is not None:
-        # Check file size (200MB limit for reasonable processing)
-        file_size_mb = uploaded_file.size / (1024 * 1024)
-        if file_size_mb > 200:
-            st.error(f"❌ File too large ({file_size_mb:.1f}MB). Please upload a file smaller than 200MB.")
+    if upload_result and upload_result['status'] == 'success':
+        st.session_state.drive_file_info = upload_result
+        upload_complete = True
+        
+        # Show file info
+        file_size_mb = upload_result['size'] / (1024 * 1024)
+        st.success(f"✅ **{upload_result['filename']}** ready for processing ({file_size_mb:.1f}MB)")
+        
+        # Show file source info
+        if upload_result['source'] == 'uploaded_to_drive':
+            st.info("📤 File uploaded to Google Drive")
         else:
-            # Save uploaded file to temporary location
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
-                tmp_file.write(uploaded_file.read())
-                uploaded_file_path = tmp_file.name
-                
-            st.session_state.uploaded_file = uploaded_file
-            st.session_state.uploaded_file_path = uploaded_file_path
-            upload_complete = True
-            
-            st.success(f"✅ File uploaded successfully: {uploaded_file.name} ({file_size_mb:.1f}MB)")
+            st.info("🔗 Using existing Google Drive file")
     
-    if upload_complete and uploaded_file_path:
+    if upload_complete and st.session_state.drive_file_info:
         
         # Processing parameters
         st.header("⚙️ Processing Configuration")
@@ -445,7 +447,7 @@ def render_main_page():
 
         # Process button
         if st.button("🚀 Start Ensemble Processing", disabled=st.session_state.processing):
-            process_video_from_path(uploaded_file_path, expected_speakers, noise_level, st.session_state.scoring_weights)
+            process_video_from_drive(st.session_state.drive_file_info, expected_speakers, noise_level, st.session_state.scoring_weights)
 
     # Display processing status
     if st.session_state.processing:
@@ -548,14 +550,84 @@ def process_video_from_local_path(video_file_path, expected_speakers, noise_leve
         st.error(f"❌ Processing failed: {str(e)}")
         st.error("📋 Error details:")
         st.code(traceback.format_exc())
+
+def process_video_from_drive(drive_file_info, expected_speakers, noise_level, scoring_weights):
+    """Process video file from Google Drive by downloading it first"""
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    if not st.session_state.processing:
+        st.session_state.processing = True
+        st.session_state.results = None
+    
+    tmp_path = None
+    try:
+        # Step 1: Download file from Google Drive (0-20%)
+        status_text.text("📥 Downloading file from Google Drive...")
+        progress_bar.progress(5)
         
-        # Clean up temporary files on error
+        # Create temporary file for download
+        file_extension = os.path.splitext(drive_file_info['filename'])[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
+            tmp_path = tmp_file.name
+        
+        # Download with progress tracking
+        def download_progress_callback(downloaded_bytes: int, total_bytes: int):
+            if total_bytes > 0:
+                download_progress = int((downloaded_bytes / total_bytes) * 15)  # 0-15%
+                progress_bar.progress(5 + download_progress)
+                status_text.text(
+                    f"📥 Downloading: {downloaded_bytes:,} / {total_bytes:,} bytes "
+                    f"({downloaded_bytes/total_bytes:.1%})"
+                )
+        
+        # Download the file
+        success = download_file_from_drive(
+            drive_file_info['file_id'],
+            tmp_path,
+            show_progress=False  # We handle progress manually
+        )
+        
+        if not success:
+            raise Exception("Failed to download file from Google Drive")
+        
+        progress_bar.progress(20)
+        status_text.text("✅ Download completed, starting processing...")
+        
+        # Step 2: Process the downloaded file (20-100%)
         try:
-            # Clean up the video file if it was downloaded/created
-            if 'video_file_path' in locals() and video_file_path and os.path.exists(video_file_path):
-                os.unlink(video_file_path)
-        except:
-            pass
+            process_video_from_local_path(
+                tmp_path, 
+                expected_speakers, 
+                noise_level, 
+                scoring_weights,
+                progress_bar,
+                status_text,
+                start_progress=20
+            )
+        finally:
+            # Clean up downloaded temporary file
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception as cleanup_error:
+                    st.warning(f"Could not clean up temporary file: {cleanup_error}")
+        
+    except Exception as e:
+        st.session_state.processing = False
+        progress_bar.empty()
+        status_text.empty()
+        
+        st.error(f"❌ Processing failed: {str(e)}")
+        st.error("📋 Error details:")
+        st.code(traceback.format_exc())
+        
+        # Clean up temporary file if it exists
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
 
 def display_processing_status():
     """Display current processing status"""
@@ -827,6 +899,7 @@ def display_results():
     if st.button("🗑️ Clear Results and Start Over"):
         st.session_state.results = None
         st.session_state.uploaded_file = None
+        st.session_state.drive_file_info = None
         st.session_state.processing = False
         st.rerun()
 
