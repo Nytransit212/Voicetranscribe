@@ -137,7 +137,7 @@ class EnsembleManager:
         Process video through complete ensemble pipeline.
         
         Args:
-            video_path: Path to input MP4 video file
+            video_path: Path to input MP4 video file OR ASR-ready WAV file
             progress_callback: Optional callback for progress updates
             
         Returns:
@@ -180,31 +180,86 @@ class EnsembleManager:
                     self.structured_logger.info("U7: Complete processing result found in cache - returning cached result")
                     return cached_result
             
-            # Step 0: Track input video (versioning)
-            if self.enable_versioning and self.dvc_manager:
-                tracked_input_path, input_artifact = self.dvc_manager.track_input_file(video_path, self.run_id)
-                self.input_artifacts['input_video'] = input_artifact
-                self.structured_logger.info("Input video tracked", context={'tracked_path': tracked_input_path})
+            # CRITICAL FIX: Detect if input is already an ASR-ready WAV file
+            is_asr_wav_file = video_path.lower().endswith(('.wav', '_asr_ready.wav')) and os.path.exists(video_path)
             
-            # Step 1: Audio Extraction (0-10%)
-            if progress_callback:
-                progress_callback("A", 5, "Extracting audio from video...")
+            if is_asr_wav_file:
+                self.structured_logger.info("🎯 CRITICAL: Detected ASR-ready WAV file input - skipping audio extraction", 
+                                          context={'asr_wav_path': video_path, 'file_size': os.path.getsize(video_path)})
+                # Use the provided ASR WAV file directly
+                clean_audio_path = video_path
+                raw_audio_path = video_path  # Same file for both in this case
+                
+                # Track ASR WAV as input artifact
+                if self.enable_versioning and self.dvc_manager:
+                    tracked_input_path, input_artifact = self.dvc_manager.track_input_file(video_path, self.run_id)
+                    self.input_artifacts['input_asr_wav'] = input_artifact
+                    self.structured_logger.info("ASR WAV input tracked", context={'tracked_path': tracked_input_path})
+                
+                # Skip to audio duration check
+                if progress_callback:
+                    progress_callback("A", 10, "Using provided ASR-ready WAV file...")
+                    
+            else:
+                # Original video file processing path
+                self.structured_logger.info("📹 Processing video file - extracting audio", 
+                                          context={'video_path': video_path})
+                
+                # Step 0: Track input video (versioning)
+                if self.enable_versioning and self.dvc_manager:
+                    tracked_input_path, input_artifact = self.dvc_manager.track_input_file(video_path, self.run_id)
+                    self.input_artifacts['input_video'] = input_artifact
+                    self.structured_logger.info("Input video tracked", context={'tracked_path': tracked_input_path})
+                
+                # Step 1: Audio Extraction (0-10%)
+                if progress_callback:
+                    progress_callback("A", 5, "Extracting audio from video...")
+                
+                stage_start_time = time.time()
+                self.structured_logger.stage_start("audio_extraction", "Extracting and cleaning audio from video")
+                
+                raw_audio_path, clean_audio_path = self.audio_processor.extract_audio_from_video(video_path)
+                self.temp_audio_files.extend([raw_audio_path, clean_audio_path])
+                
+                # Track audio artifacts (versioning)
+                if self.enable_versioning and self.dvc_manager:
+                    audio_artifacts = self.dvc_manager.track_audio_artifacts(raw_audio_path, clean_audio_path, self.run_id)
+                    self.intermediate_artifacts.update(audio_artifacts)
+                
+                audio_extraction_time = time.time() - stage_start_time
+                self.structured_logger.stage_complete("audio_extraction", "Audio extraction completed", 
+                                                    duration=audio_extraction_time,
+                                                    context={'raw_audio_path': raw_audio_path, 'clean_audio_path': clean_audio_path})
             
-            stage_start_time = time.time()
-            self.structured_logger.stage_start("audio_extraction", "Extracting and cleaning audio from video")
+            # VALIDATION: Log audio file details for AssemblyAI integration
+            audio_size = os.path.getsize(clean_audio_path)
+            audio_format = clean_audio_path.split('.')[-1].lower()
             
-            raw_audio_path, clean_audio_path = self.audio_processor.extract_audio_from_video(video_path)
-            self.temp_audio_files.extend([raw_audio_path, clean_audio_path])
+            self.structured_logger.info("🎯 VALIDATION: Audio file prepared for ASR processing", 
+                                      context={
+                                          'audio_path': clean_audio_path,
+                                          'audio_size_bytes': audio_size,
+                                          'audio_format': audio_format,
+                                          'is_asr_ready_wav': is_asr_wav_file,
+                                          'expected_format': 'WAV (mono, 16kHz, PCM)',
+                                          'integration_target': 'AssemblyAI'
+                                      })
             
-            # Track audio artifacts (versioning)
-            if self.enable_versioning and self.dvc_manager:
-                audio_artifacts = self.dvc_manager.track_audio_artifacts(raw_audio_path, clean_audio_path, self.run_id)
-                self.intermediate_artifacts.update(audio_artifacts)
-            
-            audio_extraction_time = time.time() - stage_start_time
-            self.structured_logger.stage_complete("audio_extraction", "Audio extraction completed", 
-                                                duration=audio_extraction_time,
-                                                context={'raw_audio_path': raw_audio_path, 'clean_audio_path': clean_audio_path})
+            if is_asr_wav_file:
+                self.structured_logger.info("✅ CRITICAL SUCCESS: Using ASR-ready WAV file for ensemble processing", 
+                                          context={
+                                              'bypassed_video_extraction': True,
+                                              'audio_source': 'asr_wav_path',
+                                              'file_path': clean_audio_path
+                                          })
+            else:
+                self.structured_logger.info("📹 Using extracted audio from video file", 
+                                          context={
+                                              'performed_video_extraction': True,
+                                              'audio_source': 'video_extraction',
+                                              'raw_audio': raw_audio_path,
+                                              'clean_audio': clean_audio_path
+                                          })
             
             # Step 2: Audio Preprocessing (10-15%)
             if progress_callback:

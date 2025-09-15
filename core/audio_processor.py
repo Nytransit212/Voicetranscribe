@@ -20,6 +20,62 @@ class AudioProcessor:
         self.structured_logger = StructuredLogger("audio_processor")
     
     @subprocess_retry
+    def _ffmpeg_stream_copy_with_retry(self, input_path: str, output_path: str) -> subprocess.CompletedProcess:
+        """
+        Perform ffmpeg stream copy with retry logic and circuit breaker protection.
+        
+        Args:
+            input_path: Path to input video file
+            output_path: Path to output audio file
+            
+        Returns:
+            subprocess.CompletedProcess result
+            
+        Raises:
+            Various subprocess exceptions if ffmpeg fails after retries
+        """
+        return subprocess.run(
+            [
+                'ffmpeg', '-y', '-i', input_path, 
+                '-vn',  # No video
+                '-acodec', 'copy',  # Copy audio stream without re-encoding
+                output_path
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout for large files
+        )
+    
+    @subprocess_retry
+    def _ffmpeg_decode_to_wav_with_retry(self, input_path: str, output_path: str) -> subprocess.CompletedProcess:
+        """
+        Perform ffmpeg decode to ASR-ready WAV with retry logic.
+        
+        Args:
+            input_path: Path to pristine audio file (e.g., .m4a)
+            output_path: Path to output WAV file
+            
+        Returns:
+            subprocess.CompletedProcess result
+            
+        Raises:
+            Various subprocess exceptions if ffmpeg fails after retries
+        """
+        return subprocess.run(
+            [
+                'ffmpeg', '-y', '-i', input_path,
+                '-ac', '1',  # Mono
+                '-ar', str(self.target_sr),  # Target sample rate
+                '-c:a', 'pcm_s16le',  # PCM 16-bit little-endian
+                '-t', '5400',  # 90 minutes max
+                output_path
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600  # 10 minute timeout for decode operations
+        )
+    
+    @subprocess_retry
     def _check_ffmpeg_with_retry(self) -> subprocess.CompletedProcess:
         """
         Check FFmpeg availability with retry logic and circuit breaker protection.
@@ -109,73 +165,209 @@ class AudioProcessor:
 Run `ffmpeg -version` in your terminal to verify installation.
         """
     
+    def copy_audio_stream(self, video_path: str, output_path: Optional[str] = None) -> str:
+        """
+        Create pristine audio copy using ffmpeg stream copy to preserve original quality.
+        This avoids any decode/encode artifacts that could corrupt audio for ASR services.
+        
+        Args:
+            video_path: Path to input video file
+            output_path: Optional custom output path for audio copy
+            
+        Returns:
+            Path to pristine audio copy file
+            
+        Raises:
+            Exception: If stream copy fails after retries
+        """
+        # Determine output format and path
+        if output_path is None:
+            # Create temporary file with appropriate extension
+            audio_copy_fd, output_path = tempfile.mkstemp(suffix='_pristine.m4a')
+            os.close(audio_copy_fd)  # Close file descriptor, keep path
+        
+        try:
+            self.structured_logger.info(
+                f"Starting audio stream copy: {video_path} -> {output_path}",
+                context={'operation': 'stream_copy', 'input_path': video_path, 'output_path': output_path}
+            )
+            
+            # Use retry-protected stream copy
+            result = self._ffmpeg_stream_copy_with_retry(video_path, output_path)
+            
+            if result.returncode != 0:
+                error_msg = f"FFmpeg stream copy failed (exit code {result.returncode}): {result.stderr}"
+                self.structured_logger.error(error_msg, context={'stderr': result.stderr, 'stdout': result.stdout})
+                
+                # Attempt fallback to decode-only mode
+                self.structured_logger.warning("Attempting fallback to decode-only mode")
+                return self._fallback_decode_copy(video_path, output_path)
+            
+            # Verify output file was created and has content
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                raise Exception(f"Stream copy produced empty or missing file: {output_path}")
+            
+            self.structured_logger.info(
+                f"Audio stream copy completed successfully",
+                context={'output_path': output_path, 'file_size': os.path.getsize(output_path)}
+            )
+            
+            return output_path
+            
+        except CircuitBreakerOpenException:
+            error_msg = "FFmpeg service temporarily unavailable (circuit breaker open)"
+            self.structured_logger.error(error_msg)
+            raise Exception(error_msg)
+        except Exception as e:
+            # Clean up on failure
+            if os.path.exists(output_path):
+                try:
+                    os.unlink(output_path)
+                except OSError:
+                    pass
+            
+            error_msg = f"Audio stream copy failed: {str(e)}"
+            self.structured_logger.error(error_msg, context={'error_type': type(e).__name__})
+            raise Exception(error_msg)
+    
+    def _fallback_decode_copy(self, video_path: str, output_path: str) -> str:
+        """
+        Fallback method that decodes to high-quality audio when stream copy fails.
+        
+        Args:
+            video_path: Input video path
+            output_path: Desired output path
+            
+        Returns:
+            Path to decoded audio file
+        """
+        try:
+            # Use ffmpeg to decode to high-quality audio (not stream copy)
+            result = subprocess.run(
+                [
+                    'ffmpeg', '-y', '-i', video_path,
+                    '-vn',  # No video
+                    '-acodec', 'aac',  # Use AAC encoding
+                    '-b:a', '192k',  # High bitrate
+                    '-ar', '48000',  # High sample rate
+                    output_path
+                ],
+                capture_output=True,
+                text=True,
+                timeout=600
+            )
+            
+            if result.returncode != 0:
+                raise Exception(f"Fallback decode failed: {result.stderr}")
+            
+            self.structured_logger.info("Fallback decode completed successfully")
+            return output_path
+            
+        except Exception as e:
+            raise Exception(f"Both stream copy and fallback decode failed: {str(e)}")
+    
+    def make_asr_wav_from_audio(self, audio_path: str, output_path: Optional[str] = None) -> str:
+        """
+        Create ASR-ready WAV file from pristine audio copy.
+        
+        Args:
+            audio_path: Path to pristine audio file (from copy_audio_stream)
+            output_path: Optional custom output path for WAV file
+            
+        Returns:
+            Path to ASR-ready WAV file
+            
+        Raises:
+            Exception: If WAV creation fails after retries
+        """
+        # Create output path if not provided
+        if output_path is None:
+            wav_fd, output_path = tempfile.mkstemp(suffix='_asr_ready.wav')
+            os.close(wav_fd)  # Close file descriptor, keep path
+        
+        try:
+            self.structured_logger.info(
+                f"Creating ASR-ready WAV: {audio_path} -> {output_path}",
+                context={'operation': 'asr_wav_creation', 'input_path': audio_path, 'output_path': output_path}
+            )
+            
+            # Use retry-protected decode to WAV
+            result = self._ffmpeg_decode_to_wav_with_retry(audio_path, output_path)
+            
+            if result.returncode != 0:
+                error_msg = f"FFmpeg WAV creation failed (exit code {result.returncode}): {result.stderr}"
+                self.structured_logger.error(error_msg, context={'stderr': result.stderr, 'stdout': result.stdout})
+                raise Exception(error_msg)
+            
+            # Verify output file was created and has content
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                raise Exception(f"WAV creation produced empty or missing file: {output_path}")
+            
+            self.structured_logger.info(
+                f"ASR-ready WAV created successfully",
+                context={'output_path': output_path, 'file_size': os.path.getsize(output_path)}
+            )
+            
+            return output_path
+            
+        except CircuitBreakerOpenException:
+            error_msg = "FFmpeg service temporarily unavailable (circuit breaker open)"
+            self.structured_logger.error(error_msg)
+            raise Exception(error_msg)
+        except Exception as e:
+            # Clean up on failure
+            if os.path.exists(output_path):
+                try:
+                    os.unlink(output_path)
+                except OSError:
+                    pass
+            
+            error_msg = f"ASR WAV creation failed: {str(e)}"
+            self.structured_logger.error(error_msg, context={'error_type': type(e).__name__})
+            raise Exception(error_msg)
+    
     def extract_audio_from_video(self, video_path: str) -> Tuple[str, str]:
         """
-        Extract audio from MP4 video file and create both raw and cleaned versions.
+        Extract audio from MP4 video file and create both pristine copy and ASR-ready versions.
+        
+        This method now uses a two-step process:
+        1. Create pristine audio copy using stream copy (preserves quality)
+        2. Create ASR-ready WAV from the pristine copy
         
         Args:
             video_path: Path to input MP4 file
             
         Returns:
-            Tuple of (raw_audio_path, clean_audio_path)
+            Tuple of (pristine_audio_path, asr_wav_path)
         """
-        # Create temporary files for audio outputs
-        raw_audio_fd, raw_audio_path = tempfile.mkstemp(suffix='_raw.wav')
-        clean_audio_fd, clean_audio_path = tempfile.mkstemp(suffix='_clean.wav')
-        
-        # Close file descriptors immediately (we just need the paths)
-        os.close(raw_audio_fd)
-        os.close(clean_audio_fd)
-        
-        success = False
         try:
-            # Extract raw audio using ffmpeg at target sample rate (no resampling needed later)
-            (
-                ffmpeg
-                .input(video_path)
-                .output(
-                    raw_audio_path,
-                    acodec='pcm_s16le',
-                    ar=self.target_sr,
-                    ac=1,  # mono
-                    t=5400  # 90 minutes max
-                )
-                .overwrite_output()
-                .run(quiet=True)
+            # Step 1: Create pristine audio copy using stream copy
+            self.structured_logger.info(
+                "Starting two-step audio extraction process",
+                context={'input_video': video_path, 'operation': 'extract_audio_from_video'}
             )
             
-            # Load audio without resampling (FFmpeg already set to target_sr)
-            # Use sr=None to avoid redundant resampling since FFmpeg already outputs at target_sr
-            audio_data, sr = librosa.load(raw_audio_path, sr=None, mono=True)
+            pristine_audio_path = self.copy_audio_stream(video_path)
             
-            # Verify sample rate matches target (should always be true after FFmpeg processing)
-            if sr != self.target_sr:
-                # Fallback: resample only if necessary (shouldn't happen in normal operation)
-                audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=self.target_sr)
-                sr = self.target_sr
+            # Step 2: Create ASR-ready WAV from pristine copy
+            asr_wav_path = self.make_asr_wav_from_audio(pristine_audio_path)
             
-            # Apply preprocessing with standardized sample rate
-            cleaned_audio = self._preprocess_audio(audio_data, int(sr))
+            self.structured_logger.info(
+                "Audio extraction completed successfully",
+                context={
+                    'pristine_audio': pristine_audio_path,
+                    'asr_wav': asr_wav_path,
+                    'pristine_size': os.path.getsize(pristine_audio_path),
+                    'wav_size': os.path.getsize(asr_wav_path)
+                }
+            )
             
-            # Save cleaned audio at target sample rate
-            import soundfile as sf
-            sf.write(clean_audio_path, cleaned_audio, sr)
-            
-            success = True
-            return raw_audio_path, clean_audio_path
+            return pristine_audio_path, asr_wav_path
             
         except Exception as e:
-            raise Exception(f"Audio extraction failed: {str(e)}")
-            
-        finally:
-            # Clean up temp files only on failure
-            if not success:
-                for path in [raw_audio_path, clean_audio_path]:
-                    if os.path.exists(path):
-                        try:
-                            os.unlink(path)
-                        except OSError:
-                            pass  # Best effort cleanup
+            error_msg = f"Audio extraction failed: {str(e)}"
+            self.structured_logger.error(error_msg, context={'error_type': type(e).__name__, 'input_video': video_path})
+            raise Exception(error_msg)
     
     def _preprocess_audio(self, audio_data: np.ndarray, sr: int) -> np.ndarray:
         """

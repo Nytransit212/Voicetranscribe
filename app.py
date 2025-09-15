@@ -38,6 +38,13 @@ def main():
         st.session_state.drive_file_info = None
     if 'current_page' not in st.session_state:
         st.session_state.current_page = 'main'
+    # Audio processing paths for new two-step approach
+    if 'pristine_audio_path' not in st.session_state:
+        st.session_state.pristine_audio_path = None
+    if 'asr_wav_path' not in st.session_state:
+        st.session_state.asr_wav_path = None
+    if 'audio_processing_complete' not in st.session_state:
+        st.session_state.audio_processing_complete = False
     
     # Initialize scoring weights with defaults
     if 'scoring_weights' not in st.session_state:
@@ -479,7 +486,11 @@ def process_video_from_path(video_file_path, expected_speakers, noise_level, sco
     return process_video_from_local_path(video_file_path, expected_speakers, noise_level, scoring_weights)
 
 def process_video_from_local_path(video_file_path, expected_speakers, noise_level, scoring_weights, progress_bar=None, status_text=None, start_progress=0):
-    """Process the video file from local path through the ensemble pipeline"""
+    """Process the video/audio file from local path through the ensemble pipeline
+    
+    Note: video_file_path can now be either a video file (for direct processing)
+    or an ASR-ready WAV file (when called from the new audio processing pipeline)
+    """
     if not progress_bar:
         progress_bar = st.progress(0)
     if not status_text:
@@ -516,15 +527,16 @@ def process_video_from_local_path(video_file_path, expected_speakers, noise_leve
         
         # Process through ensemble pipeline
         def update_progress(step, progress, message):
-            # Scale progress to remaining 70% (20-90%)
-            scaled_progress = start_progress + 20 + int((progress / 100) * 70)
+            # Scale progress to remaining portion (depends on start_progress)
+            remaining_progress = 100 - start_progress - 10  # Leave 10% for finalization
+            scaled_progress = start_progress + 10 + int((progress / 100) * remaining_progress)
             progress_bar.progress(min(scaled_progress, 90))
             status_text.text(f"Step {step}: {message}")
         
         status_text.text("🚀 Starting ensemble processing...")
-        progress_bar.progress(start_progress + 20)
+        progress_bar.progress(start_progress + 10)
         
-        results = ensemble_manager.process_video(tmp_path, update_progress)
+        results = ensemble_manager.process_video(video_file_path, update_progress)
         
         
         progress_bar.progress(95)
@@ -595,26 +607,61 @@ def process_video_from_drive(drive_file_info, expected_speakers, noise_level, sc
             raise Exception("Failed to download file from Google Drive")
         
         progress_bar.progress(20)
-        status_text.text("✅ Download completed, starting processing...")
+        status_text.text("✅ Download completed, starting audio processing...")
         
-        # Step 2: Process the downloaded file (20-100%)
+        # Step 2: Extract pristine audio and create ASR-ready WAV (20-40%)
+        status_text.text("🎵 Creating pristine audio copy...")
+        progress_bar.progress(25)
+        
+        audio_processor = AudioProcessor()
+        
+        try:
+            # Create pristine audio copy using stream copy
+            pristine_audio_path = audio_processor.copy_audio_stream(tmp_path)
+            st.session_state.pristine_audio_path = pristine_audio_path
+            
+            progress_bar.progress(30)
+            status_text.text("🎵 Creating ASR-ready WAV...")
+            
+            # Create ASR-ready WAV from pristine copy
+            asr_wav_path = audio_processor.make_asr_wav_from_audio(pristine_audio_path)
+            st.session_state.asr_wav_path = asr_wav_path
+            st.session_state.audio_processing_complete = True
+            
+            progress_bar.progress(40)
+            status_text.text("✅ Audio processing completed, starting ensemble processing...")
+            
+            # Log successful audio processing
+            st.success(f"🎵 Audio processing completed successfully!")
+            st.info(f"📁 Pristine audio: {os.path.basename(pristine_audio_path)}")
+            st.info(f"🎯 ASR-ready WAV: {os.path.basename(asr_wav_path)}")
+            
+        except Exception as audio_error:
+            st.session_state.processing = False
+            raise Exception(f"Audio processing failed: {str(audio_error)}")
+        
+        # Step 3: Process through ensemble pipeline using ASR-ready WAV (40-100%)
         try:
             process_video_from_local_path(
-                tmp_path, 
+                asr_wav_path,  # Use ASR-ready WAV instead of original video
                 expected_speakers, 
                 noise_level, 
                 scoring_weights,
                 progress_bar,
                 status_text,
-                start_progress=20
+                start_progress=40
             )
         finally:
-            # Clean up downloaded temporary file
+            # Clean up downloaded temporary file (but keep audio files for session)
             if tmp_path and os.path.exists(tmp_path):
                 try:
                     os.unlink(tmp_path)
                 except Exception as cleanup_error:
                     st.warning(f"Could not clean up temporary file: {cleanup_error}")
+            
+            # Note: Audio files (pristine_audio_path and asr_wav_path) are kept
+            # in session state for potential reuse and will be cleaned up when
+            # session ends or explicitly cleared
         
     except Exception as e:
         st.session_state.processing = False
@@ -631,6 +678,11 @@ def process_video_from_drive(drive_file_info, expected_speakers, noise_level, sc
                 os.unlink(tmp_path)
             except:
                 pass
+        
+        # Clear audio processing state on error
+        st.session_state.pristine_audio_path = None
+        st.session_state.asr_wav_path = None
+        st.session_state.audio_processing_complete = False
 
 def display_processing_status():
     """Display current processing status"""
