@@ -535,10 +535,11 @@ class DiarizationEngine:
                 # Process each chunk for this variant
                 chunk_diarizations = []
                 for chunk_idx, chunk_path in enumerate(chunk_audio_paths):
-                    chunk_result = self._run_diarization_variant(
-                        chunk_path, **variant_config, 
-                        variant_name=f"{variant_name}_chunk_{chunk_idx}"
-                    )
+                    # Create chunk-specific config to avoid duplicate variant_name
+                    chunk_config = dict(variant_config)
+                    chunk_config['variant_name'] = f"{variant_name}_chunk_{chunk_idx}"
+                    
+                    chunk_result = self._run_diarization_variant(chunk_path, **chunk_config)
                     chunk_diarizations.append(chunk_result['segments'])
                 
                 # Apply speaker mapping across chunks
