@@ -14,7 +14,7 @@ from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
 
 from .base import DiarizationProvider, DiarizationResult, DiarizationError, ProviderStatus
-from utils.resilient_api import create_openai_retry_decorator
+from utils.resilient_api import create_requests_retry_decorator
 from utils.enhanced_structured_logger import create_enhanced_logger
 from utils.observability import trace_stage, track_cost
 from utils.intelligent_cache import get_cache_manager, cached_operation
@@ -58,7 +58,7 @@ class AssemblyAIDiarizationProvider(DiarizationProvider):
         self.cache_manager = get_cache_manager()
         
         # Configure retry decorator for AssemblyAI API calls
-        self._api_retry = create_openai_retry_decorator("assemblyai")
+        self._api_retry = create_requests_retry_decorator("assemblyai")
         
         # Configure circuit breaker
         self.circuit_breaker = get_circuit_breaker(

@@ -414,10 +414,169 @@ def create_subprocess_retry_decorator(service_name: str = 'subprocess') -> Calla
     return retry_decorator
 
 
+def create_requests_retry_decorator(service_name: str = 'requests') -> Callable:
+    """
+    Create tenacity retry decorator for requests.Session API calls.
+    
+    Args:
+        service_name: Name of service for config and telemetry
+        
+    Returns:
+        Configured retry decorator for requests operations
+    """
+    retry_config = get_retry_config(service_name)
+    cb_config = get_circuit_breaker_config(service_name)
+    
+    # Create circuit breaker
+    circuit_breaker = get_circuit_breaker(
+        service_name, 
+        CircuitBreakerConfig(
+            service_name=service_name,
+            failure_threshold=cb_config.failure_threshold,
+            recovery_timeout=cb_config.recovery_timeout,
+            success_threshold=cb_config.success_threshold,
+            timeout_counts_as_failure=cb_config.timeout_counts_as_failure,
+            max_failure_history=cb_config.max_failure_history
+        )
+    )
+    
+    # Define what to retry on for requests
+    def should_retry_requests_error(response_or_exception):
+        # If it's an exception, check if it's retriable
+        if isinstance(response_or_exception, Exception):
+            import requests.exceptions
+            return isinstance(response_or_exception, (
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.HTTPError,
+                requests.exceptions.RequestException
+            ))
+        
+        # If it's a response object, check status code
+        if hasattr(response_or_exception, 'status_code'):
+            status_code = response_or_exception.status_code
+            return status_code >= 500 or status_code == 429
+        
+        return False
+    
+    def retry_decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs) -> Any:
+            start_time = time.time()
+            attempt_count = 0
+            
+            # Before sleep callback with telemetry
+            def before_sleep(retry_state):
+                nonlocal attempt_count
+                attempt_count += 1
+                duration_ms = (time.time() - start_time) * 1000
+                
+                # Safely get exception
+                exception = None
+                try:
+                    if retry_state.outcome and retry_state.outcome.failed:
+                        exception = retry_state.outcome.exception()
+                except Exception:
+                    exception = getattr(retry_state, 'outcome_exception', None)
+                
+                # Record retry attempt in telemetry
+                try:
+                    retry_telemetry.record_retry_attempt(
+                        service=service_name,
+                        attempt=attempt_count,
+                        total_attempts=retry_config.max_attempts,
+                        error=exception,
+                        duration_ms=duration_ms,
+                        backoff_duration=getattr(retry_state.next_action, 'sleep', None) if hasattr(retry_state, 'next_action') else None
+                    )
+                except Exception:
+                    pass  # Never let telemetry break retry logic
+                
+                logging.getLogger(service_name).warning(
+                    f"Retrying {func.__name__} attempt {attempt_count}/{retry_config.max_attempts} "
+                    f"after {duration_ms:.1f}ms due to: {exception}"
+                )
+            
+            # Configure retrying
+            retryer = Retrying(
+                retry=retry_if_exception_type((Exception,)) | retry_if_result(should_retry_requests_error),
+                stop=stop_after_attempt(retry_config.max_attempts),
+                wait=wait_exponential(
+                    multiplier=retry_config.initial_wait,
+                    max=retry_config.max_wait,
+                    exp_base=retry_config.exponential_base
+                ),
+                before_sleep=before_sleep,
+                reraise=True
+            )
+            
+            try:
+                # Execute through circuit breaker
+                def circuit_wrapped_call():
+                    for attempt in retryer:
+                        with attempt:
+                            result = func(*args, **kwargs)
+                            
+                            # Check if result indicates failure
+                            if hasattr(result, 'status_code') and result.status_code >= 400:
+                                if should_retry_requests_error(result):
+                                    result.raise_for_status()  # This will raise an exception for retry
+                            
+                            # Record success
+                            try:
+                                duration_ms = (time.time() - start_time) * 1000
+                                retry_telemetry.record_retry_attempt(
+                                    service=service_name,
+                                    attempt=attempt_count + 1,
+                                    total_attempts=retry_config.max_attempts,
+                                    error=None,
+                                    duration_ms=duration_ms
+                                )
+                            except Exception:
+                                pass  # Never let telemetry break success
+                            
+                            return result
+                    
+                    # If we get here, retries exhausted
+                    raise Exception(f"Max retries ({retry_config.max_attempts}) exceeded for {service_name}")
+                
+                return circuit_breaker.call(circuit_wrapped_call)
+                
+            except CircuitBreakerOpenException:
+                # Circuit is open, record the event
+                try:
+                    retry_telemetry.record_circuit_breaker_event(
+                        service=service_name,
+                        event_type=RetryEventType.CIRCUIT_OPEN
+                    )
+                except Exception:
+                    pass
+                raise
+            
+            except Exception as e:
+                # Record final failure
+                try:
+                    duration_ms = (time.time() - start_time) * 1000
+                    retry_telemetry.record_retry_attempt(
+                        service=service_name,
+                        attempt=retry_config.max_attempts,
+                        total_attempts=retry_config.max_attempts,
+                        error=e,
+                        duration_ms=duration_ms
+                    )
+                except Exception:
+                    pass  # Never let telemetry break error handling
+                raise
+        
+        return wrapper
+    return retry_decorator
+
+
 # Pre-configured decorators for common services
 openai_retry = create_openai_retry_decorator()
 huggingface_retry = create_huggingface_retry_decorator()
 subprocess_retry = create_subprocess_retry_decorator()
+requests_retry = create_requests_retry_decorator()
 
 
 def get_circuit_breaker_status(service_name: str) -> dict:
