@@ -210,3 +210,105 @@ verifier:
   block_unseen_variants: true  # Block variants not in observed or glossary sets
   enable_number_formatting: true  # Preserve exact formatting for numbers/alphanumerics
   enable_telemetry: true       # Enable detailed metrics and logging
+
+# Automated Evaluation Gates System - Prevents Quality Regressions
+evaluation_gates:
+  enabled: true                 # Enable automated evaluation gates
+  fail_builds_on_violations: true  # Fail CI builds when thresholds violated
+  
+  # WER (Word Error Rate) Thresholds by scenario type (percentages)
+  wer_thresholds:
+    clean_audio: 1.0           # ≤1.0% for clean, clear audio scenarios
+    overlap_heavy: 3.0         # ≤3.0% for heavy speaker overlap scenarios  
+    challenging_audio: 5.0     # ≤5.0% for challenging audio conditions
+    edge_cases: 10.0           # ≤10.0% for edge case scenarios
+    
+  # DER (Diarization Error Rate) Thresholds (percentages)
+  der_thresholds:
+    baseline: 5.0              # ≤5% speaker confusion rate for baseline
+    challenging: 15.0          # ≤15% for challenging diarization scenarios
+    
+  # Entity Accuracy Thresholds (percentages)
+  entity_accuracy_thresholds:
+    baseline: 95.0             # ≥95% for proper nouns, numbers, technical terms
+    challenging: 85.0          # ≥85% for challenging audio/content scenarios
+    
+  # Confidence Calibration Thresholds
+  confidence_thresholds:
+    baseline: 0.70             # ≥70% confidence calibration accuracy
+    challenging: 0.50          # ≥50% for challenging scenarios
+    
+  # Processing Performance Thresholds
+  performance_thresholds:
+    processing_time_ratio_max: 2.0      # Max 2x processing time vs audio duration
+    processing_time_ratio_challenging: 4.0  # Max 4x for challenging scenarios
+    
+  # Regression Detection Settings
+  regression_detection:
+    enabled: true              # Enable regression analysis against historical data
+    history_window_days: 30    # Days of historical data for comparison
+    wer_increase_max: 0.5      # Maximum WER increase (%) before regression alert
+    der_increase_max: 2.0      # Maximum DER increase (%) before regression alert
+    confidence_decrease_max: 5.0  # Maximum confidence decrease (%) before alert
+    statistical_confidence: 0.95  # 95% confidence interval for significance tests
+    min_samples_significance: 5    # Minimum samples needed for statistical tests
+    
+  # Test Execution Settings
+  test_execution:
+    enable_parallel_execution: true  # Run tests in parallel for faster execution
+    max_concurrent_tests: 4     # Maximum concurrent test executions
+    test_timeout_seconds: 300   # Timeout for individual test cases (5 minutes)
+    enable_live_processing: false  # Use live ensemble processing vs simulation
+    
+  # Reporting and Output Settings
+  reporting:
+    enable_detailed_reports: true   # Generate detailed evaluation reports
+    store_historical_results: true # Store results for regression tracking
+    results_retention_days: 90     # Days to retain historical results
+    enable_trend_analysis: true    # Enable trend analysis and projections
+    export_ci_artifacts: true     # Export results as CI artifacts
+    
+  # Gate Behavior Settings
+  gate_behavior:
+    warning_tolerance_percent: 10.0  # % within threshold to trigger warnings
+    enable_warnings_as_failures: false  # Treat warnings as CI failures
+    enable_statistical_significance: true  # Require statistical significance for failures
+    bypass_gates_on_emergency: false    # Emergency bypass (use with caution)
+    
+  # Test Suite Configuration
+  test_suite:
+    gold_test_set_path: "tests/gold_test_set"  # Path to gold standard test cases
+    test_definitions_file: "test_definitions.json"  # Test case definitions
+    ground_truth_directory: "ground_truth"     # Ground truth data directory
+    results_output_directory: "evaluation_results"  # Results storage directory
+    
+  # Entity Recognition Settings
+  entity_recognition:
+    entity_types:             # Types of entities to evaluate
+      - "proper_nouns"        # Person names, places, organizations
+      - "numbers"             # Numeric values, quantities, dates
+      - "technical_terms"     # Domain-specific technical terminology
+      - "alphanumeric_codes"  # Codes, IDs, reference numbers
+    fuzzy_matching_enabled: true     # Enable fuzzy matching for entity comparison
+    fuzzy_matching_threshold: 0.8    # Similarity threshold for fuzzy matches
+    case_sensitive_matching: false   # Case-insensitive entity matching
+    
+  # Integration Settings
+  integration:
+    ensemble_manager_integration: true  # Integrate with EnsembleManager
+    pytest_integration: true       # Enable pytest test runner integration  
+    ci_exit_codes:                 # Exit codes for CI integration
+      pass: 0                      # All gates passed
+      fail: 1                      # One or more gates failed
+      warning: 0                   # Warnings present but no failures
+      error: 1                     # System/execution errors
+    metric_export_format: "json"   # Format for metric exports (json, yaml, csv)
+    
+  # Advanced Settings
+  advanced:
+    enable_adaptive_thresholds: false  # Adaptive thresholds based on content difficulty
+    content_difficulty_analysis: true # Analyze content difficulty for threshold adjustment
+    enable_scenario_specific_gates: true  # Use different gates for different scenarios
+    bootstrap_confidence_intervals: true  # Use bootstrapping for confidence intervals
+    outlier_detection_enabled: true       # Detect and handle statistical outliers
+    outlier_threshold_std_devs: 2.5       # Standard deviations for outlier detection
