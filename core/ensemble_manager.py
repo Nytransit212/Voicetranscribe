@@ -27,11 +27,13 @@ from utils.selective_asr import get_selective_asr_processor, SelectiveASRProcess
 from utils.advanced_asr_scheduler import get_asr_scheduler, AdvancedASRScheduler
 from core.source_separation_engine import SourceSeparationEngine, SourceSeparationResult
 from core.post_fusion_punctuation_engine import PostFusionPunctuationEngine, create_punctuation_engine_from_preset
+from core.dialect_handling_engine import DialectHandlingEngine
+from core.dialect_config_loader import load_dialect_config
 
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
     
-    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None, enable_versioning: bool = True, domain: str = "general", consensus_strategy: str = "best_single_candidate", calibration_method: str = "registry_based", enable_speaker_mapping: bool = True, speaker_mapping_config: Optional[Dict[str, Any]] = None, chunked_processing_threshold: float = 900.0) -> None:
+    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None, enable_versioning: bool = True, domain: str = "general", consensus_strategy: str = "best_single_candidate", calibration_method: str = "registry_based", enable_speaker_mapping: bool = True, speaker_mapping_config: Optional[Dict[str, Any]] = None, chunked_processing_threshold: float = 900.0, enable_dialect_handling: bool = True, dialect_similarity_threshold: float = 0.7, dialect_confidence_boost: float = 0.05, supported_dialects: Optional[List[str]] = None) -> None:
         self.expected_speakers = expected_speakers
         self.noise_level = noise_level
         self.target_language = target_language  # None for auto-detect
@@ -65,6 +67,12 @@ class EnsembleManager:
             'consecutive_drift_threshold': 2
         }
         self.chunked_processing_threshold = chunked_processing_threshold  # Seconds (15 minutes default)
+        
+        # Dialect handling configuration
+        self.enable_dialect_handling = enable_dialect_handling
+        self.dialect_similarity_threshold = dialect_similarity_threshold
+        self.dialect_confidence_boost = dialect_confidence_boost
+        self.supported_dialects = supported_dialects or ['southern', 'aave', 'nyc', 'boston', 'midwest', 'west_coast']
         
         # U7 Upgrade: Initialize deterministic processing and other systems first
         # (run_id will be set later based on input for deterministic processing)
@@ -162,6 +170,44 @@ class EnsembleManager:
                 self.enable_post_fusion_punctuation = False
                 self.punctuation_engine = None
         
+        # Initialize dialect handling engine with proper config loading
+        try:
+            # Load dialect configuration from YAML
+            dialect_config = load_dialect_config()
+            
+            # Override enable setting if explicitly disabled
+            if not enable_dialect_handling:
+                dialect_config.enable_dialect_handling = False
+            
+            self.enable_dialect_handling = dialect_config.enable_dialect_handling
+            
+            if self.enable_dialect_handling:
+                self.dialect_engine = DialectHandlingEngine(
+                    similarity_threshold=dialect_config.similarity_threshold,
+                    confidence_boost_factor=dialect_config.confidence_boost_factor,
+                    supported_dialects=dialect_config.supported_dialects,
+                    enable_g2p_fallback=dialect_config.enable_g2p_fallback,
+                    config=dialect_config
+                )
+                
+                # Update instance variables to match loaded config
+                self.dialect_similarity_threshold = dialect_config.similarity_threshold
+                self.dialect_confidence_boost = dialect_config.confidence_boost_factor
+                self.supported_dialects = dialect_config.supported_dialects
+                
+                self.structured_logger.info(f"Dialect handling engine initialized with config from YAML")
+                self.structured_logger.info(f"Supported dialects: {dialect_config.supported_dialects}")
+                self.structured_logger.info(f"Similarity threshold: {dialect_config.similarity_threshold}")
+                self.structured_logger.info(f"Confidence boost factor: {dialect_config.confidence_boost_factor}")
+            else:
+                self.dialect_engine = None
+                self.structured_logger.info("Dialect handling disabled in configuration")
+                
+        except Exception as e:
+            self.structured_logger.warning(f"Failed to initialize dialect handling engine: {e}")
+            self.enable_dialect_handling = False
+            self.dialect_engine = None
+        
         # Initialize consensus module
         try:
             self.consensus_module = ConsensusModule(default_strategy=consensus_strategy)
@@ -178,6 +224,122 @@ class EnsembleManager:
         self.input_artifacts: Dict[str, Any] = {}
         self.intermediate_artifacts: Dict[str, Any] = {}
         self.output_artifacts: Dict[str, Any] = {}
+    
+    def _process_candidate_for_dialect(self, candidate: Dict[str, Any], aligned_segments: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        Process a candidate through dialect handling engine
+        
+        Args:
+            candidate: Original candidate dictionary
+            aligned_segments: Aligned segments from the candidate
+            
+        Returns:
+            Updated candidate with dialect adjustments or None if processing failed
+        """
+        if not self.dialect_engine:
+            return None
+        
+        try:
+            # Extract ASR data and create simplified ASR segments for dialect processing
+            asr_data = candidate.get('asr_data', {})
+            segments_for_processing = []
+            
+            # Convert aligned segments to ASR segments for dialect engine
+            for segment in aligned_segments:
+                # Create simplified ASRSegment-like object for processing
+                from core.asr_providers.base import ASRSegment
+                
+                asr_segment = ASRSegment(
+                    start=segment.get('start', 0.0),
+                    end=segment.get('end', 0.0),
+                    text=segment.get('text', ''),
+                    confidence=segment.get('confidence', 0.0),
+                    words=segment.get('words', []),
+                    speaker_id=segment.get('speaker_id', 'unknown')
+                )
+                segments_for_processing.append(asr_segment)
+            
+            # Create simplified ASRResult for dialect processing
+            from core.asr_providers.base import ASRResult, DecodeMode
+            
+            full_text = ' '.join(seg.text for seg in segments_for_processing if seg.text.strip())
+            avg_confidence = sum(seg.confidence for seg in segments_for_processing) / len(segments_for_processing) if segments_for_processing else 0.0
+            
+            asr_result = ASRResult(
+                segments=segments_for_processing,
+                full_text=full_text,
+                language='en',
+                confidence=avg_confidence,
+                calibrated_confidence=avg_confidence,
+                processing_time=0.0,
+                provider=asr_data.get('provider', 'unknown'),
+                decode_mode=DecodeMode.DETERMINISTIC,
+                model_name=asr_data.get('model_name', 'unknown'),
+                metadata={'dialect_processing': True}
+            )
+            
+            # Process through dialect handling engine
+            dialect_result = self.dialect_engine.process_asr_result(asr_result)
+            
+            if not dialect_result or dialect_result.overall_confidence_adjustment == 0.0:
+                return candidate  # No adjustment needed
+            
+            # Apply adjustments to the candidate
+            updated_candidate = candidate.copy()
+            
+            # Update aligned segments with adjusted confidences
+            updated_segments = []
+            for i, original_segment in enumerate(aligned_segments):
+                updated_segment = original_segment.copy()
+                
+                # Apply confidence adjustment if we have segment analysis
+                if i < len(dialect_result.segment_analyses):
+                    analysis = dialect_result.segment_analyses[i]
+                    adjustment = analysis.confidence_adjustments.get('segment', 0.0)
+                    
+                    # Apply adjustment
+                    original_confidence = updated_segment.get('confidence', 0.0)
+                    new_confidence = min(1.0, original_confidence + adjustment)
+                    updated_segment['confidence'] = new_confidence
+                    
+                    # Add dialect metadata
+                    if adjustment > 0.0:
+                        updated_segment['dialect_metadata'] = {
+                            'confidence_adjustment': adjustment,
+                            'patterns_matched': [p.pattern_id for p in analysis.dialect_patterns_matched],
+                            'phonetic_adjustments_count': len(analysis.phonetic_adjustments)
+                        }
+                
+                updated_segments.append(updated_segment)
+            
+            updated_candidate['aligned_segments'] = updated_segments
+            
+            # Update candidate metadata
+            updated_candidate['dialect_processing_metadata'] = {
+                'overall_adjustment': dialect_result.overall_confidence_adjustment,
+                'patterns_detected': dialect_result.dialect_patterns_detected,
+                'processing_time': dialect_result.processing_time,
+                'stats': dialect_result.processing_stats
+            }
+            
+            # Store confidence adjustments for tracking
+            confidence_adjustments = []
+            for analysis in dialect_result.segment_analyses:
+                if analysis.confidence_adjustments.get('segment', 0.0) > 0.0:
+                    confidence_adjustments.append({
+                        'segment_text': analysis.original_segment.text,
+                        'adjustment': analysis.confidence_adjustments.get('segment', 0.0),
+                        'patterns': [p.pattern_id for p in analysis.dialect_patterns_matched]
+                    })
+            
+            updated_candidate['confidence_adjustments'] = confidence_adjustments
+            updated_candidate['dialect_patterns_detected'] = dialect_result.dialect_patterns_detected
+            
+            return updated_candidate
+            
+        except Exception as e:
+            self.structured_logger.warning(f"Dialect processing error: {e}")
+            return None
     
     def _apply_source_separation_patches(self, 
                                        original_segments: List[Dict[str, Any]], 
@@ -710,7 +872,64 @@ class EnsembleManager:
             if progress_callback:
                 progress_callback("D", 75, f"ASR ensemble complete - {len(candidates)} candidates generated (5×5 matrix)")
             
-            # Step 5: Confidence Scoring (75-85%)
+            # Step 4.5: Dialect Processing (75-77%)
+            dialect_processed_candidates = candidates  # Default to original candidates
+            if self.enable_dialect_handling and self.dialect_engine:
+                if progress_callback:
+                    progress_callback("D2", 75.5, "Processing candidates for dialect variants...")
+                
+                stage_start_time = time.time()
+                self.structured_logger.stage_start("dialect_processing", "Processing ASR candidates for dialect handling",
+                                                 context={'candidates_count': len(candidates), 'supported_dialects': len(self.supported_dialects)})
+                
+                # Process each candidate through dialect handling
+                dialect_processed_candidates = []
+                total_adjustments = 0
+                total_patterns_detected = 0
+                
+                for i, candidate in enumerate(candidates):
+                    try:
+                        # Extract ASR result from candidate
+                        asr_data = candidate.get('asr_data', {})
+                        
+                        # Create simplified ASRResult for dialect processing
+                        # We'll work with the aligned segments which contain the transcription
+                        aligned_segments = candidate.get('aligned_segments', [])
+                        
+                        if aligned_segments:
+                            # Process the candidate for dialect variants
+                            dialect_result = self._process_candidate_for_dialect(candidate, aligned_segments)
+                            
+                            if dialect_result:
+                                total_adjustments += len(dialect_result['confidence_adjustments'])
+                                total_patterns_detected += len(dialect_result['dialect_patterns_detected'])
+                                dialect_processed_candidates.append(dialect_result)
+                            else:
+                                dialect_processed_candidates.append(candidate)
+                        else:
+                            dialect_processed_candidates.append(candidate)
+                    
+                    except Exception as e:
+                        self.structured_logger.warning(f"Dialect processing failed for candidate {i}: {e}")
+                        dialect_processed_candidates.append(candidate)  # Keep original on error
+                
+                dialect_processing_time = time.time() - stage_start_time
+                self.structured_logger.stage_complete("dialect_processing", "Dialect processing completed",
+                                                    duration=dialect_processing_time,
+                                                    metrics={
+                                                        'candidates_processed': len(candidates),
+                                                        'total_adjustments': total_adjustments,
+                                                        'patterns_detected': total_patterns_detected,
+                                                        'processing_time_per_candidate': dialect_processing_time / len(candidates) if candidates else 0
+                                                    })
+                
+                if progress_callback:
+                    progress_callback("D2", 77, f"Dialect processing complete - {total_adjustments} confidence adjustments made")
+            
+            # Use dialect-processed candidates for further processing
+            candidates = dialect_processed_candidates
+            
+            # Step 5: Confidence Scoring (77-85%)
             if progress_callback:
                 progress_callback("E", 78, "Scoring candidates across 5 confidence dimensions...")
             

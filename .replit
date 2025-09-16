@@ -4,7 +4,7 @@ integrations = ["python_openai:1.0.0"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["antlr", "cairo", "ffmpeg-full", "freetype", "ghostscript", "glibcLocales", "gobject-introspection", "gtk3", "jre", "libiconv", "libjpeg_turbo", "libpng", "libsndfile", "libxcrypt", "libyaml", "pkg-config", "qhull", "tcl", "tk", "which", "xsimd"]
+packages = ["antlr", "cairo", "espeak-ng", "ffmpeg-full", "freetype", "ghostscript", "glibcLocales", "gobject-introspection", "gtk3", "jre", "libiconv", "libjpeg_turbo", "libpng", "libsndfile", "libxcrypt", "libyaml", "pkg-config", "qhull", "tcl", "tk", "which", "xsimd"]
 
 [deployment]
 deploymentTarget = "autoscale"

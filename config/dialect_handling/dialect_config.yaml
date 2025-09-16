@@ -1,0 +1,79 @@
+# Dialect Handling Configuration
+# CMUdict + G2P system for near-phonetic agreement matching
+
+# Global settings
+enable_dialect_handling: true
+similarity_threshold: 0.7  # Minimum phonetic similarity for dialect matching
+confidence_boost_factor: 0.05  # Base confidence boost for dialect matches
+enable_g2p_fallback: true  # Enable G2P conversion for OOV words
+
+# Supported US dialect variants
+supported_dialects:
+  - southern      # Southern American English
+  - aave         # African American Vernacular English
+  - nyc          # New York City accent
+  - boston       # Boston/Eastern New England accent
+  - midwest      # Midwest/Northern Cities Vowel Shift
+  - west_coast   # West Coast/California English
+
+# Phonetic distance calculation settings
+phonetic_distance:
+  edit_distance_threshold: 3      # Maximum edit distance for dialect variants
+  normalized_distance_threshold: 0.5  # Maximum normalized distance (0-1)
+  alignment_score_threshold: 0.6  # Minimum alignment score for matches
+
+# Confidence adjustment settings
+confidence_adjustment:
+  max_boost_per_word: 0.15       # Maximum confidence boost per word
+  max_boost_per_segment: 0.10    # Maximum confidence boost per segment
+  pattern_frequency_weight: true  # Weight by dialect pattern frequency
+  segment_length_penalty: true   # Apply penalties for very short segments
+
+# Dialect-specific pattern weights
+dialect_weights:
+  southern: 1.0      # Full weight for southern patterns
+  aave: 1.0         # Full weight for AAVE patterns
+  nyc: 0.9          # Slightly reduced weight for NYC patterns
+  boston: 0.95      # High weight for Boston patterns
+  midwest: 0.8      # Moderate weight for Midwest patterns
+  west_coast: 0.7   # Lower weight for West Coast patterns
+
+# Processing thresholds
+processing:
+  min_word_length: 2            # Skip very short words
+  min_segment_duration: 0.5     # Minimum segment duration for processing
+  max_candidates_per_run: 100   # Limit processing for performance
+  cache_phonetic_lookups: true  # Cache CMUdict and G2P results
+
+# CMUdict settings
+cmudict:
+  use_primary_pronunciation: true  # Use first pronunciation as primary
+  include_alternatives: false     # Include alternative pronunciations
+  cache_size: 10000              # Cache size for phoneme lookups
+
+# G2P (Grapheme-to-Phoneme) settings  
+g2p:
+  enable_rule_based: true        # Enable rule-based G2P fallback
+  confidence_penalty: 0.3        # Confidence penalty for G2P conversions
+  cache_size: 5000              # Cache size for G2P conversions
+  max_phoneme_length: 15        # Maximum phonemes per word
+
+# Performance settings
+performance:
+  max_processing_time_per_candidate: 2.0  # Maximum processing time (seconds)
+  parallel_processing: false              # Disable parallel processing for now
+  memory_cleanup_interval: 100            # Clean caches every N candidates
+
+# Logging and debugging
+logging:
+  log_dialect_matches: true      # Log detected dialect patterns
+  log_confidence_adjustments: true  # Log confidence adjustments
+  log_phonetic_distances: false  # Log phonetic distance calculations (verbose)
+  log_processing_stats: true     # Log processing statistics
+
+# Integration settings
+integration:
+  pipeline_position: "post_asr"  # Position in pipeline (post_asr, pre_fusion)
+  preserve_original_confidence: true  # Keep original confidence scores
+  add_metadata_to_segments: true     # Add dialect metadata to segments
+  enable_text_normalization: false   # Enable text normalization (experimental)
