@@ -74,6 +74,10 @@ class ASRProvider(ABC):
         self.config = config or {}
         self.confidence_calibration = self._load_confidence_calibration()
         
+        # Per-engine calibration integration
+        self._calibration_engine = None
+        self._use_per_engine_calibration = config.get('use_per_engine_calibration', True)
+        
     @abstractmethod
     def transcribe(
         self, 
@@ -113,6 +117,10 @@ class ASRProvider(ABC):
         """Get maximum file size in bytes"""
         pass
     
+    def set_calibration_engine(self, calibration_engine):
+        """Set the per-engine calibration engine"""
+        self._calibration_engine = calibration_engine
+    
     def calibrate_confidence(self, raw_confidence: float, segment_length: float = 1.0) -> float:
         """
         Apply provider-specific confidence calibration
@@ -124,15 +132,35 @@ class ASRProvider(ABC):
         Returns:
             Calibrated confidence score (0.0 to 1.0)
         """
-        # Default linear calibration - override in providers
+        # Use per-engine calibration if available
+        if (self._use_per_engine_calibration and 
+            self._calibration_engine is not None):
+            try:
+                calibrated_result = self._calibration_engine.calibrate_confidence(
+                    raw_confidence, self.provider_name
+                )
+                calibrated = calibrated_result.calibrated_confidence
+                
+                # Apply length-based adjustment
+                if segment_length < 0.2:
+                    calibrated *= 0.9   # Stronger penalty for very short segments
+                elif segment_length < 0.5:
+                    calibrated *= 0.95  # Less aggressive penalty with calibration
+                
+                return max(0.01, min(0.99, calibrated))
+            except Exception:
+                # Fallback to legacy calibration if per-engine fails
+                pass
+        
+        # Legacy calibration fallback
         calibrated = raw_confidence * self.confidence_calibration.get('scale', 1.0)
         calibrated += self.confidence_calibration.get('offset', 0.0)
         
         # Length penalty for very short segments
-        if segment_length < 0.5:
-            calibrated *= 0.9
-        elif segment_length < 0.2:
-            calibrated *= 0.8
+        if segment_length < 0.2:
+            calibrated *= 0.8   # Stronger penalty for very short segments
+        elif segment_length < 0.5:
+            calibrated *= 0.9   # Moderate penalty for short segments
             
         return max(0.0, min(1.0, calibrated))
     

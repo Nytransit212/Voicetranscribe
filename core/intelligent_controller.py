@@ -67,21 +67,24 @@ class IntelligentController:
     Strategy:
     1. Run 3 initial probes per segment (Whisper careful/deterministic, Deepgram base)
     2. Calculate calibrated confidence and token agreement
-    3. If confidence ≥ 0.90 and agreement ≥ 0.85, stop early
-    4. Otherwise expand with up to 2 more decodes
-    5. Cap at maximum 7 decodes per segment
-    6. Use word-level alignment for agreement calculation
-    7. Select best candidate using confidence scoring and temporal coherence
+    3. If calibrated confidence ≥ 0.92 and agreement ≥ 0.85, stop early
+    4. If calibrated confidence < 0.75, expand aggressively with maximum decodes
+    5. Otherwise expand with standard strategy up to 2 more decodes
+    6. Cap at maximum 7 decodes per segment
+    7. Use word-level alignment for agreement calculation
+    8. Select best candidate using confidence scoring and temporal coherence
     """
     
     def __init__(self, 
-                 confidence_threshold: float = 0.90,
+                 confidence_threshold: float = 0.92,  # Updated threshold for calibrated confidence
                  agreement_threshold: float = 0.85,
+                 expand_confidence_threshold: float = 0.75,  # New aggressive expansion threshold
                  max_decodes_per_segment: int = 7,
                  segment_duration_range: Tuple[float, float] = (30.0, 45.0),
                  provider_config: Optional[Dict[str, Any]] = None,
                  enable_fusion: bool = True,
-                 fusion_config: Optional[Dict[str, Any]] = None):
+                 fusion_config: Optional[Dict[str, Any]] = None,
+                 use_calibrated_thresholds: bool = True):
         """
         Initialize Intelligent Controller
         
@@ -94,9 +97,11 @@ class IntelligentController:
         """
         self.confidence_threshold = confidence_threshold
         self.agreement_threshold = agreement_threshold
+        self.expand_confidence_threshold = expand_confidence_threshold
         self.max_decodes_per_segment = max_decodes_per_segment
         self.segment_duration_range = segment_duration_range
         self.provider_config = provider_config or {}
+        self.use_calibrated_thresholds = use_calibrated_thresholds
         
         # Initialize logger
         self.logger = create_enhanced_logger("intelligent_controller")
@@ -336,16 +341,28 @@ class IntelligentController:
             
             self.logger.info(f"Initial analysis: confidence={confidence_score:.3f}, agreement={agreement_score:.3f}")
             
-            # Decision: Early stop?
+            # Decision logic with calibrated confidence thresholds
             if (confidence_score >= self.confidence_threshold and 
                 agreement_score >= self.agreement_threshold):
                 
                 expansion_decision = "stop_early"
-                self.logger.info("Early stop triggered - high confidence and agreement")
+                self.logger.info("Early stop triggered - high calibrated confidence and agreement",
+                               context={'confidence_score': confidence_score,
+                                       'agreement_score': agreement_score,
+                                       'confidence_threshold': self.confidence_threshold,
+                                       'agreement_threshold': self.agreement_threshold})
+                
+            elif confidence_score < self.expand_confidence_threshold:
+                # Phase 2: Maximum expansion for low confidence
+                self.logger.info("Maximum expansion triggered - low calibrated confidence",
+                               context={'confidence_score': confidence_score,
+                                       'expand_threshold': self.expand_confidence_threshold})
+                expansion_decision = "expand_maximum"
                 
             else:
                 # Phase 2: Standard expansion (up to 2 more decodes)
-                self.logger.info("Phase 2: Standard expansion - adding 2 more decodes")
+                self.logger.info("Standard expansion - moderate calibrated confidence",
+                               context={'confidence_score': confidence_score})
                 expansion_decision = "expand_standard"
                 
                 added_decodes = 0
@@ -371,12 +388,15 @@ class IntelligentController:
                     
                     self.logger.info(f"Post-expansion analysis: confidence={confidence_score:.3f}, agreement={agreement_score:.3f}")
                     
-                    # Decision: Maximum expansion?
-                    if (confidence_score < self.confidence_threshold * 0.8 or 
+                    # Decision: Maximum expansion based on calibrated thresholds?
+                    if (confidence_score < self.expand_confidence_threshold or 
                         agreement_score < self.agreement_threshold * 0.8):
                         
                         # Phase 3: Maximum expansion (fill remaining decode slots)
-                        self.logger.info("Phase 3: Maximum expansion - using remaining decode slots")
+                        self.logger.info("Phase 3: Maximum expansion - calibrated confidence still low",
+                                       context={'confidence_score': confidence_score,
+                                               'expand_threshold': self.expand_confidence_threshold,
+                                               'agreement_score': agreement_score})
                         expansion_decision = "expand_maximum"
                         
                         # Add remaining decodes up to maximum

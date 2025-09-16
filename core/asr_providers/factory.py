@@ -2,12 +2,16 @@
 ASR Provider Factory for intelligent provider selection and management
 """
 
-from typing import Dict, List, Optional, Type, Union
+from typing import Dict, List, Optional, Type, Union, TYPE_CHECKING
 from .base import ASRProvider, DecodeMode
 from .openai_provider import OpenAIProvider
 from .faster_whisper_provider import FasterWhisperProvider
 from .deepgram_provider import DeepgramProvider
 import logging
+
+# Use TYPE_CHECKING to avoid circular import
+if TYPE_CHECKING:
+    from ..per_engine_calibration import CalibrationEngine
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +24,9 @@ class ASRProviderFactory:
         'deepgram': DeepgramProvider
     }
     
+    # Shared calibration engine instance
+    _calibration_engine: Optional['CalibrationEngine'] = None
+    
     _provider_priority = [
         'faster-whisper',  # Local, cost-free, high quality
         'deepgram',        # API-based, excellent for meetings
@@ -28,7 +35,7 @@ class ASRProviderFactory:
     
     @classmethod
     def create_provider(
-        self,
+        cls,
         provider_name: str, 
         model_name: Optional[str] = None,
         config: Optional[Dict] = None
@@ -44,29 +51,40 @@ class ASRProviderFactory:
         Returns:
             Configured ASR provider instance
         """
-        if provider_name not in self._providers:
-            raise ValueError(f"Unknown provider: {provider_name}. Available: {list(self._providers.keys())}")
+        if provider_name not in cls._providers:
+            raise ValueError(f"Unknown provider: {provider_name}. Available: {list(cls._providers.keys())}")
         
-        provider_class = self._providers[provider_name]
+        provider_class = cls._providers[provider_name]
         
         # Set default models
         if model_name is None:
-            model_name = self._get_default_model(provider_name)
+            model_name = cls._get_default_model(provider_name)
         
-        return provider_class(
+        # Create provider instance
+        provider = provider_class(
             provider_name=provider_name,
             model_name=model_name, 
             config=config or {}
         )
+        
+        # Initialize and set calibration engine
+        if cls._calibration_engine is None:
+            from ..per_engine_calibration import CalibrationEngine
+            cls._calibration_engine = CalibrationEngine()
+            logger.info("Initialized shared CalibrationEngine")
+        
+        provider.set_calibration_engine(cls._calibration_engine)
+        
+        return provider
     
     @classmethod
-    def get_available_providers(self) -> List[str]:
+    def get_available_providers(cls) -> List[str]:
         """Get list of available and configured providers"""
         available = []
         
-        for provider_name in self._provider_priority:
+        for provider_name in cls._provider_priority:
             try:
-                provider = self.create_provider(provider_name)
+                provider = cls.create_provider(provider_name)
                 if provider.is_available():
                     available.append(provider_name)
                     logger.info(f"Provider {provider_name} is available")
@@ -79,7 +97,7 @@ class ASRProviderFactory:
     
     @classmethod
     def create_ensemble(
-        self,
+        cls,
         providers: Optional[List[str]] = None,
         config: Optional[Dict] = None
     ) -> List[ASRProvider]:
@@ -94,12 +112,12 @@ class ASRProviderFactory:
             List of configured ASR providers
         """
         if providers is None:
-            providers = self.get_available_providers()
+            providers = cls.get_available_providers()
         
         ensemble = []
         for provider_name in providers:
             try:
-                provider = self.create_provider(provider_name, config=config)
+                provider = cls.create_provider(provider_name, config=config)
                 if provider.is_available():
                     ensemble.append(provider)
                     logger.info(f"Added {provider_name} to ensemble")
@@ -116,7 +134,7 @@ class ASRProviderFactory:
     
     @classmethod
     def get_best_provider_for_mode(
-        self, 
+        cls, 
         decode_mode: DecodeMode,
         available_providers: Optional[List[str]] = None
     ) -> str:
@@ -131,7 +149,7 @@ class ASRProviderFactory:
             Best provider name for the mode
         """
         if available_providers is None:
-            available_providers = self.get_available_providers()
+            available_providers = cls.get_available_providers()
         
         # Provider preferences by decode mode
         mode_preferences = {
@@ -142,7 +160,7 @@ class ASRProviderFactory:
             DecodeMode.ENHANCED: ['deepgram', 'faster-whisper', 'openai']
         }
         
-        preferences = mode_preferences.get(decode_mode, self._provider_priority)
+        preferences = mode_preferences.get(decode_mode, cls._provider_priority)
         
         for provider_name in preferences:
             if provider_name in available_providers:
@@ -156,7 +174,7 @@ class ASRProviderFactory:
     
     @classmethod
     def estimate_cost(
-        self,
+        cls,
         provider_name: str,
         audio_duration: float,
         decode_mode: DecodeMode = DecodeMode.DETERMINISTIC
@@ -194,7 +212,7 @@ class ASRProviderFactory:
         return base_cost * minutes * mode_multiplier
     
     @classmethod
-    def _get_default_model(self, provider_name: str) -> str:
+    def _get_default_model(cls, provider_name: str) -> str:
         """Get default model for provider"""
         defaults = {
             'openai': 'whisper-1',
@@ -204,25 +222,25 @@ class ASRProviderFactory:
         return defaults.get(provider_name, 'default')
     
     @classmethod
-    def register_provider(self, name: str, provider_class: Type[ASRProvider]) -> None:
+    def register_provider(cls, name: str, provider_class: Type[ASRProvider]) -> None:
         """Register new ASR provider"""
-        self._providers[name] = provider_class
+        cls._providers[name] = provider_class
         logger.info(f"Registered ASR provider: {name}")
     
     @classmethod
-    def get_provider_info(self) -> Dict[str, Dict[str, any]]:
+    def get_provider_info(cls) -> Dict[str, Dict[str, any]]:
         """Get information about all registered providers"""
         info = {}
         
-        for name, provider_class in self._providers.items():
+        for name, provider_class in cls._providers.items():
             try:
-                provider = self.create_provider(name)
+                provider = cls.create_provider(name)
                 info[name] = {
                     'available': provider.is_available(),
                     'supported_formats': provider.get_supported_formats(),
                     'max_file_size': provider.get_max_file_size(),
                     'model': provider.model_name,
-                    'estimated_cost_per_minute': self.estimate_cost(name, 60.0)
+                    'estimated_cost_per_minute': cls.estimate_cost(name, 60.0)
                 }
             except Exception as e:
                 info[name] = {
@@ -231,3 +249,14 @@ class ASRProviderFactory:
                 }
         
         return info
+    
+    @classmethod
+    def get_calibration_engine(cls) -> Optional['CalibrationEngine']:
+        """Get the shared calibration engine instance"""
+        return cls._calibration_engine
+    
+    @classmethod
+    def set_calibration_engine(cls, calibration_engine: 'CalibrationEngine') -> None:
+        """Set the shared calibration engine instance"""
+        cls._calibration_engine = calibration_engine
+        logger.info("Updated shared CalibrationEngine")
