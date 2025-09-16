@@ -11,6 +11,7 @@ defaults:
   - calibration: methods
   - ui: streamlit_ui
   - decode_strategies
+  - auto_glossary: glossary_config  # Auto-glossary system for adaptive term biasing
   - _self_
 
 # Runtime Configuration

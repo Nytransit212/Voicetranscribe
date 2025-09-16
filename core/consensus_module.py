@@ -38,6 +38,16 @@ class ConsensusStrategy(ABC):
     def select_consensus(self, candidates: List[Dict[str, Any]]) -> ConsensusResult:
         """Select consensus result from candidates"""
         pass
+    
+    def apply_session_bias(self, session_bias_list) -> None:
+        """Apply session bias to consensus strategy (default no-op implementation)"""
+        # Default implementation - strategies can override for specific bias application
+        pass
+    
+    def supports_session_bias(self) -> bool:
+        """Return whether this strategy supports session bias application"""
+        # Default assumes basic support via no-op - strategies can override
+        return True
 
 class BestSingleCandidateStrategy(ConsensusStrategy):
     """Baseline strategy: select best single candidate (current system)"""
@@ -131,6 +141,16 @@ class BestSingleCandidateStrategy(ConsensusStrategy):
         
         # Final tie-breaker: Return first candidate (deterministic)
         return candidates[0]
+    
+    def apply_session_bias(self, session_bias_list) -> None:
+        """Best single candidate doesn't modify selection based on session bias"""
+        # This strategy uses existing confidence scores which may already incorporate bias
+        # No additional bias application needed at consensus level
+        self.logger.debug("Session bias received but not applied - confidence scores may already include bias effects")
+    
+    def supports_session_bias(self) -> bool:
+        """Returns True since bias effects are handled via confidence scoring"""
+        return True
 
 class WeightedVotingStrategy(ConsensusStrategy):
     """Weighted voting strategy based on confidence scores"""
@@ -567,7 +587,8 @@ class ConsensusModule:
     def process_consensus(self, 
                          candidates: List[Dict[str, Any]], 
                          strategy: Optional[str] = None,
-                         strategy_params: Optional[Dict[str, Any]] = None) -> ConsensusResult:
+                         strategy_params: Optional[Dict[str, Any]] = None,
+                         session_bias_list = None) -> ConsensusResult:
         """
         Process consensus using specified strategy
         
@@ -575,6 +596,7 @@ class ConsensusModule:
             candidates: List of scored candidate transcripts
             strategy: Strategy name to use (defaults to instance default)
             strategy_params: Optional parameters for strategy
+            session_bias_list: Optional session bias list for adaptive biasing
             
         Returns:
             ConsensusResult with winner and metadata
@@ -597,6 +619,12 @@ class ConsensusModule:
                         context={'candidates_count': len(candidates), 'strategy': strategy_name})
         
         try:
+            # Apply adaptive biasing if available
+            if session_bias_list and hasattr(consensus_strategy, 'apply_session_bias'):
+                consensus_strategy.apply_session_bias(session_bias_list)
+                self.logger.info("Applied session bias list to consensus strategy",
+                               context={'bias_terms': session_bias_list.total_bias_terms if session_bias_list else 0})
+            
             result = consensus_strategy.select_consensus(candidates)
             
             self.logger.info(f"Consensus processing completed successfully", 

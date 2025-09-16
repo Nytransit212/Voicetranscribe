@@ -26,14 +26,28 @@ from utils.segment_worklist import get_worklist_manager, SegmentWorklistManager
 from utils.selective_asr import get_selective_asr_processor, SelectiveASRProcessor
 from utils.advanced_asr_scheduler import get_asr_scheduler, AdvancedASRScheduler
 from core.source_separation_engine import SourceSeparationEngine, SourceSeparationResult
+from core.overlap_diarizer import OverlapDiarizationEngine, StemDiarizer, OverlapDiarizationResult
+from core.overlap_fusion import OverlapFusionEngine, OverlapFusionResult
+from utils.stem_manifest import StemManifestManager, StemManifest
+from core.overlap_processing_helpers import apply_overlap_processing_patches, run_legacy_source_separation
 from core.post_fusion_punctuation_engine import PostFusionPunctuationEngine, create_punctuation_engine_from_preset
+from core.text_normalizer import TextNormalizer, create_text_normalizer
+from core.guardrail_verifier import GuardrailVerifier, create_guardrail_verifier
 from core.dialect_handling_engine import DialectHandlingEngine
 from core.dialect_config_loader import load_dialect_config
+from core.term_miner import create_term_mining_engine, TermMiningEngine
+from core.term_store import create_project_term_store, ProjectTermStore
+from core.term_bias import create_adaptive_biasing_engine, AdaptiveBiasingEngine
+from core.global_speaker_linker import GlobalSpeakerLinker, ClusteringResult
+from core.speaker_relabeler import SpeakerRelabeler, RelabelingResult
+from utils.embedding_cache import get_embedding_cache
+from utils.capability_manager import get_capability_manager, check_system_capabilities, is_feature_available, require_feature
+from utils.audio_format_validator import get_audio_validator, ensure_audio_format
 
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
     
-    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None, enable_versioning: bool = True, domain: str = "general", consensus_strategy: str = "best_single_candidate", calibration_method: str = "registry_based", enable_speaker_mapping: bool = True, speaker_mapping_config: Optional[Dict[str, Any]] = None, chunked_processing_threshold: float = 900.0, enable_dialect_handling: bool = True, dialect_similarity_threshold: float = 0.7, dialect_confidence_boost: float = 0.05, supported_dialects: Optional[List[str]] = None) -> None:
+    def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None, enable_versioning: bool = True, domain: str = "general", consensus_strategy: str = "best_single_candidate", calibration_method: str = "registry_based", enable_speaker_mapping: bool = True, speaker_mapping_config: Optional[Dict[str, Any]] = None, chunked_processing_threshold: float = 900.0, enable_dialect_handling: bool = True, dialect_similarity_threshold: float = 0.7, dialect_confidence_boost: float = 0.05, supported_dialects: Optional[List[str]] = None, enable_auto_glossary: bool = True, auto_glossary_config: Optional[Dict[str, Any]] = None, project_id: Optional[str] = None, enable_long_horizon_tracking: bool = True, long_horizon_config: Optional[Dict[str, Any]] = None) -> None:
         self.expected_speakers = expected_speakers
         self.noise_level = noise_level
         self.target_language = target_language  # None for auto-detect
@@ -49,6 +63,13 @@ class EnsembleManager:
         self.enable_post_fusion_punctuation = True
         self.punctuation_preset = "meeting_light"  # Default preset for meeting contexts
         self.punctuation_engine = None  # Will be initialized when needed
+        
+        # Robust text normalization configuration
+        self.enable_text_normalization = True
+        self.normalization_profile = "readable"  # Options: verbatim, light, readable, executive
+        self.text_normalizer = None  # Will be initialized when needed
+        self.guardrail_verifier = None  # Will be initialized when needed
+        self.normalization_config_path = "config/normalization_profiles.yaml"
         self.speaker_mapping_config = speaker_mapping_config or {
             # Core parameters
             'similarity_threshold': 0.7,
@@ -74,6 +95,56 @@ class EnsembleManager:
         self.dialect_confidence_boost = dialect_confidence_boost
         self.supported_dialects = supported_dialects or ['southern', 'aave', 'nyc', 'boston', 'midwest', 'west_coast']
         
+        # Auto-Glossary system configuration
+        self.enable_auto_glossary = enable_auto_glossary
+        self.project_id = project_id or f"project_{int(time.time())}"
+        self.auto_glossary_config = auto_glossary_config or {
+            # Term mining configuration
+            'mining_sensitivity': 0.6,
+            'min_frequency_threshold': 2,
+            'max_candidates_per_session': 200,
+            'enable_variant_clustering': True,
+            # Term store configuration
+            'decay_sessions_threshold': 10,
+            'minimum_support_threshold': 2,
+            'storage_base_path': 'term_bases',
+            # Adaptive biasing configuration
+            'default_bias_strength': 0.7,
+            'max_bias_terms_per_session': 50,
+            'min_term_confidence': 0.5,
+            'enable_asr_bias': True,
+            'enable_fusion_bias': True,
+            'enable_repair_constraints': True
+        }
+        
+        # Long-horizon speaker tracking configuration
+        self.enable_long_horizon_tracking = enable_long_horizon_tracking
+        self.long_horizon_config = long_horizon_config or {
+            # Global speaker linking configuration
+            'min_turn_duration': 0.5,
+            'max_turn_duration': 60.0,
+            'embedding_aggregation_method': 'weighted_average',
+            'clustering_method': 'hierarchical',
+            'information_criterion': ['silhouette', 'calinski_harabasz', 'elbow'],
+            'cluster_margin': 0.15,
+            'min_cluster_size': 2,
+            # Swap detection configuration
+            'swap_detection_enabled': True,
+            'neighborhood_size': 5,
+            'discontinuity_threshold': 0.4,
+            'min_block_duration': 5.0,
+            'max_block_duration': 300.0,
+            'contiguity_threshold': 0.7,
+            'swap_correction_threshold': 0.6,
+            # Human-friendly labeling
+            'enable_human_friendly_names': True,
+            'enable_role_assignment': True,
+            # Caching and performance
+            'enable_embedding_cache': True,
+            'cache_memory_limit_mb': 512.0,
+            'cache_ttl_seconds': 3600.0
+        }
+        
         # U7 Upgrade: Initialize deterministic processing and other systems first
         # (run_id will be set later based on input for deterministic processing)
         self.run_id = None  # Will be set in process_video method
@@ -96,6 +167,22 @@ class EnsembleManager:
         self.overlap_probability_threshold = 0.25
         self.source_separation_providers = ['faster-whisper', 'deepgram', 'openai']
         
+        # Overlap-aware processing configuration
+        self.enable_overlap_aware_processing = True
+        self.overlap_frame_threshold = 0.08  # Trigger separation when >8% of frames are overlapped
+        self.max_stems = 2  # Focus on 2-stem separation for focus groups
+        self.stem_quality_threshold = 0.5  # Minimum stem quality for processing
+        self.enable_cross_stem_reconciliation = True
+        self.reconciliation_strategy = "highest_joint_score"
+        
+        # Overlap processing budget controls
+        self.max_overlap_processing_ratio = 0.15  # Process up to 15% of total audio duration
+        self.max_overlap_processing_duration = 600.0  # Maximum 10 minutes of overlap processing
+        
+        # Stem manifest configuration
+        self.enable_stem_manifest = True
+        self.stem_cache_base_path = "/tmp/stem_cache"
+        
         # Initialize enhanced observability system
         self.obs_manager = initialize_observability(
             service_name="ensemble-transcription",
@@ -105,6 +192,69 @@ class EnsembleManager:
         
         # Initialize enhanced structured logging with run context
         self.structured_logger = create_enhanced_logger("ensemble_manager", run_id=self.run_id)
+        
+        # Initialize capability manager and perform startup checks
+        self.capability_manager = get_capability_manager()
+        self.capability_report = check_system_capabilities()
+        self.audio_validator = get_audio_validator()
+        
+        # Log capability assessment
+        self._log_startup_capabilities()
+        
+        # Adjust configuration based on available capabilities
+        self._adjust_configuration_for_capabilities()
+        
+    def _log_startup_capabilities(self):
+        """Log startup capability assessment"""
+        if not self.capability_report:
+            return
+            
+        self.structured_logger.info("🚀 ENSEMBLE MANAGER CAPABILITY ASSESSMENT", context={
+            'system_status': self.capability_report.system_status.value,
+            'available_features': len(self.capability_report.available_features),
+            'degraded_features': len(self.capability_report.degraded_features),
+            'fallback_features': len(self.capability_report.fallback_features),
+            'unavailable_features': len(self.capability_report.unavailable_features)
+        })
+        
+        if self.capability_report.critical_missing:
+            self.structured_logger.error("⚠️ CRITICAL DEPENDENCIES MISSING", context={
+                'missing_dependencies': self.capability_report.critical_missing,
+                'impact': 'System functionality may be severely limited'
+            })
+    
+    def _adjust_configuration_for_capabilities(self):
+        """Adjust configuration based on available capabilities"""
+        
+        # Disable features that require unavailable dependencies
+        if not is_feature_available('advanced_speaker_diarization'):
+            self.structured_logger.warning("Advanced speaker diarization unavailable, using basic clustering")
+            # Keep diarization enabled but it will use fallback implementation
+        
+        if not is_feature_available('source_separation'):
+            self.structured_logger.warning("Source separation unavailable, disabling overlap processing")
+            self.enable_source_separation = False
+            self.enable_overlap_aware_processing = False
+            
+        if not is_feature_available('text_normalization'):
+            self.structured_logger.warning("Advanced text normalization unavailable, using basic rules")
+            # Keep normalization enabled but it will use fallback
+            
+        if not is_feature_available('adaptive_biasing'):
+            self.structured_logger.warning("Adaptive biasing unavailable, disabling auto-glossary")
+            self.enable_auto_glossary = False
+            
+        if not is_feature_available('long_horizon_tracking'):
+            self.structured_logger.warning("Long-horizon tracking unavailable, using per-chunk mapping only")
+            self.enable_long_horizon_tracking = False
+            
+        # Log adjusted configuration
+        self.structured_logger.info("Configuration adjusted for available capabilities", context={
+            'source_separation_enabled': self.enable_source_separation,
+            'overlap_processing_enabled': self.enable_overlap_aware_processing,
+            'auto_glossary_enabled': self.enable_auto_glossary,
+            'long_horizon_tracking_enabled': self.enable_long_horizon_tracking
+        })
         
         # Initialize profiling manager and reporter
         self.profiling_manager = get_profiling_manager()
@@ -148,17 +298,119 @@ class EnsembleManager:
         try:
             self.source_separation_engine = SourceSeparationEngine(
                 overlap_threshold=self.overlap_probability_threshold,
-                enable_caching=self.enable_caching
+                enable_caching=self.enable_caching,
+                max_stems=self.max_stems,
+                max_separation_ratio=self.max_overlap_processing_ratio,
+                max_separation_duration=self.max_overlap_processing_duration
             )
             if self.source_separation_engine.is_available():
                 self.structured_logger.info("Source separation engine initialized successfully")
             else:
                 self.structured_logger.warning("Source separation engine not available - Demucs models unavailable")
                 self.enable_source_separation = False
+                self.enable_overlap_aware_processing = False
         except Exception as e:
             self.structured_logger.warning(f"Failed to initialize source separation engine: {e}")
             self.source_separation_engine = None
             self.enable_source_separation = False
+            self.enable_overlap_aware_processing = False
+        
+        # Initialize overlap-aware processing engines
+        self.overlap_diarization_engine = None
+        self.overlap_fusion_engine = None
+        self.stem_manifest_manager = None
+        
+        # Initialize long-horizon speaker tracking components
+        if self.enable_long_horizon_tracking:
+            try:
+                # Initialize embedding cache
+                self.embedding_cache = get_embedding_cache(
+                    max_memory_mb=self.long_horizon_config['cache_memory_limit_mb'],
+                    enable_disk_cache=self.long_horizon_config['enable_embedding_cache'],
+                    ttl_seconds=self.long_horizon_config['cache_ttl_seconds']
+                )
+                
+                # Initialize global speaker linker
+                self.global_speaker_linker = GlobalSpeakerLinker(
+                    speaker_mapper=self.diarization_engine.speaker_mapper if hasattr(self.diarization_engine, 'speaker_mapper') else None,
+                    min_turn_duration=self.long_horizon_config['min_turn_duration'],
+                    max_turn_duration=self.long_horizon_config['max_turn_duration'],
+                    embedding_aggregation_method=self.long_horizon_config['embedding_aggregation_method'],
+                    clustering_method=self.long_horizon_config['clustering_method'],
+                    information_criterion=self.long_horizon_config['information_criterion'],
+                    cluster_margin=self.long_horizon_config['cluster_margin'],
+                    min_cluster_size=self.long_horizon_config['min_cluster_size'],
+                    enable_caching=self.long_horizon_config['enable_embedding_cache']
+                )
+                
+                # Initialize speaker relabeler with swap detection
+                from core.speaker_relabeler import SwapDetector
+                swap_detector = SwapDetector(
+                    neighborhood_size=self.long_horizon_config['neighborhood_size'],
+                    discontinuity_threshold=self.long_horizon_config['discontinuity_threshold'],
+                    min_block_duration=self.long_horizon_config['min_block_duration'],
+                    max_block_duration=self.long_horizon_config['max_block_duration'],
+                    contiguity_threshold=self.long_horizon_config['contiguity_threshold']
+                ) if self.long_horizon_config['swap_detection_enabled'] else None
+                
+                self.speaker_relabeler = SpeakerRelabeler(
+                    swap_detector=swap_detector,
+                    swap_correction_threshold=self.long_horizon_config['swap_correction_threshold'],
+                    enable_overlap_preservation=True,
+                    enable_human_friendly_names=self.long_horizon_config['enable_human_friendly_names']
+                )
+                
+                self.structured_logger.info("Long-horizon speaker tracking initialized successfully",
+                                           context={
+                                               'embedding_cache_enabled': self.long_horizon_config['enable_embedding_cache'],
+                                               'swap_detection_enabled': self.long_horizon_config['swap_detection_enabled'],
+                                               'clustering_method': self.long_horizon_config['clustering_method']
+                                           })
+                
+            except Exception as e:
+                self.structured_logger.warning(f"Failed to initialize long-horizon speaker tracking: {e}")
+                self.enable_long_horizon_tracking = False
+                self.global_speaker_linker = None
+                self.speaker_relabeler = None
+                self.embedding_cache = None
+        else:
+            self.global_speaker_linker = None
+            self.speaker_relabeler = None
+            self.embedding_cache = None
+        
+        if self.enable_overlap_aware_processing and self.source_separation_engine:
+            try:
+                # Initialize overlap diarization engine
+                self.overlap_diarization_engine = OverlapDiarizationEngine(
+                    enable_cross_stem_analysis=self.enable_cross_stem_reconciliation,
+                    enable_performance_optimizations=True
+                )
+                
+                # Initialize overlap fusion engine
+                self.overlap_fusion_engine = OverlapFusionEngine(
+                    conflict_resolution_strategy=self.reconciliation_strategy
+                )
+                
+                # Initialize stem manifest manager
+                if self.enable_stem_manifest:
+                    self.stem_manifest_manager = StemManifestManager(
+                        cache_base_path=self.stem_cache_base_path,
+                        enable_quality_analysis=True
+                    )
+                
+                self.structured_logger.info("Overlap-aware processing engines initialized successfully",
+                                          context={
+                                              'max_stems': self.max_stems,
+                                              'reconciliation_strategy': self.reconciliation_strategy,
+                                              'stem_manifest_enabled': self.enable_stem_manifest
+                                          })
+                
+            except Exception as e:
+                self.structured_logger.warning(f"Failed to initialize overlap processing engines: {e}")
+                self.enable_overlap_aware_processing = False
+                self.overlap_diarization_engine = None
+                self.overlap_fusion_engine = None
+                self.stem_manifest_manager = None
         
         # Initialize post-fusion punctuation engine if enabled
         if self.enable_post_fusion_punctuation:
@@ -169,6 +421,18 @@ class EnsembleManager:
                 self.structured_logger.warning(f"Failed to initialize punctuation engine: {e}")
                 self.enable_post_fusion_punctuation = False
                 self.punctuation_engine = None
+        
+        # Initialize robust text normalization engine if enabled
+        if self.enable_text_normalization:
+            try:
+                self.text_normalizer = create_text_normalizer(self.normalization_config_path)
+                self.guardrail_verifier = create_guardrail_verifier()
+                self.structured_logger.info(f"Text normalization engine initialized with profile: {self.normalization_profile}")
+            except Exception as e:
+                self.structured_logger.warning(f"Failed to initialize text normalization engine: {e}")
+                self.enable_text_normalization = False
+                self.text_normalizer = None
+                self.guardrail_verifier = None
         
         # Initialize dialect handling engine with proper config loading
         try:
@@ -208,6 +472,58 @@ class EnsembleManager:
             self.enable_dialect_handling = False
             self.dialect_engine = None
         
+        # Initialize auto-glossary system components
+        self.term_mining_engine = None
+        self.term_store = None
+        self.adaptive_biasing_engine = None
+        self.current_session_bias_list = None
+        
+        if self.enable_auto_glossary:
+            try:
+                # Initialize term mining engine
+                self.term_mining_engine = create_term_mining_engine(
+                    session_id=None,  # Will be set per session
+                    mining_sensitivity=self.auto_glossary_config['mining_sensitivity'],
+                    min_frequency_threshold=self.auto_glossary_config['min_frequency_threshold'],
+                    max_candidates_per_session=self.auto_glossary_config['max_candidates_per_session'],
+                    enable_variant_clustering=self.auto_glossary_config['enable_variant_clustering']
+                )
+                
+                # Initialize term store
+                self.term_store = create_project_term_store(
+                    storage_base_path=self.auto_glossary_config['storage_base_path'],
+                    decay_sessions_threshold=self.auto_glossary_config['decay_sessions_threshold'],
+                    minimum_support_threshold=self.auto_glossary_config['minimum_support_threshold']
+                )
+                
+                # Initialize adaptive biasing engine
+                self.adaptive_biasing_engine = create_adaptive_biasing_engine(
+                    term_store=self.term_store,
+                    default_bias_strength=self.auto_glossary_config['default_bias_strength'],
+                    max_bias_terms_per_session=self.auto_glossary_config['max_bias_terms_per_session'],
+                    min_term_confidence=self.auto_glossary_config['min_term_confidence'],
+                    enable_asr_bias=self.auto_glossary_config['enable_asr_bias'],
+                    enable_fusion_bias=self.auto_glossary_config['enable_fusion_bias'],
+                    enable_repair_constraints=self.auto_glossary_config['enable_repair_constraints']
+                )
+                
+                self.structured_logger.info("Auto-glossary system initialized successfully",
+                                           context={
+                                               'project_id': self.project_id,
+                                               'mining_sensitivity': self.auto_glossary_config['mining_sensitivity'],
+                                               'bias_strength': self.auto_glossary_config['default_bias_strength'],
+                                               'max_terms': self.auto_glossary_config['max_bias_terms_per_session']
+                                           })
+                
+            except Exception as e:
+                self.structured_logger.warning(f"Failed to initialize auto-glossary system: {e}")
+                self.enable_auto_glossary = False
+                self.term_mining_engine = None
+                self.term_store = None
+                self.adaptive_biasing_engine = None
+        else:
+            self.structured_logger.info("Auto-glossary system disabled")
+        
         # Initialize consensus module
         try:
             self.consensus_module = ConsensusModule(default_strategy=consensus_strategy)
@@ -224,6 +540,58 @@ class EnsembleManager:
         self.input_artifacts: Dict[str, Any] = {}
         self.intermediate_artifacts: Dict[str, Any] = {}
         self.output_artifacts: Dict[str, Any] = {}
+    
+    def _prepare_candidates_for_term_mining(self, candidates: List[Dict[str, Any]], diarization_variants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Convert candidates to format expected by term mining engine
+        
+        Args:
+            candidates: ASR candidates from ensemble processing
+            diarization_variants: Diarization variants for speaker information
+            
+        Returns:
+            List of ASR results formatted for term mining
+        """
+        asr_results_for_mining = []
+        
+        for i, candidate in enumerate(candidates):
+            try:
+                # Extract segments from candidate
+                segments = candidate.get('aligned_segments', [])
+                if not segments:
+                    segments = candidate.get('segments', [])
+                
+                # Extract ASR metadata
+                asr_data = candidate.get('asr_data', {})
+                engine_name = asr_data.get('provider', f'engine_{i}')
+                
+                # Convert segments to mining format
+                mining_segments = []
+                for segment in segments:
+                    mining_segment = {
+                        'start': segment.get('start', 0.0),
+                        'end': segment.get('end', 0.0),
+                        'text': segment.get('text', ''),
+                        'confidence': segment.get('confidence', 0.0),
+                        'speaker_id': segment.get('speaker', segment.get('speaker_id'))
+                    }
+                    mining_segments.append(mining_segment)
+                
+                # Create ASR result for mining
+                asr_result = {
+                    'engine': engine_name,
+                    'segments': mining_segments,
+                    'candidate_id': candidate.get('candidate_id', f'candidate_{i}'),
+                    'confidence': candidate.get('confidence_scores', {}).get('final_score', 0.0)
+                }
+                
+                asr_results_for_mining.append(asr_result)
+                
+            except Exception as e:
+                self.structured_logger.warning(f"Failed to prepare candidate {i} for term mining: {e}")
+                continue
+        
+        return asr_results_for_mining
     
     def _process_candidate_for_dialect(self, candidate: Dict[str, Any], aligned_segments: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """
@@ -602,7 +970,11 @@ class EnsembleManager:
                 'confidence_threshold': self.confidence_threshold_for_flagging,
                 'enable_speaker_mapping': self.enable_speaker_mapping,
                 'speaker_mapping_config': self.speaker_mapping_config,
-                'chunked_processing_threshold': self.chunked_processing_threshold
+                'chunked_processing_threshold': self.chunked_processing_threshold,
+                'enable_overlap_aware_processing': self.enable_overlap_aware_processing,
+                'overlap_frame_threshold': self.overlap_frame_threshold,
+                'max_stems': self.max_stems,
+                'reconciliation_strategy': self.reconciliation_strategy
             }
             
             self.run_id = ensure_deterministic_run_id(video_path, processing_config)
@@ -755,19 +1127,25 @@ class EnsembleManager:
             if progress_callback:
                 progress_callback("C", 35, f"Diarization complete - {len(diarization_variants)} variants with fusion created")
             
-            # Step 3.5: Overlap Detection and Source Separation with Timeline Integration (35-40%)
+            # Step 3.5: Overlap-Aware Processing with Source Separation, Diarization, and Fusion (35-40%)
+            overlap_processing_results = []
             source_separation_patches_applied = 0
-            if self.enable_source_separation and self.source_separation_engine:
+            
+            if self.enable_overlap_aware_processing and self.source_separation_engine and self.overlap_diarization_engine:
                 if progress_callback:
-                    progress_callback("C2", 36, "Detecting overlaps and performing source separation...")
+                    progress_callback("C2", 36, "Running overlap-aware processing: separation, diarization, and fusion...")
                 
-                source_sep_start_time = time.time()
-                self.structured_logger.stage_start("source_separation", "Processing overlap frames with timeline integration",
-                                                 context={'overlap_threshold': self.overlap_probability_threshold})
+                overlap_processing_start_time = time.time()
+                self.structured_logger.stage_start("overlap_aware_processing", "Processing overlaps with full separation-diarization-fusion pipeline",
+                                                 context={
+                                                     'overlap_threshold': self.overlap_probability_threshold,
+                                                     'max_stems': self.max_stems,
+                                                     'reconciliation_strategy': self.reconciliation_strategy
+                                                 })
                 
-                # CRITICAL: Apply source separation with timeline patching for each diarization variant
+                # Process each diarization variant through the overlap-aware pipeline
                 total_overlap_frames = 0
-                total_patches_applied = 0
+                total_fusion_results = 0
                 
                 for variant_idx, diarization_variant in enumerate(diarization_variants):
                     try:
@@ -775,7 +1153,7 @@ class EnsembleManager:
                         variant_segments = diarization_variant.get('segments', [])
                         
                         if variant_segments:
-                            # Run source separation on this variant
+                            # Step 1: Source Separation - Detect and separate overlap frames
                             separation_results = self.source_separation_engine.process_audio_with_overlaps(
                                 clean_audio_path,
                                 variant_segments,
@@ -784,59 +1162,302 @@ class EnsembleManager:
                             
                             total_overlap_frames += len(separation_results)
                             
-                            # CRITICAL: Patch final_segments into diarization timeline
                             if separation_results:
-                                patched_segments = self._apply_source_separation_patches(
-                                    variant_segments, separation_results
-                                )
+                                # Step 2: Overlap-Aware Processing for each separation result
+                                variant_overlap_results = []
                                 
-                                # Update the diarization variant with patched timeline
-                                diarization_variant['segments'] = patched_segments
-                                diarization_variant['source_separation_applied'] = True
-                                diarization_variant['source_separation_metadata'] = {
-                                    'overlap_frames_processed': len(separation_results),
-                                    'patches_applied': len([r for r in separation_results if r.final_segments]),
-                                    'processing_timestamp': time.time()
-                                }
+                                for separation_result in separation_results:
+                                    try:
+                                        # Step 2a: Overlap Diarization - Process separated stems
+                                        diarization_result = self.overlap_diarization_engine.process_source_separation_result(
+                                            separation_result
+                                        )
+                                        
+                                        # Step 2b: Create stem manifest if enabled
+                                        stem_manifest = None
+                                        if self.stem_manifest_manager and separation_result.separated_stems:
+                                            try:
+                                                stem_manifest = self.stem_manifest_manager.create_stem_manifest(
+                                                    overlap_frame_id=f"overlap_{variant_idx}_{separation_result.overlap_frame.start_time:.3f}",
+                                                    separated_stems=separation_result.separated_stems,
+                                                    asr_engine_ids=self.source_separation_providers[:2],  # Limit to 2 engines for performance
+                                                    source_separation_config={
+                                                        'model_name': getattr(self.source_separation_engine, 'model_name', 'htdemucs'),
+                                                        'overlap_threshold': self.overlap_probability_threshold,
+                                                        'max_stems': self.max_stems
+                                                    },
+                                                    start_time=separation_result.overlap_frame.start_time,
+                                                    end_time=separation_result.overlap_frame.end_time
+                                                )
+                                            except Exception as e:
+                                                self.structured_logger.warning(f"Failed to create stem manifest: {e}")
+                                        
+                                        # Step 2c: Overlap Fusion - Fuse multi-stem transcriptions
+                                        if self.overlap_fusion_engine and separation_result.stem_transcriptions:
+                                            fusion_result = self.overlap_fusion_engine.fuse_overlap_transcriptions(
+                                                diarization_result,
+                                                separation_result.stem_transcriptions
+                                            )
+                                            
+                                            variant_overlap_results.append({
+                                                'separation_result': separation_result,
+                                                'diarization_result': diarization_result,
+                                                'fusion_result': fusion_result,
+                                                'stem_manifest': stem_manifest
+                                            })
+                                            
+                                            total_fusion_results += 1
+                                            
+                                            self.structured_logger.info(
+                                                f"Completed overlap processing for frame {separation_result.overlap_frame.start_time:.3f}-{separation_result.overlap_frame.end_time:.3f}",
+                                                context={
+                                                    'fusion_confidence': fusion_result.fusion_confidence,
+                                                    'overlap_regions': fusion_result.overlap_regions_count,
+                                                    'reconciliation_conflicts': fusion_result.reconciliation_conflicts
+                                                }
+                                            )
+                                        else:
+                                            # Fallback to original source separation behavior
+                                            variant_overlap_results.append({
+                                                'separation_result': separation_result,
+                                                'diarization_result': diarization_result,
+                                                'fusion_result': None,
+                                                'stem_manifest': stem_manifest,
+                                                'fallback_applied': True
+                                            })
+                                    
+                                    except Exception as e:
+                                        self.structured_logger.warning(
+                                            f"Overlap processing failed for separation result {separation_result.overlap_frame.start_time:.3f}: {e}"
+                                        )
+                                        continue
                                 
-                                total_patches_applied += len([r for r in separation_results if r.final_segments])
-                                
-                                self.structured_logger.info(
-                                    f"Applied {len(separation_results)} source separation patches to variant {variant_idx}",
-                                    context={
-                                        'variant_id': diarization_variant.get('variant_id', variant_idx),
-                                        'original_segments': len(variant_segments),
-                                        'patched_segments': len(patched_segments),
-                                        'overlap_frames': len(separation_results)
+                                # Apply overlap processing results to diarization variant
+                                if variant_overlap_results:
+                                    patched_segments = apply_overlap_processing_patches(
+                                        variant_segments, variant_overlap_results
+                                    )
+                                    
+                                    # Update the diarization variant
+                                    diarization_variant['segments'] = patched_segments
+                                    diarization_variant['overlap_processing_applied'] = True
+                                    diarization_variant['overlap_processing_metadata'] = {
+                                        'overlap_frames_processed': len(separation_results),
+                                        'fusion_results_count': len([r for r in variant_overlap_results if r.get('fusion_result')]),
+                                        'fallback_results_count': len([r for r in variant_overlap_results if r.get('fallback_applied')]),
+                                        'processing_timestamp': time.time(),
+                                        'stem_manifests_created': len([r for r in variant_overlap_results if r.get('stem_manifest')])
                                     }
-                                )
+                                    
+                                    overlap_processing_results.extend(variant_overlap_results)
+                                    
+                                    self.structured_logger.info(
+                                        f"Applied overlap processing to variant {variant_idx}",
+                                        context={
+                                            'variant_id': diarization_variant.get('variant_id', variant_idx),
+                                            'original_segments': len(variant_segments),
+                                            'patched_segments': len(patched_segments),
+                                            'overlap_results': len(variant_overlap_results)
+                                        }
+                                    )
                     
                     except Exception as e:
-                        self.structured_logger.warning(f"Source separation failed for variant {variant_idx}: {e}")
+                        self.structured_logger.warning(f"Overlap processing failed for variant {variant_idx}: {e}")
                         # Ensure variant is marked as unmodified
-                        diarization_variant['source_separation_applied'] = False
+                        diarization_variant['overlap_processing_applied'] = False
                         continue
                 
                 # Clean up temporary files
                 if hasattr(self.source_separation_engine, 'cleanup_temp_files'):
                     try:
-                        self.source_separation_engine.cleanup_temp_files([])
+                        all_separation_results = [r['separation_result'] for r in overlap_processing_results]
+                        self.source_separation_engine.cleanup_temp_files(all_separation_results)
                     except Exception as e:
-                        self.structured_logger.warning(f"Failed to cleanup source separation temp files: {e}")
+                        self.structured_logger.warning(f"Failed to cleanup overlap processing temp files: {e}")
                 
-                source_sep_time = time.time() - source_sep_start_time
-                source_separation_patches_applied = total_patches_applied
+                overlap_processing_time = time.time() - overlap_processing_start_time
+                source_separation_patches_applied = total_fusion_results
                 
-                self.structured_logger.stage_complete("source_separation", "Source separation timeline patching completed",
-                                                    duration=source_sep_time,
+                self.structured_logger.stage_complete("overlap_aware_processing", "Overlap-aware processing completed",
+                                                    duration=overlap_processing_time,
                                                     metrics={
                                                         'overlap_frames_processed': total_overlap_frames,
-                                                        'timeline_patches_applied': total_patches_applied,
-                                                        'variants_processed': len(diarization_variants)
+                                                        'fusion_results_generated': total_fusion_results,
+                                                        'variants_processed': len(diarization_variants),
+                                                        'stem_manifests_created': len([r for r in overlap_processing_results if r.get('stem_manifest')])
                                                     })
                 
                 if progress_callback:
-                    progress_callback("C2", 40, f"Source separation complete - {total_patches_applied} overlap intervals replaced in {len(diarization_variants)} diarization variants")
+                    progress_callback("C2", 40, f"Overlap processing complete - {total_fusion_results} overlap regions processed with full pipeline")
+                
+                # Step 3.5: Long-Horizon Speaker Tracking (40-45%)
+                if self.enable_long_horizon_tracking and overlap_processing_results:
+                    if progress_callback:
+                        progress_callback("C3", 41, "Running long-horizon speaker tracking and relabeling...")
+                    
+                    stage_start_time = time.time()
+                    self.structured_logger.stage_start("long_horizon_speaker_tracking", 
+                                                      "Processing long-horizon speaker tracking",
+                                                      context={
+                                                          'diarization_variants': len(diarization_variants),
+                                                          'overlap_results': len(overlap_processing_results),
+                                                          'session_id': self.run_id
+                                                      })
+                    
+                    try:
+                        # Process each diarization variant that had overlap processing applied
+                        long_horizon_results = []
+                        
+                        for variant_idx, diarization_variant in enumerate(diarization_variants):
+                            if not diarization_variant.get('overlap_processing_applied', False):
+                                continue
+                            
+                            # Find overlap processing results for this variant
+                            variant_overlap_results = [r for r in overlap_processing_results 
+                                                     if r.get('diarization_variant_id') == variant_idx]
+                            
+                            if not variant_overlap_results:
+                                continue
+                            
+                            # Extract fusion results for processing
+                            fusion_results = [r.get('fusion_result') for r in variant_overlap_results 
+                                            if r.get('fusion_result')]
+                            
+                            if not fusion_results:
+                                continue
+                            
+                            self.structured_logger.info(f"Processing long-horizon tracking for variant {variant_idx}",
+                                                       context={
+                                                           'fusion_results': len(fusion_results),
+                                                           'variant_id': diarization_variant.get('variant_id', variant_idx)
+                                                       })
+                            
+                            # Process the first fusion result for this variant (most representative)
+                            fusion_result = fusion_results[0]
+                            
+                            try:
+                                # Step 1: Global speaker clustering
+                                clustering_result = self.global_speaker_linker.process_fusion_result(
+                                    fusion_result=fusion_result,
+                                    session_id=self.run_id,
+                                    audio_path=clean_audio_path,
+                                    user_hint_k=self.expected_speakers if self.expected_speakers > 0 else None
+                                )
+                                
+                                # Step 2: Speaker relabeling and swap detection
+                                if clustering_result.clusters:
+                                    # Extract turn embeddings for swap detection
+                                    turn_embeddings = self.global_speaker_linker.extract_turn_embeddings(
+                                        fusion_result, self.run_id, clean_audio_path
+                                    )
+                                    
+                                    relabeling_result = self.speaker_relabeler.relabel_speakers(
+                                        fusion_result=fusion_result,
+                                        clustering_result=clustering_result,
+                                        turn_embeddings=turn_embeddings,
+                                        session_id=self.run_id
+                                    )
+                                    
+                                    # Store results
+                                    long_horizon_result = {
+                                        'diarization_variant_id': variant_idx,
+                                        'clustering_result': clustering_result,
+                                        'relabeling_result': relabeling_result,
+                                        'speaker_mapping': relabeling_result.global_speaker_mapping,
+                                        'speaker_names': relabeling_result.speaker_display_names,
+                                        'swap_corrections': len(relabeling_result.swaps_corrected),
+                                        'processing_metadata': {
+                                            'clusters_found': len(clustering_result.clusters),
+                                            'optimal_k': clustering_result.optimal_k,
+                                            'clustering_confidence': clustering_result.clustering_confidence,
+                                            'speaker_consistency': relabeling_result.speaker_consistency_score,
+                                            'der_improvement': relabeling_result.der_improvement_estimate
+                                        }
+                                    }
+                                    
+                                    long_horizon_results.append(long_horizon_result)
+                                    
+                                    self.structured_logger.info("Long-horizon processing completed for variant",
+                                                               context={
+                                                                   'global_speakers': len(clustering_result.clusters),
+                                                                   'swaps_corrected': len(relabeling_result.swaps_corrected),
+                                                                   'der_improvement': relabeling_result.der_improvement_estimate,
+                                                                   'validation_passed': relabeling_result.validation_passed
+                                                               })
+                                    
+                                    # Apply speaker mapping to the diarization variant
+                                    if relabeling_result.validation_passed and relabeling_result.global_speaker_mapping:
+                                        updated_segments = []
+                                        for seg in diarization_variant.get('segments', []):
+                                            updated_seg = seg.copy()
+                                            original_speaker = seg.get('speaker_id', '')
+                                            
+                                            if original_speaker in relabeling_result.global_speaker_mapping:
+                                                updated_seg['speaker_id'] = relabeling_result.global_speaker_mapping[original_speaker]
+                                                updated_seg['original_speaker_id'] = original_speaker
+                                                updated_seg['long_horizon_processed'] = True
+                                                updated_seg['global_speaker_metadata'] = {
+                                                    'display_name': relabeling_result.speaker_display_names.get(
+                                                        relabeling_result.global_speaker_mapping[original_speaker], 
+                                                        f"Speaker {relabeling_result.global_speaker_mapping[original_speaker]}"
+                                                    ),
+                                                    'speaker_role': relabeling_result.speaker_roles.get(
+                                                        relabeling_result.global_speaker_mapping[original_speaker], 
+                                                        'Participant'
+                                                    )
+                                                }
+                                            
+                                            updated_segments.append(updated_seg)
+                                        
+                                        # Update the variant with global speaker IDs
+                                        diarization_variant['segments'] = updated_segments
+                                        diarization_variant['long_horizon_processed'] = True
+                                        diarization_variant['long_horizon_metadata'] = long_horizon_result['processing_metadata']
+                                        diarization_variant['speaker_mapping'] = relabeling_result.global_speaker_mapping
+                                        diarization_variant['speaker_display_names'] = relabeling_result.speaker_display_names
+                            
+                            except Exception as e:
+                                self.structured_logger.warning(f"Long-horizon processing failed for variant {variant_idx}: {e}")
+                                continue
+                        
+                        long_horizon_processing_time = time.time() - stage_start_time
+                        
+                        self.structured_logger.stage_complete("long_horizon_speaker_tracking", 
+                                                            "Long-horizon speaker tracking completed",
+                                                            duration=long_horizon_processing_time,
+                                                            metrics={
+                                                                'variants_processed': len([v for v in diarization_variants if v.get('long_horizon_processed', False)]),
+                                                                'total_swaps_corrected': sum(r.get('swap_corrections', 0) for r in long_horizon_results),
+                                                                'average_der_improvement': sum(r.get('processing_metadata', {}).get('der_improvement', 0) for r in long_horizon_results) / max(len(long_horizon_results), 1),
+                                                                'average_speaker_consistency': sum(r.get('processing_metadata', {}).get('speaker_consistency', 0) for r in long_horizon_results) / max(len(long_horizon_results), 1)
+                                                            })
+                        
+                        if progress_callback:
+                            total_swaps = sum(r.get('swap_corrections', 0) for r in long_horizon_results)
+                            progress_callback("C3", 45, f"Long-horizon tracking complete - {len(long_horizon_results)} variants processed, {total_swaps} swaps corrected")
+                    
+                    except Exception as e:
+                        self.structured_logger.warning(f"Long-horizon speaker tracking failed: {e}")
+                        if progress_callback:
+                            progress_callback("C3", 45, "Long-horizon tracking skipped due to error")
+            
+            elif self.enable_source_separation and self.source_separation_engine:
+                # Fallback to legacy source separation behavior
+                if progress_callback:
+                    progress_callback("C2", 36, "Running legacy source separation with timeline patching...")
+                
+                source_separation_patches_applied = run_legacy_source_separation(
+                    self.source_separation_engine,
+                    clean_audio_path, 
+                    diarization_variants,
+                    self.source_separation_providers,
+                    self.overlap_probability_threshold,
+                    self.structured_logger,
+                    progress_callback
+                )
+                
+                if progress_callback:
+                    progress_callback("C2", 40, f"Legacy source separation complete - {source_separation_patches_applied} overlap intervals replaced")
             
             # Step 4: ASR Ensemble (40-75%)
             if progress_callback:
@@ -848,16 +1469,27 @@ class EnsembleManager:
             
             candidates = self.asr_engine.run_asr_ensemble(clean_audio_path, diarization_variants, target_language=self.target_language)
             
-            # Log source separation integration results
+            # Log overlap processing integration results
             if source_separation_patches_applied > 0:
-                self.structured_logger.info(
-                    f"Source separation timeline integration completed - {source_separation_patches_applied} overlap intervals replaced",
-                    context={
-                        'total_candidates': len(candidates),
-                        'patches_applied': source_separation_patches_applied,
-                        'modified_variants': sum(1 for v in diarization_variants if v.get('source_separation_applied', False))
-                    }
-                )
+                if self.enable_overlap_aware_processing:
+                    self.structured_logger.info(
+                        f"Overlap-aware processing completed - {source_separation_patches_applied} overlap regions processed",
+                        context={
+                            'total_candidates': len(candidates),
+                            'overlap_regions_processed': source_separation_patches_applied,
+                            'overlap_processing_results': len(overlap_processing_results),
+                            'modified_variants': sum(1 for v in diarization_variants if v.get('overlap_processing_applied', False))
+                        }
+                    )
+                else:
+                    self.structured_logger.info(
+                        f"Legacy source separation completed - {source_separation_patches_applied} overlap intervals replaced",
+                        context={
+                            'total_candidates': len(candidates),
+                            'patches_applied': source_separation_patches_applied,
+                            'modified_variants': sum(1 for v in diarization_variants if v.get('source_separation_applied', False))
+                        }
+                    )
             
             # Track ASR artifacts (versioning)
             if self.enable_versioning and self.dvc_manager:
@@ -871,6 +1503,83 @@ class EnsembleManager:
             
             if progress_callback:
                 progress_callback("D", 75, f"ASR ensemble complete - {len(candidates)} candidates generated (5×5 matrix)")
+            
+            # Step 4.25: Auto-Glossary Term Mining (75-76%)
+            session_term_candidates = []
+            if self.enable_auto_glossary and self.term_mining_engine and candidates:
+                if progress_callback:
+                    progress_callback("D1", 75.5, "Mining domain-specific terms from first-pass hypotheses...")
+                
+                stage_start_time = time.time()
+                self.structured_logger.stage_start("term_mining", "Mining terms from first-pass ASR hypotheses",
+                                                 context={'total_candidates': len(candidates), 'project_id': self.project_id})
+                
+                try:
+                    # Convert candidates to format expected by term miner
+                    asr_results_for_mining = self._prepare_candidates_for_term_mining(candidates, diarization_variants)
+                    
+                    # Update term mining engine with current session ID
+                    session_id = f"{self.run_id}_{int(time.time())}"
+                    self.term_mining_engine.session_id = session_id
+                    
+                    # Mine terms from first-pass hypotheses
+                    mining_results = self.term_mining_engine.mine_terms_from_hypotheses(
+                        asr_results=asr_results_for_mining,
+                        diarization_results=diarization_variants[0] if diarization_variants else None
+                    )
+                    
+                    session_term_candidates = mining_results.candidates
+                    
+                    # Export session candidates for debugging/analysis
+                    if session_term_candidates:
+                        session_candidates_path = f"/tmp/{session_id}_term_candidates.json"
+                        self.term_mining_engine.export_session_candidates(mining_results, session_candidates_path)
+                    
+                    mining_time = time.time() - stage_start_time
+                    self.structured_logger.stage_complete("term_mining", "Term mining completed",
+                                                        duration=mining_time,
+                                                        metrics={
+                                                            'candidates_found': mining_results.total_candidates,
+                                                            'high_confidence': mining_results.high_confidence_candidates,
+                                                            'technical_terms': mining_results.technical_term_count,
+                                                            'proper_nouns': mining_results.proper_noun_count
+                                                        })
+                    
+                    # Merge session candidates into project term base
+                    if self.term_store and session_term_candidates:
+                        candidate_dicts = [{
+                            'token': c.token,
+                            'weight': c.weight,
+                            'supporting_engines': list(c.supporting_engines),
+                            'local_context': c.local_context,
+                            'scores': {
+                                'frequency': c.frequency_score,
+                                'case_pattern': c.case_pattern_score,
+                                'technical_pattern': c.technical_pattern_score,
+                                'multi_speaker': c.multi_speaker_score,
+                                'unit_proximity': c.unit_proximity_score,
+                                'final_mining': c.final_mining_score
+                            },
+                            'variants': list(c.variants)
+                        } for c in session_term_candidates]
+                        
+                        merge_result = self.term_store.merge_session_candidates(
+                            project_id=self.project_id,
+                            session_candidates=candidate_dicts,
+                            session_id=session_id
+                        )
+                        
+                        self.structured_logger.info("Session terms merged into project term base",
+                                                   context={
+                                                       'terms_added': merge_result.terms_added,
+                                                       'terms_updated': merge_result.terms_updated,
+                                                       'terms_decayed': merge_result.terms_decayed,
+                                                       'merge_time': merge_result.total_processing_time
+                                                   })
+                
+                except Exception as e:
+                    self.structured_logger.warning(f"Term mining failed: {e}", context={'error_type': type(e).__name__})
+                    session_term_candidates = []
             
             # Step 4.5: Dialect Processing (75-77%)
             dialect_processed_candidates = candidates  # Default to original candidates
@@ -943,7 +1652,7 @@ class EnsembleManager:
                                                 duration=scoring_time,
                                                 metrics={'candidates_scored': len(scored_candidates)})
             
-            # Step 6: Consensus Processing (85-90%)
+            # Step 6: Consensus Processing with Auto-Glossary Biasing (85-90%)
             if progress_callback:
                 progress_callback("F", 87, f"Running consensus strategy: {self.consensus_strategy}...")
             
@@ -951,10 +1660,31 @@ class EnsembleManager:
             self.structured_logger.stage_start("consensus_processing", "Processing consensus from scored candidates",
                                              context={'consensus_strategy': self.consensus_strategy, 'candidates_count': len(scored_candidates)})
             
-            # Use consensus module for winner selection
+            # Step 6.1: Generate session bias list for fusion biasing
+            if self.enable_auto_glossary and self.adaptive_biasing_engine:
+                try:
+                    session_id = f"{self.run_id}_{int(time.time())}"
+                    self.current_session_bias_list = self.adaptive_biasing_engine.generate_session_bias_list(
+                        project_id=self.project_id,
+                        session_id=session_id,
+                        context_type="meeting"
+                    )
+                    
+                    self.structured_logger.info("Generated session bias list for fusion",
+                                               context={
+                                                   'bias_terms': self.current_session_bias_list.total_bias_terms,
+                                                   'bias_strength': self.current_session_bias_list.bias_strength,
+                                                   'term_types': self.current_session_bias_list.term_type_distribution
+                                               })
+                except Exception as e:
+                    self.structured_logger.warning(f"Failed to generate session bias list: {e}")
+                    self.current_session_bias_list = None
+            
+            # Use consensus module for winner selection with adaptive biasing
             consensus_result = self.consensus_module.process_consensus(
                 candidates=scored_candidates,
-                strategy=self.consensus_strategy
+                strategy=self.consensus_strategy,
+                session_bias_list=self.current_session_bias_list
             )
             
             winner = consensus_result.winner_candidate
@@ -1037,13 +1767,133 @@ class EnsembleManager:
             if progress_callback:
                 progress_callback("G", 92, "Generating final outputs...")
             
-            # Step 7.5: Post-Fusion Punctuation Processing (92-95%)
-            if self.enable_post_fusion_punctuation and self.punctuation_engine:
+            # Step 7.5: Text Normalization Processing (92-95%)
+            if self.enable_text_normalization and self.text_normalizer:
                 if progress_callback:
-                    progress_callback("G1", 92, "Applying punctuation and disfluency normalization...")
+                    progress_callback("G1", 92, f"Applying robust text normalization (profile: {self.normalization_profile})...")
                 
                 stage_start_time = time.time()
-                self.structured_logger.stage_start("post_fusion_punctuation", "Applying post-fusion punctuation and disfluency normalization")
+                self.structured_logger.stage_start("text_normalization", f"Applying robust text normalization with profile: {self.normalization_profile}")
+                
+                try:
+                    # Extract segments from winner for normalization processing
+                    winner_segments = winner.get('segments', [])
+                    
+                    # Apply robust text normalization
+                    normalization_results = self.text_normalizer.normalize_segments(
+                        winner_segments, profile=self.normalization_profile
+                    )
+                    
+                    # Apply guardrail verification and collect metrics
+                    normalized_segments = []
+                    total_violations = 0
+                    profile_downgrades = 0
+                    normalization_metrics = {
+                        'segments_processed': len(normalization_results),
+                        'tokens_changed': 0,
+                        'fillers_removed': 0,
+                        'acronyms_protected': 0,
+                        'sentences_adjusted': 0,
+                        'guardrail_violations': 0,
+                        'profile_downgrades': 0,
+                        'avg_readability_improvement': 0.0
+                    }
+                    
+                    readability_improvements = []
+                    
+                    for result in normalization_results:
+                        # Validate with guardrails
+                        if self.guardrail_verifier:
+                            guardrail_result = self.guardrail_verifier.verify_normalization(
+                                original_text=result.original_text,
+                                normalized_text=result.normalized_text,
+                                original_tokens=[{'word': t.text, 'start': t.start_time, 'end': t.end_time} for t in result.original_tokens],
+                                normalized_tokens=[{'word': t.text, 'start': t.start_time, 'end': t.end_time} for t in result.normalized_tokens],
+                                normalization_changes=result.changes,
+                                protected_tokens=[t.text for t in result.original_tokens if t.is_protected],
+                                current_profile=result.profile_used
+                            )
+                            
+                            # Log guardrail violations
+                            if guardrail_result.violations:
+                                total_violations += len(guardrail_result.violations)
+                                for violation in guardrail_result.violations:
+                                    self.structured_logger.warning(f"Guardrail violation: {violation.rule_name} - {violation.details}")
+                        
+                        # Create normalized segment
+                        segment_dict = {
+                            'start': result.original_tokens[0].start_time if result.original_tokens else 0.0,
+                            'end': result.original_tokens[-1].end_time if result.original_tokens else 0.0,
+                            'speaker': winner_segments[len(normalized_segments)].get('speaker', 'Unknown') if len(normalized_segments) < len(winner_segments) else 'Unknown',
+                            'text': result.normalized_text,
+                            'original_text': result.original_text,
+                            'normalization_confidence': 1.0 - (len(result.guardrail_violations) * 0.1),  # Simple confidence calculation
+                            'normalization_applied': len(result.changes) > 0,
+                            'profile_used': result.profile_used,
+                            'profile_downgrades': result.profile_downgrades,
+                            'readability_score': result.readability_score_after,
+                            'readability_improvement': result.readability_score_after - result.readability_score_before,
+                            'guardrail_violations': result.guardrail_violations,
+                            'processing_metadata': {
+                                'changes_applied': len(result.changes),
+                                'tokens_changed': len([c for c in result.changes if c.change_type in ['capitalization', 'formatting']]),
+                                'fillers_removed': len([c for c in result.changes if c.change_type == 'disfluency' and not c.normalized_text]),
+                                'processing_time_ms': result.processing_time_ms
+                            }
+                        }
+                        normalized_segments.append(segment_dict)
+                        
+                        # Update metrics
+                        normalization_metrics['tokens_changed'] += segment_dict['processing_metadata']['tokens_changed']
+                        normalization_metrics['fillers_removed'] += segment_dict['processing_metadata']['fillers_removed']
+                        normalization_metrics['acronyms_protected'] += len([t for t in result.original_tokens if t.is_protected])
+                        normalization_metrics['sentences_adjusted'] += len([c for c in result.changes if c.change_type == 'punctuation'])
+                        normalization_metrics['guardrail_violations'] += len(result.guardrail_violations)
+                        normalization_metrics['profile_downgrades'] += len(result.profile_downgrades)
+                        
+                        if result.readability_score_after > result.readability_score_before:
+                            readability_improvements.append(result.readability_score_after - result.readability_score_before)
+                    
+                    # Calculate average readability improvement
+                    if readability_improvements:
+                        normalization_metrics['avg_readability_improvement'] = sum(readability_improvements) / len(readability_improvements)
+                    
+                    # Update winner candidate with normalized segments
+                    winner['segments'] = normalized_segments
+                    winner['normalization_metadata'] = {
+                        'profile_used': self.normalization_profile,
+                        'processing_time': time.time() - stage_start_time,
+                        'metrics': normalization_metrics,
+                        'guardrail_summary': {
+                            'total_violations': total_violations,
+                            'segments_with_violations': len([s for s in normalized_segments if s['guardrail_violations']]),
+                            'profile_downgrades': profile_downgrades
+                        }
+                    }
+                    
+                    normalization_time = time.time() - stage_start_time
+                    self.structured_logger.stage_complete("text_normalization", "Text normalization completed successfully",
+                                                        duration=normalization_time,
+                                                        metrics=normalization_metrics)
+                    
+                    if progress_callback:
+                        progress_callback("G1", 94, f"Text normalization applied - {len(normalized_segments)} segments processed with {normalization_metrics['guardrail_violations']} violations")
+                        
+                except Exception as e:
+                    self.structured_logger.error(f"Text normalization failed: {e}")
+                    # Continue with original segments on error
+                    normalization_time = time.time() - stage_start_time
+                    self.structured_logger.stage_complete("text_normalization", "Text normalization failed, using original segments",
+                                                        duration=normalization_time,
+                                                        context={'error': str(e)})
+            
+            # Fallback to legacy post-fusion punctuation if text normalization is disabled
+            elif self.enable_post_fusion_punctuation and self.punctuation_engine:
+                if progress_callback:
+                    progress_callback("G1", 92, "Applying legacy punctuation and disfluency normalization...")
+                
+                stage_start_time = time.time()
+                self.structured_logger.stage_start("post_fusion_punctuation", "Applying legacy post-fusion punctuation and disfluency normalization")
                 
                 try:
                     # Extract segments from winner for punctuation processing
@@ -1079,7 +1929,7 @@ class EnsembleManager:
                     }
                     
                     punctuation_time = time.time() - stage_start_time
-                    self.structured_logger.stage_complete("post_fusion_punctuation", "Post-fusion punctuation completed successfully",
+                    self.structured_logger.stage_complete("post_fusion_punctuation", "Legacy post-fusion punctuation completed successfully",
                                                         duration=punctuation_time,
                                                         metrics={
                                                             'segments_processed': len(punctuated_segments),
@@ -1089,13 +1939,13 @@ class EnsembleManager:
                                                         })
                     
                     if progress_callback:
-                        progress_callback("G1", 94, f"Punctuation applied - {len(punctuated_segments)} segments processed")
+                        progress_callback("G1", 94, f"Legacy punctuation applied - {len(punctuated_segments)} segments processed")
                         
                 except Exception as e:
-                    self.structured_logger.error(f"Post-fusion punctuation failed: {e}")
+                    self.structured_logger.error(f"Legacy post-fusion punctuation failed: {e}")
                     # Continue with original segments on error
                     punctuation_time = time.time() - stage_start_time
-                    self.structured_logger.stage_complete("post_fusion_punctuation", "Post-fusion punctuation failed, using original segments",
+                    self.structured_logger.stage_complete("post_fusion_punctuation", "Legacy post-fusion punctuation failed, using original segments",
                                                         duration=punctuation_time,
                                                         context={'error': str(e)})
             

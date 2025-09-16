@@ -1,0 +1,300 @@
+# Normalization Profile Configurations
+# Defines different text normalization presets for various use cases
+
+# Global normalization settings (applied to all profiles unless overridden)
+global_settings:
+  # Timestamp anchoring - maximum drift allowed for punctuation boundaries
+  max_timestamp_drift_ms: 200  # milliseconds
+  
+  # Word timing preservation tolerance
+  word_timing_tolerance: 0.1  # seconds
+  
+  # Acronym and technical term protection patterns
+  protected_patterns:
+    acronyms:
+      - r'\b[A-Z]{2,6}\b'                    # All-caps acronyms (API, UI, AWS)
+      - r'\b[A-Z][0-9]+[A-Z]*\b'            # Alphanumeric codes (A12, B3C)
+      - r'\b[A-Z]{1,3}[0-9]{1,4}\b'         # Mixed codes (AI2, ML4)
+      - r'\b[A-Z]+[-_][A-Z0-9]+\b'          # Hyphenated codes (CI-CD, AWS-S3)
+    
+    technical_terms:
+      - r'\b[a-z]+\.[a-z]+\b'               # Domain names (google.com)
+      - r'\b[A-Z][a-zA-Z]*[A-Z][a-zA-Z]*\b' # CamelCase (JavaScript, iPhone)
+      - r'\b\w+@\w+\.\w+\b'                 # Email addresses
+      - r'\b#\w+\b'                         # Hashtags
+      - r'\b@\w+\b'                         # Mentions
+    
+    numbers:
+      - r'\b\d{1,3}(?:,\d{3})*(?:\.\d+)?\b' # Formatted numbers
+      - r'\b\d+(?:\.\d+)?[%$€£¥]\b'        # Currency/percentage
+      - r'\b\d+[a-zA-Z]{1,3}\b'             # Units (10GB, 5km)
+      - r'\b\d+[-/]\d+[-/]\d+\b'            # Dates
+
+  # Semantic disfluency detection - words to analyze for context
+  semantic_fillers:
+    - "like"      # Can be meaningful: "I like this" vs "it's like, you know"
+    - "right"     # Can be meaningful: "turn right" vs "right?"
+    - "okay"      # Can be meaningful: "that's okay" vs "okay, so..."
+    - "actually"  # Can be meaningful: "actually important" vs "actually, um"
+    - "basically" # Usually filler but can be meaningful
+
+# Profile Definitions
+profiles:
+  verbatim:
+    description: "Minimal changes - preserve original speech patterns"
+    enabled: true
+    
+    # Punctuation settings
+    punctuation:
+      sentence_segmentation: false
+      add_periods: false
+      add_commas: false
+      add_question_marks: false
+      add_exclamations: false
+      timestamp_anchored: true
+      
+    # Capitalization settings  
+    capitalization:
+      sentence_starts: false
+      proper_nouns: false
+      technical_terms: true  # Always protect technical terms
+      acronym_protection: true
+      
+    # Disfluency handling
+    disfluency_removal:
+      enabled: false
+      remove_fillers: false
+      remove_repetitions: false
+      remove_false_starts: false
+      semantic_awareness: true
+      
+    # Number and formatting
+    number_formatting:
+      normalize_numbers: false
+      spell_out_small_numbers: false
+      format_currency: false
+      format_percentages: false
+      
+    # Style adjustments
+    style:
+      remove_excessive_spaces: true
+      normalize_quotations: false
+      list_formatting: false
+      
+    # Guardrails
+    guardrails:
+      strict_token_preservation: true
+      max_segment_change_ratio: 0.02  # Maximum 2% token change
+      timing_preservation: true
+      
+  light:
+    description: "Light normalization - basic punctuation and capitalization"
+    enabled: true
+    
+    punctuation:
+      sentence_segmentation: true
+      add_periods: true
+      add_commas: false  # Conservative comma placement
+      add_question_marks: true
+      add_exclamations: false
+      timestamp_anchored: true
+      confidence_threshold: 0.8
+      
+    capitalization:
+      sentence_starts: true
+      proper_nouns: true
+      technical_terms: true
+      acronym_protection: true
+      
+    disfluency_removal:
+      enabled: true
+      remove_fillers: true
+      filler_strictness: "conservative"  # Only obvious fillers
+      remove_repetitions: false
+      remove_false_starts: false
+      semantic_awareness: true
+      preserve_emphasis: true  # Keep "very very important"
+      
+    number_formatting:
+      normalize_numbers: false
+      spell_out_small_numbers: false
+      format_currency: true
+      format_percentages: true
+      
+    style:
+      remove_excessive_spaces: true
+      normalize_quotations: true
+      list_formatting: false
+      
+    guardrails:
+      strict_token_preservation: true
+      max_segment_change_ratio: 0.05  # Maximum 5% token change
+      timing_preservation: true
+      
+  readable:
+    description: "Balanced readability - good for most business use cases"
+    enabled: true
+    
+    punctuation:
+      sentence_segmentation: true
+      add_periods: true
+      add_commas: true
+      add_question_marks: true
+      add_exclamations: true
+      timestamp_anchored: true
+      confidence_threshold: 0.7
+      
+    capitalization:
+      sentence_starts: true
+      proper_nouns: true
+      technical_terms: true
+      acronym_protection: true
+      
+    disfluency_removal:
+      enabled: true
+      remove_fillers: true
+      filler_strictness: "moderate"
+      remove_repetitions: true
+      remove_false_starts: true
+      semantic_awareness: true
+      preserve_emphasis: true
+      context_window: 3  # Words before/after for context
+      
+    number_formatting:
+      normalize_numbers: true
+      spell_out_small_numbers: true  # one, two, three for 1-10
+      format_currency: true
+      format_percentages: true
+      
+    style:
+      remove_excessive_spaces: true
+      normalize_quotations: true
+      list_formatting: true
+      paragraph_breaks: true
+      
+    guardrails:
+      strict_token_preservation: true
+      max_segment_change_ratio: 0.10  # Maximum 10% token change
+      timing_preservation: true
+      
+  executive:
+    description: "High readability - polished for executive summaries"
+    enabled: true
+    
+    punctuation:
+      sentence_segmentation: true
+      add_periods: true
+      add_commas: true
+      add_question_marks: true
+      add_exclamations: true
+      add_semicolons: true
+      timestamp_anchored: true
+      confidence_threshold: 0.6
+      
+    capitalization:
+      sentence_starts: true
+      proper_nouns: true
+      technical_terms: true
+      acronym_protection: true
+      formal_titles: true
+      
+    disfluency_removal:
+      enabled: true
+      remove_fillers: true
+      filler_strictness: "aggressive"
+      remove_repetitions: true
+      remove_false_starts: true
+      remove_discourse_markers: true  # "you know", "I mean"
+      semantic_awareness: true
+      preserve_emphasis: false  # Clean up "very very"
+      context_window: 5
+      
+    number_formatting:
+      normalize_numbers: true
+      spell_out_small_numbers: true
+      format_currency: true
+      format_percentages: true
+      round_precise_numbers: true
+      
+    style:
+      remove_excessive_spaces: true
+      normalize_quotations: true
+      list_formatting: true
+      paragraph_breaks: true
+      formal_contractions: true  # "cannot" instead of "can't"
+      
+    guardrails:
+      strict_token_preservation: true
+      max_segment_change_ratio: 0.15  # Maximum 15% token change
+      timing_preservation: true
+
+# Readability Metrics Configuration
+readability_metrics:
+  enabled: true
+  
+  # Factors for readability scoring
+  factors:
+    sentence_length_weight: 0.2
+    punctuation_density_weight: 0.15
+    disfluency_ratio_weight: 0.25
+    capitalization_consistency_weight: 0.15
+    technical_term_preservation_weight: 0.15
+    flow_continuity_weight: 0.1
+    
+  # Scoring thresholds
+  thresholds:
+    excellent: 0.9
+    good: 0.75
+    acceptable: 0.6
+    poor: 0.4
+
+# Guardrail Configuration
+guardrails:
+  # Token invention prevention
+  token_preservation:
+    enabled: true
+    max_new_tokens_per_segment: 0  # Zero tolerance for new tokens
+    allowed_punctuation_tokens: ['.', ',', '!', '?', ':', ';', '"', "'"]
+    
+  # Timing validation
+  timing_validation:
+    enabled: true
+    max_word_drift_seconds: 0.1
+    max_segment_drift_seconds: 0.2
+    
+  # Change tracking
+  change_tracking:
+    enabled: true
+    log_all_changes: true
+    diff_granularity: "word"  # Track changes at word level
+    
+  # Error handling
+  error_handling:
+    downgrade_on_violation: true
+    fallback_profile: "light"
+    max_downgrades_per_segment: 2
+
+# Observability and Metrics
+observability:
+  enabled: true
+  
+  # Metrics to track
+  metrics:
+    - "tokens_changed_count"
+    - "tokens_added_count" 
+    - "tokens_removed_count"
+    - "sentences_adjusted_count"
+    - "fillers_removed_count"
+    - "acronyms_protected_count"
+    - "guardrail_violations_count"
+    - "profile_downgrades_count"
+    - "readability_score_before"
+    - "readability_score_after"
+    - "processing_time_ms"
+    
+  # Logging configuration
+  logging:
+    log_level: "INFO"
+    log_changes: true
+    log_violations: true
+    log_metrics: true
