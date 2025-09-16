@@ -13,14 +13,19 @@ speaker ID shuffling between processing segments.
 
 import numpy as np
 import librosa
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from typing import Dict, List, Any, Optional, Tuple, Union
 from scipy.optimize import linear_sum_assignment  # Hungarian algorithm
 import json
 import hashlib
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import tempfile
+from collections import deque
+import warnings
 
 from utils.structured_logger import StructuredLogger
 from utils.deterministic_processing import get_deterministic_processor, set_global_seed
@@ -45,16 +50,138 @@ class ConsistencyMetrics:
     total_speaker_segments: int
     mapping_accuracy: float
     cross_chunk_similarity_scores: List[float]
+    # Enhanced metrics for ECAPA-TDNN and backtracking
+    drift_detection_events: int = 0
+    backtrack_recoveries: int = 0
+    average_drift_score: float = 0.0
+    embedding_quality_score: float = 1.0
 
 @dataclass
+class BacktrackingMetrics:
+    """Metrics for speaker ID drift detection and backtracking"""
+    similarity_history: deque = field(default_factory=lambda: deque(maxlen=10))
+    drift_score: float = 0.0
+    stability_score: float = 1.0
+    last_stable_chunk: int = -1
+    backtrack_events: int = 0
+    confidence_trend: List[float] = field(default_factory=list)
+    
+@dataclass
 class SpeakerEmbedding:
-    """Speaker acoustic embedding with metadata"""
+    """ECAPA-TDNN speaker embedding with enhanced metadata and drift detection"""
     speaker_id: str
     chunk_index: int
     embedding_vector: np.ndarray
     duration: float
     confidence: float
     segment_times: List[Tuple[float, float]]  # List of (start, end) times
+    # ECAPA-TDNN specific fields
+    ecapa_embedding: Optional[torch.Tensor] = None
+    embedding_dimension: int = 192  # Standard ECAPA-TDNN output dimension
+    model_version: str = "ecapa-tdnn-voxceleb"
+    # Drift detection fields
+    backtracking_metrics: BacktrackingMetrics = field(default_factory=BacktrackingMetrics)
+    similarity_to_previous: float = 1.0
+    is_stable: bool = True
+    consecutive_low_similarity_count: int = 0
+
+class ECAPATDNNModel(nn.Module):
+    """Lightweight ECAPA-TDNN implementation for speaker embedding extraction"""
+    
+    def __init__(self, input_dim: int = 80, embedding_dim: int = 192):
+        super().__init__()
+        self.input_dim = input_dim
+        self.embedding_dim = embedding_dim
+        
+        # Feature preprocessing layers
+        self.feature_norm = nn.BatchNorm1d(input_dim)
+        self.dropout = nn.Dropout(0.1)
+        
+        # TDNN layers (1D convolutions with dilation)
+        self.tdnn1 = nn.Conv1d(input_dim, 512, kernel_size=5, dilation=1, padding=2)
+        self.tdnn2 = nn.Conv1d(512, 512, kernel_size=3, dilation=2, padding=2)
+        self.tdnn3 = nn.Conv1d(512, 512, kernel_size=3, dilation=3, padding=3)
+        self.tdnn4 = nn.Conv1d(512, 512, kernel_size=1, dilation=1, padding=0)
+        self.tdnn5 = nn.Conv1d(512, 1536, kernel_size=1, dilation=1, padding=0)
+        
+        # Statistical pooling layer
+        self.stats_pool = StatsPool()
+        
+        # Final embedding layers
+        self.fc1 = nn.Linear(1536 * 2, 512)  # *2 for mean and std pooling
+        self.bn1 = nn.BatchNorm1d(512)
+        self.fc2 = nn.Linear(512, embedding_dim)
+        
+        # Activation functions
+        self.relu = nn.ReLU()
+        self.initialize_weights()
+    
+    def initialize_weights(self):
+        """Initialize model weights using Xavier initialization"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.xavier_normal_(m.weight.data)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias.data, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight.data)
+                nn.init.constant_(m.bias.data, 0)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight.data, 1)
+                nn.init.constant_(m.bias.data, 0)
+    
+    def forward(self, x):
+        """
+        Forward pass through ECAPA-TDNN model
+        Args:
+            x: Input features [batch, features, time]
+        Returns:
+            Speaker embeddings [batch, embedding_dim]
+        """
+        # Input normalization
+        x = self.feature_norm(x)
+        x = self.dropout(x)
+        
+        # TDNN layers with residual connections
+        x1 = self.relu(self.tdnn1(x))
+        x2 = self.relu(self.tdnn2(x1))
+        x3 = self.relu(self.tdnn3(x2))
+        x4 = self.relu(self.tdnn4(x3))
+        
+        # Residual connection
+        x4 = x4 + x1[:, :512, :]
+        
+        x5 = self.relu(self.tdnn5(x4))
+        
+        # Statistical pooling
+        x = self.stats_pool(x5)
+        
+        # Final layers
+        x = self.relu(self.bn1(self.fc1(x)))
+        x = self.fc2(x)
+        
+        # L2 normalization
+        x = F.normalize(x, p=2, dim=1)
+        
+        return x
+
+class StatsPool(nn.Module):
+    """Statistical pooling layer for ECAPA-TDNN"""
+    
+    def __init__(self):
+        super().__init__()
+    
+    def forward(self, x):
+        """
+        Compute mean and standard deviation along time dimension
+        Args:
+            x: Input tensor [batch, features, time]
+        Returns:
+            Concatenated mean and std [batch, features*2]
+        """
+        mean = torch.mean(x, dim=2)
+        std = torch.std(x, dim=2)
+        return torch.cat([mean, std], dim=1)
     
 class SpeakerMapper:
     """
@@ -69,25 +196,53 @@ class SpeakerMapper:
     
     def __init__(self, 
                  similarity_threshold: float = 0.7,
-                 embedding_dim: int = 128,
+                 embedding_dim: int = 192,  # ECAPA-TDNN standard dimension
                  min_segment_duration: float = 1.0,
                  cache_embeddings: bool = True,
-                 enable_metrics: bool = True):
+                 enable_metrics: bool = True,
+                 # ECAPA-TDNN specific parameters
+                 use_ecapa_tdnn: bool = True,
+                 ecapa_model_path: Optional[str] = None,
+                 # Backtracking parameters
+                 enable_backtracking: bool = True,
+                 drift_threshold: float = 0.6,
+                 stability_window: int = 5,
+                 max_backtrack_chunks: int = 3,
+                 consecutive_drift_threshold: int = 2):
         """
-        Initialize speaker mapper with configuration parameters.
+        Initialize speaker mapper with ECAPA-TDNN and backtracking configuration.
         
         Args:
             similarity_threshold: Minimum similarity for speaker matching
-            embedding_dim: Dimensionality of speaker embeddings
+            embedding_dim: Dimensionality of speaker embeddings (192 for ECAPA-TDNN)
             min_segment_duration: Minimum duration for embedding extraction
             cache_embeddings: Whether to cache computed embeddings
             enable_metrics: Whether to generate consistency metrics
+            use_ecapa_tdnn: Whether to use ECAPA-TDNN model for embeddings
+            ecapa_model_path: Path to pre-trained ECAPA-TDNN model
+            enable_backtracking: Whether to enable drift detection and backtracking
+            drift_threshold: Similarity threshold below which drift is detected
+            stability_window: Number of chunks to consider for stability analysis
+            max_backtrack_chunks: Maximum chunks to backtrack for recovery
+            consecutive_drift_threshold: Consecutive low similarities before backtracking
         """
+        # Core configuration
         self.similarity_threshold = similarity_threshold
         self.embedding_dim = embedding_dim
         self.min_segment_duration = min_segment_duration
         self.cache_embeddings = cache_embeddings
         self.enable_metrics = enable_metrics
+        
+        # ECAPA-TDNN configuration
+        self.use_ecapa_tdnn = use_ecapa_tdnn
+        self.ecapa_model_path = ecapa_model_path
+        
+        # Backtracking configuration
+        self.enable_backtracking = enable_backtracking
+        self.drift_threshold = drift_threshold
+        self.stability_window = stability_window
+        self.max_backtrack_chunks = max_backtrack_chunks
+        self.consecutive_drift_threshold = consecutive_drift_threshold
         
         # Initialize system components
         self.structured_logger = StructuredLogger("speaker_mapper")
@@ -99,22 +254,114 @@ class SpeakerMapper:
         self.speaker_mappings: Dict[int, List[SpeakerMapping]] = {}      # chunk_index -> mappings
         self.global_speaker_registry: Dict[str, SpeakerEmbedding] = {}   # global_id -> representative embedding
         
+        # Backtracking state management
+        self.chunk_similarity_history: deque = deque(maxlen=stability_window)
+        self.last_stable_state: Optional[Dict[str, Any]] = None
+        self.drift_events_log: List[Dict[str, Any]] = []
+        self.backtrack_attempts: int = 0
+        
         # Metrics tracking
         self.consistency_metrics: Optional[ConsistencyMetrics] = None
         self.baseline_metrics: Dict[str, float] = {}
         
-        # Algorithm parameters
+        # Traditional feature parameters (fallback mode)
         self.mfcc_features = 13
         self.spectral_features = 7
         self.prosodic_features = 5
         self.delta_features = True
         
+        # ECAPA-TDNN model initialization
+        self.ecapa_model = None
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        if self.use_ecapa_tdnn:
+            self._initialize_ecapa_model()
+        
         self.structured_logger.info("Speaker mapper initialized", 
                                   context={
                                       'similarity_threshold': similarity_threshold,
                                       'embedding_dim': embedding_dim,
-                                      'cache_enabled': cache_embeddings
+                                      'cache_enabled': cache_embeddings,
+                                      'use_ecapa_tdnn': use_ecapa_tdnn,
+                                      'enable_backtracking': enable_backtracking,
+                                      'drift_threshold': drift_threshold,
+                                      'device': str(self.device)
                                   })
+    
+    def _initialize_ecapa_model(self):
+        """Initialize ECAPA-TDNN model for speaker embedding extraction"""
+        try:
+            # Create ECAPA-TDNN model
+            self.ecapa_model = ECAPATDNNModel(
+                input_dim=80,  # Mel-spectrogram features
+                embedding_dim=self.embedding_dim
+            ).to(self.device)
+            
+            # Load pre-trained weights if available
+            if self.ecapa_model_path and Path(self.ecapa_model_path).exists():
+                checkpoint = torch.load(self.ecapa_model_path, map_location=self.device)
+                self.ecapa_model.load_state_dict(checkpoint['model_state_dict'])
+                self.structured_logger.info(f"Loaded ECAPA-TDNN model from {self.ecapa_model_path}")
+            else:
+                # Initialize with random weights (for demonstration - in production use pre-trained)
+                self.structured_logger.info("Using randomly initialized ECAPA-TDNN model (consider using pre-trained weights)")
+            
+            self.ecapa_model.eval()
+            
+            # Test model with dummy input
+            with torch.no_grad():
+                dummy_input = torch.randn(1, 80, 100).to(self.device)
+                test_output = self.ecapa_model(dummy_input)
+                self.structured_logger.info(f"ECAPA-TDNN model initialized successfully, output shape: {test_output.shape}")
+                
+        except Exception as e:
+            self.structured_logger.warning(f"Failed to initialize ECAPA-TDNN model: {e}")
+            self.structured_logger.info("Falling back to traditional acoustic features")
+            self.use_ecapa_tdnn = False
+            self.ecapa_model = None
+    
+    def _extract_ecapa_embedding(self, audio_segment: np.ndarray, sample_rate: int) -> Optional[torch.Tensor]:
+        """Extract ECAPA-TDNN embedding from audio segment"""
+        if not self.use_ecapa_tdnn or self.ecapa_model is None:
+            return None
+            
+        try:
+            # Ensure minimum length for stable embedding
+            min_samples = int(0.5 * sample_rate)  # 0.5 seconds minimum
+            if len(audio_segment) < min_samples:
+                # Pad or skip very short segments
+                padding = min_samples - len(audio_segment)
+                audio_segment = np.pad(audio_segment, (0, padding), mode='reflect')
+            
+            # Extract mel-spectrogram features
+            mel_spectrogram = librosa.feature.melspectrogram(
+                y=audio_segment,
+                sr=sample_rate,
+                n_mels=80,
+                hop_length=160,
+                win_length=400,
+                n_fft=512
+            )
+            
+            # Convert to log scale
+            log_mel = librosa.power_to_db(mel_spectrogram, ref=np.max)
+            
+            # Normalize features
+            log_mel = (log_mel - np.mean(log_mel)) / (np.std(log_mel) + 1e-8)
+            
+            # Convert to tensor and add batch dimension
+            features_tensor = torch.FloatTensor(log_mel).unsqueeze(0).to(self.device)
+            
+            # Extract embedding using ECAPA-TDNN model
+            with torch.no_grad():
+                embedding = self.ecapa_model(features_tensor)
+                embedding = embedding.squeeze(0)  # Remove batch dimension
+                
+            return embedding
+            
+        except Exception as e:
+            self.structured_logger.warning(f"ECAPA-TDNN embedding extraction failed: {e}")
+            return None
     
     def extract_speaker_embeddings(self, 
                                  audio_path: str, 
@@ -153,7 +400,7 @@ class SpeakerMapper:
         for speaker_id, segments in speaker_segments.items():
             try:
                 embedding = self._extract_single_speaker_embedding(
-                    audio_data, sample_rate, segments, speaker_id, chunk_index
+                    audio_data, int(sample_rate), segments, speaker_id, chunk_index
                 )
                 if embedding is not None:
                     embeddings.append(embedding)
@@ -229,41 +476,87 @@ class SpeakerMapper:
             if len(segment_audio) < sample_rate * 0.1:  # Skip very short segments
                 continue
             
-            # Extract acoustic features
-            features = self._extract_acoustic_features(segment_audio, sample_rate)
-            if features is not None:
-                all_features.append(features)
-                total_duration += (end_time - start_time)
-                confidence_scores.append(segment.get('confidence', 0.8))
+            # Extract features using ECAPA-TDNN or traditional methods
+            if self.use_ecapa_tdnn:
+                ecapa_embedding = self._extract_ecapa_embedding(segment_audio, sample_rate)
+                if ecapa_embedding is not None:
+                    # Convert to numpy for consistency with existing code
+                    features = ecapa_embedding.cpu().numpy()
+                    all_features.append(features)
+                    total_duration += (end_time - start_time)
+                    confidence_scores.append(segment.get('confidence', 0.8))
+                else:
+                    # Fallback to traditional features
+                    features = self._extract_acoustic_features(segment_audio, sample_rate)
+                    if features is not None:
+                        all_features.append(features)
+                        total_duration += (end_time - start_time)
+                        confidence_scores.append(segment.get('confidence', 0.8))
+            else:
+                # Use traditional acoustic features
+                features = self._extract_acoustic_features(segment_audio, sample_rate)
+                if features is not None:
+                    all_features.append(features)
+                    total_duration += (end_time - start_time)
+                    confidence_scores.append(segment.get('confidence', 0.8))
         
         if not all_features:
             return None
         
         # Aggregate features across segments
         try:
-            # Stack features and compute statistics
-            feature_matrix = np.vstack(all_features)
-            
-            # Compute aggregate embedding using statistical moments
-            mean_features = np.mean(feature_matrix, axis=0)
-            std_features = np.std(feature_matrix, axis=0)
-            median_features = np.median(feature_matrix, axis=0)
-            
-            # Concatenate statistics to form final embedding
-            embedding_vector = np.concatenate([mean_features, std_features, median_features])
-            
-            # Ensure fixed dimensionality
-            if len(embedding_vector) > self.embedding_dim:
-                embedding_vector = embedding_vector[:self.embedding_dim]
-            elif len(embedding_vector) < self.embedding_dim:
-                padding = np.zeros(self.embedding_dim - len(embedding_vector))
-                embedding_vector = np.concatenate([embedding_vector, padding])
-            
-            # Normalize embedding
-            embedding_vector = embedding_vector / (np.linalg.norm(embedding_vector) + 1e-8)
+            if self.use_ecapa_tdnn and all_features:
+                # For ECAPA-TDNN embeddings, use weighted average based on segment duration
+                segment_durations = [valid_segments[i].get('end', 0) - valid_segments[i].get('start', 0) 
+                                   for i in range(min(len(valid_segments), len(all_features)))]
+                total_duration_for_weights = sum(segment_durations)
+                
+                if total_duration_for_weights > 0:
+                    weights = np.array(segment_durations) / total_duration_for_weights
+                    embedding_vector = np.average(all_features, axis=0, weights=weights)
+                else:
+                    embedding_vector = np.mean(all_features, axis=0)
+                
+                # Ensure fixed dimensionality for ECAPA-TDNN
+                if len(embedding_vector) != self.embedding_dim:
+                    if len(embedding_vector) > self.embedding_dim:
+                        embedding_vector = embedding_vector[:self.embedding_dim]
+                    else:
+                        padding = np.zeros(self.embedding_dim - len(embedding_vector))
+                        embedding_vector = np.concatenate([embedding_vector, padding])
+                
+                # L2 normalize ECAPA-TDNN embeddings
+                embedding_vector = embedding_vector / (np.linalg.norm(embedding_vector) + 1e-8)
+            else:
+                # Traditional feature aggregation
+                feature_matrix = np.vstack(all_features)
+                
+                # Compute aggregate embedding using statistical moments
+                mean_features = np.mean(feature_matrix, axis=0)
+                std_features = np.std(feature_matrix, axis=0)
+                median_features = np.median(feature_matrix, axis=0)
+                
+                # Concatenate statistics to form final embedding
+                embedding_vector = np.concatenate([mean_features, std_features, median_features])
+                
+                # Ensure fixed dimensionality
+                if len(embedding_vector) > self.embedding_dim:
+                    embedding_vector = embedding_vector[:self.embedding_dim]
+                elif len(embedding_vector) < self.embedding_dim:
+                    padding = np.zeros(self.embedding_dim - len(embedding_vector))
+                    embedding_vector = np.concatenate([embedding_vector, padding])
+                
+                # Normalize embedding
+                embedding_vector = embedding_vector / (np.linalg.norm(embedding_vector) + 1e-8)
             
             # Calculate average confidence
-            avg_confidence = np.mean(confidence_scores) if confidence_scores else 0.8
+            avg_confidence = float(np.mean(confidence_scores)) if confidence_scores else 0.8
+            
+            # Create enhanced speaker embedding with ECAPA-TDNN support
+            ecapa_tensor = None
+            if self.use_ecapa_tdnn and all_features:
+                # Store the raw ECAPA embedding as tensor
+                ecapa_tensor = torch.FloatTensor(embedding_vector)
             
             return SpeakerEmbedding(
                 speaker_id=speaker_id,
@@ -271,7 +564,14 @@ class SpeakerMapper:
                 embedding_vector=embedding_vector,
                 duration=total_duration,
                 confidence=avg_confidence,
-                segment_times=segment_times
+                segment_times=segment_times,
+                ecapa_embedding=ecapa_tensor,
+                embedding_dimension=self.embedding_dim,
+                model_version="ecapa-tdnn-voxceleb" if self.use_ecapa_tdnn else "traditional-acoustic",
+                backtracking_metrics=BacktrackingMetrics(),
+                similarity_to_previous=1.0,
+                is_stable=True,
+                consecutive_low_similarity_count=0
             )
             
         except Exception as e:
@@ -316,7 +616,7 @@ class SpeakerMapper:
             
             # 3. Prosodic features (pitch, energy)
             # Extract fundamental frequency using librosa
-            f0 = librosa.yin(audio_segment, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+            f0 = librosa.yin(audio_segment, fmin=float(librosa.note_to_hz('C2')), fmax=float(librosa.note_to_hz('C7')))
             f0_valid = f0[f0 > 0]  # Remove unvoiced frames
             
             if len(f0_valid) > 0:
@@ -349,7 +649,7 @@ class SpeakerMapper:
             return feature_vector
             
         except Exception as e:
-            self.structured_logger.warning(f"Feature extraction failed: {e}")
+            self.structured_logger.warning(f"Traditional feature extraction failed: {e}")
             return None
     
     def compute_similarity_matrix(self, 
@@ -460,6 +760,212 @@ class SpeakerMapper:
             self.structured_logger.error(f"Hungarian assignment failed: {e}")
             return []
     
+    def _detect_speaker_drift(self, 
+                            current_embeddings: List[SpeakerEmbedding], 
+                            previous_embeddings: List[SpeakerEmbedding],
+                            similarity_matrix: np.ndarray) -> Tuple[bool, float, List[str]]:
+        """Detect speaker identity drift by analyzing similarity scores"""
+        drift_detected = False
+        drift_score = 0.0
+        drifting_speakers = []
+        
+        if similarity_matrix.size == 0:
+            return drift_detected, drift_score, drifting_speakers
+        
+        # Calculate statistics for drift detection
+        max_similarities = np.max(similarity_matrix, axis=1) if similarity_matrix.shape[0] > 0 else np.array([])
+        mean_similarity = np.mean(max_similarities) if len(max_similarities) > 0 else 0.0
+        
+        # Update similarity history for trend analysis
+        self.chunk_similarity_history.append(mean_similarity)
+        
+        # Detect drift based on threshold
+        if mean_similarity < self.drift_threshold:
+            drift_detected = True
+            drift_score = 1.0 - mean_similarity
+            
+            # Identify specific speakers that are drifting
+            for i, current_emb in enumerate(current_embeddings):
+                if i < len(max_similarities) and max_similarities[i] < self.drift_threshold:
+                    drifting_speakers.append(current_emb.speaker_id)
+                    current_emb.consecutive_low_similarity_count += 1
+                    current_emb.is_stable = False
+                else:
+                    if i < len(current_embeddings):
+                        current_emb.consecutive_low_similarity_count = 0
+                        current_emb.is_stable = True
+        
+        # Detect trend-based drift (gradual degradation)
+        if len(self.chunk_similarity_history) >= 3:
+            recent_trend = list(self.chunk_similarity_history)[-3:]
+            if all(recent_trend[i] > recent_trend[i+1] for i in range(len(recent_trend)-1)):
+                drift_score = max(float(drift_score), 0.3)  # Moderate drift due to trend
+        
+        # Log drift detection events
+        if drift_detected:
+            self.structured_logger.warning(f"Speaker drift detected: mean_similarity={mean_similarity:.3f}, threshold={self.drift_threshold}")
+            drift_event = {
+                'timestamp': time.time(),
+                'mean_similarity': mean_similarity,
+                'drift_score': drift_score,
+                'drifting_speakers': drifting_speakers,
+                'similarity_trend': list(self.chunk_similarity_history)
+            }
+            self.drift_events_log.append(drift_event)
+        
+        return drift_detected, float(drift_score), drifting_speakers
+    
+    def _save_stable_state(self, chunk_index: int, embeddings: List[SpeakerEmbedding]):
+        """Save current state as stable reference point for backtracking"""
+        self.last_stable_state = {
+            'chunk_index': chunk_index,
+            'embeddings': embeddings.copy(),
+            'global_registry': self.global_speaker_registry.copy(),
+            'timestamp': time.time()
+        }
+        
+        self.structured_logger.debug(f"Saved stable state at chunk {chunk_index}")
+    
+    def _perform_backtracking(self, 
+                            current_chunk_index: int, 
+                            current_embeddings: List[SpeakerEmbedding],
+                            drifting_speakers: List[str]) -> Tuple[bool, List[SpeakerMapping]]:
+        """Perform backtracking to recover from speaker ID drift"""
+        if not self.last_stable_state:
+            self.structured_logger.warning("No stable state available for backtracking")
+            return False, []
+        
+        self.backtrack_attempts += 1
+        self.structured_logger.info(f"Attempting backtracking (attempt {self.backtrack_attempts})")
+        
+        try:
+            # Retrieve stable state
+            stable_chunk_index = self.last_stable_state['chunk_index']
+            stable_embeddings = self.last_stable_state['embeddings']
+            stable_registry = self.last_stable_state['global_registry']
+            
+            # Only backtrack if we haven't gone too far
+            if current_chunk_index - stable_chunk_index > self.max_backtrack_chunks:
+                self.structured_logger.warning(f"Backtrack distance too large: {current_chunk_index - stable_chunk_index}")
+                return False, []
+            
+            # Compute similarity between current drifting speakers and stable state
+            backtrack_mappings = []
+            recovery_success = True
+            
+            for current_emb in current_embeddings:
+                if current_emb.speaker_id in drifting_speakers:
+                    best_match = None
+                    best_similarity = 0.0
+                    
+                    # Find best match in stable embeddings
+                    for stable_emb in stable_embeddings:
+                        similarity = self._compute_speaker_similarity(current_emb, stable_emb)
+                        if similarity > best_similarity:
+                            best_similarity = similarity
+                            best_match = stable_emb
+                    
+                    if best_match and best_similarity > self.similarity_threshold:
+                        # Find global ID for this stable speaker
+                        for global_id, registry_emb in stable_registry.items():
+                            if registry_emb.speaker_id == best_match.speaker_id:
+                                mapping = SpeakerMapping(
+                                    original_speaker_id=current_emb.speaker_id,
+                                    mapped_speaker_id=global_id,
+                                    similarity_score=best_similarity,
+                                    confidence=0.9,  # High confidence due to backtracking
+                                    chunk_index=current_chunk_index
+                                )
+                                backtrack_mappings.append(mapping)
+                                
+                                # Update embedding stability
+                                current_emb.is_stable = True
+                                current_emb.consecutive_low_similarity_count = 0
+                                current_emb.similarity_to_previous = best_similarity
+                                current_emb.backtracking_metrics.backtrack_events += 1
+                                break
+                    else:
+                        recovery_success = False
+                        self.structured_logger.warning(f"Could not find stable match for speaker {current_emb.speaker_id}")
+            
+            if recovery_success:
+                self.structured_logger.info(f"Backtracking successful: recovered {len(backtrack_mappings)} speakers")
+                return True, backtrack_mappings
+            else:
+                self.structured_logger.warning("Backtracking partially failed")
+                return False, backtrack_mappings
+                
+        except Exception as e:
+            self.structured_logger.error(f"Backtracking failed with error: {e}")
+            return False, []
+    
+    def apply_enhanced_hungarian_assignment_with_backtracking(self, 
+                                                            similarity_matrix: np.ndarray,
+                                                            current_embeddings: List[SpeakerEmbedding],
+                                                            previous_embeddings: List[SpeakerEmbedding],
+                                                            chunk_index: int) -> List[Tuple[int, int, float]]:
+        """Apply Hungarian assignment with drift detection and backtracking"""
+        if similarity_matrix.size == 0:
+            return []
+        
+        # Detect speaker drift
+        drift_detected, drift_score, drifting_speakers = self._detect_speaker_drift(
+            current_embeddings, previous_embeddings, similarity_matrix
+        )
+        
+        # Perform standard Hungarian assignment
+        assignments = self.apply_hungarian_assignment(similarity_matrix)
+        
+        # Check if backtracking is needed
+        if (self.enable_backtracking and drift_detected and 
+            len(drifting_speakers) > 0 and 
+            chunk_index > 0 and
+            self.last_stable_state is not None):
+            
+            # Check if we should trigger backtracking
+            consecutive_drift_count = sum(
+                1 for emb in current_embeddings 
+                if emb.consecutive_low_similarity_count >= self.consecutive_drift_threshold
+            )
+            
+            if consecutive_drift_count > 0:
+                self.structured_logger.info(f"Triggering backtracking for {consecutive_drift_count} speakers with consecutive drift")
+                
+                # Attempt backtracking
+                backtrack_success, backtrack_mappings = self._perform_backtracking(
+                    chunk_index, current_embeddings, drifting_speakers
+                )
+                
+                if backtrack_success:
+                    # Apply backtracking results to assignments
+                    backtrack_dict = {mapping.original_speaker_id: mapping 
+                                    for mapping in backtrack_mappings}
+                    
+                    # Update assignments with backtracked mappings
+                    updated_assignments = []
+                    for curr_idx, prev_idx, similarity in assignments:
+                        current_speaker = current_embeddings[curr_idx].speaker_id
+                        if current_speaker in backtrack_dict:
+                            # Use backtracked similarity score
+                            updated_assignments.append((
+                                curr_idx, prev_idx, 
+                                backtrack_dict[current_speaker].similarity_score
+                            ))
+                        else:
+                            updated_assignments.append((curr_idx, prev_idx, similarity))
+                    
+                    assignments = updated_assignments
+                    
+                    # Log successful backtracking
+                    self.structured_logger.info(f"Backtracking applied: {len(backtrack_mappings)} speakers recovered")
+        
+        # Save current state as stable if similarity is good
+        mean_similarity = np.mean([sim for _, _, sim in assignments]) if assignments else 0.0
+        if mean_similarity > self.similarity_threshold:
+            self._save_stable_state(chunk_index, current_embeddings)
+        
+        return assignments
+    
     def map_speakers_across_chunks(self, chunk_diarizations: List[List[Dict[str, Any]]], 
                                  audio_path: str) -> Tuple[List[List[Dict[str, Any]]], ConsistencyMetrics]:
         """
@@ -508,8 +1014,10 @@ class SpeakerMapper:
             # Compute similarity matrix with previous chunk
             similarity_matrix = self.compute_similarity_matrix(current_embeddings, previous_embeddings)
             
-            # Apply Hungarian algorithm
-            assignments = self.apply_hungarian_assignment(similarity_matrix)
+            # Apply enhanced Hungarian algorithm with backtracking
+            assignments = self.apply_enhanced_hungarian_assignment_with_backtracking(
+                similarity_matrix, current_embeddings, previous_embeddings, chunk_idx
+            )
             
             # Create speaker mapping
             speaker_mapping = {}

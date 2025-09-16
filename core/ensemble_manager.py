@@ -39,14 +39,24 @@ class EnsembleManager:
         self.consensus_strategy = consensus_strategy
         self.calibration_method = calibration_method
         
-        # Speaker mapping configuration
+        # Enhanced speaker mapping configuration with ECAPA-TDNN and backtracking
         self.enable_speaker_mapping = enable_speaker_mapping
         self.speaker_mapping_config = speaker_mapping_config or {
+            # Core parameters
             'similarity_threshold': 0.7,
-            'embedding_dim': 128,
+            'embedding_dim': 192,  # ECAPA-TDNN standard dimension
             'min_segment_duration': 1.0,
             'cache_embeddings': True,
-            'enable_metrics': True
+            'enable_metrics': True,
+            # ECAPA-TDNN parameters
+            'use_ecapa_tdnn': True,
+            'ecapa_model_path': None,  # Use random weights for now (can be set to pre-trained path)
+            # Backtracking parameters
+            'enable_backtracking': True,
+            'drift_threshold': 0.6,
+            'stability_window': 5,
+            'max_backtrack_chunks': 3,
+            'consecutive_drift_threshold': 2
         }
         self.chunked_processing_threshold = chunked_processing_threshold  # Seconds (15 minutes default)
         
