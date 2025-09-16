@@ -78,6 +78,11 @@ from utils.elastic_chunker import (
     create_elastic_chunker,
     get_elastic_chunker
 )
+from utils.disagreement_redecode import (
+    DisagreementRedecodeEngine,
+    RedecodeConfig,
+    create_disagreement_redecode_engine
+)
 
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
@@ -333,6 +338,11 @@ class EnsembleManager:
         self.profiling_manager = get_profiling_manager()
         self.observability_reporter = get_observability_reporter()
         
+        # Initialize disagreement re-decode system
+        self.enable_disagreement_redecode = True  # Default enabled
+        self.disagreement_redecode_engine = None
+        self.redecode_config = None
+        
         # Initialize versioning system
         if self.enable_versioning:
             try:
@@ -347,6 +357,20 @@ class EnsembleManager:
         else:
             self.dvc_manager = None
             self.metrics_registry = None
+        
+        # Initialize disagreement re-decode engine if enabled
+        if self.enable_disagreement_redecode:
+            try:
+                # Load re-decode configuration from hydra config (if available)
+                redecode_config = None
+                
+                # Initialize with default configuration 
+                self.disagreement_redecode_engine = create_disagreement_redecode_engine(redecode_config)
+                self.structured_logger.info("Disagreement re-decode engine initialized successfully")
+            except Exception as e:
+                self.structured_logger.warning(f"Failed to initialize disagreement re-decode engine: {e}")
+                self.enable_disagreement_redecode = False
+                self.disagreement_redecode_engine = None
         
         # Initialize components with versioning context
         self.audio_processor = AudioProcessor()
@@ -2022,6 +2046,69 @@ class EnsembleManager:
             self.structured_logger.stage_complete("asr_ensemble", "ASR ensemble processing completed", 
                                                 duration=asr_time,
                                                 metrics={'total_candidates': len(candidates), 'variants_processed': len(diarization_variants)})
+            
+            # Step 4.5: Disagreement-Triggered Re-decode (75-80%)
+            redecode_report = None
+            if self.enable_disagreement_redecode and self.disagreement_redecode_engine:
+                if progress_callback:
+                    progress_callback("D2", 75, "Analyzing disagreement and performing selective re-decode...")
+                
+                stage_start_time = time.time()
+                self.structured_logger.stage_start("disagreement_redecode", "Analyzing candidates for uncertainty and performing selective re-decode",
+                                                 context={
+                                                     'total_candidates': len(candidates),
+                                                     'redecode_enabled': True,
+                                                     'audio_duration': audio_duration
+                                                 })
+                
+                try:
+                    # Perform disagreement analysis and selective re-decode
+                    improved_candidates, redecode_report = self.disagreement_redecode_engine.analyze_and_redecode(
+                        candidates=candidates,
+                        audio_path=clean_audio_path
+                    )
+                    
+                    # Replace original candidates with improved ones
+                    original_candidate_count = len(candidates)
+                    candidates = improved_candidates
+                    
+                    redecode_time = time.time() - stage_start_time
+                    
+                    # Log re-decode results
+                    uncertain_spans_detected = redecode_report.get('uncertain_spans', {}).get('total_count', 0)
+                    successful_redecodes = redecode_report.get('redecode_attempts', {}).get('improved_attempts', 0)
+                    total_improvement = redecode_report.get('quality_improvements', {}).get('total_improvement_score', 0.0)
+                    
+                    self.structured_logger.stage_complete("disagreement_redecode", 
+                                                        "Disagreement-triggered re-decode completed",
+                                                        duration=redecode_time,
+                                                        metrics={
+                                                            'original_candidates': original_candidate_count,
+                                                            'improved_candidates': len(candidates),
+                                                            'uncertain_spans_detected': uncertain_spans_detected,
+                                                            'successful_redecodes': successful_redecodes,
+                                                            'total_improvement_score': total_improvement,
+                                                            'processing_time': redecode_time
+                                                        })
+                    
+                    if progress_callback:
+                        progress_callback("D2", 80, f"Re-decode complete - {uncertain_spans_detected} uncertain spans, {successful_redecodes} improvements")
+                    
+                except Exception as e:
+                    redecode_time = time.time() - stage_start_time
+                    self.structured_logger.error(f"Disagreement re-decode failed: {e}")
+                    # Continue with original candidates if re-decode fails
+                    redecode_report = {
+                        'redecode_enabled': True,
+                        'error': str(e),
+                        'processing_time': redecode_time
+                    }
+                    if progress_callback:
+                        progress_callback("D2", 80, "Re-decode skipped due to error - using original candidates")
+            else:
+                if progress_callback:
+                    progress_callback("D2", 80, "Re-decode disabled - proceeding with original candidates")
+                redecode_report = {'redecode_enabled': False}
             
             if progress_callback:
                 progress_callback("D", 75, f"ASR ensemble complete - {len(candidates)} candidates generated (5×5 matrix)")

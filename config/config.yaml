@@ -47,6 +47,49 @@ chunking:
   max_chunk_seconds: 60.0              # Maximum chunk size (seconds)  
   target_chunk_seconds: 30.0           # Default target chunk size (seconds)
   overlap_threshold: 0.3               # Overlap density threshold for size decisions
+
+# Disagreement-Triggered Re-decode Configuration - Intelligent re-decoding for uncertain spans
+redecode:
+  enabled: true                        # Enable disagreement-triggered re-decode system
+  max_redecode_attempts_per_span: 2    # Maximum re-decode attempts per uncertain span
+  max_total_redecode_attempts: 10      # Maximum total re-decode attempts per session
+  processing_time_budget_seconds: 120.0 # Maximum additional processing time (seconds)
+  
+  # Uncertainty detection thresholds
+  entropy_threshold: 2.5               # Entropy threshold for triggering re-decode
+  confidence_gap_threshold: 0.3        # Confidence gap threshold between engines
+  min_span_seconds: 2.0                # Minimum span duration for re-decode (seconds)
+  max_span_seconds: 30.0               # Maximum span duration for re-decode (seconds)
+  min_uncertainty_score: 0.6           # Minimum uncertainty score for re-decode
+  
+  # Word-level analysis
+  min_word_confidence: 0.4             # Minimum word confidence threshold
+  word_disagreement_threshold: 0.5     # Word-level disagreement threshold
+  acoustic_linguistic_mismatch_threshold: 0.4 # Acoustic-linguistic mismatch threshold
+  
+  # Diversity enforcement settings
+  enforce_diversity: true              # Ensure diverse alternative engine attempts
+  max_similar_attempts: 1              # Maximum similar re-decode attempts
+  parameter_diversity_threshold: 0.3   # Parameter diversity threshold for engines
+  
+  # Alternative engine weights and preferences
+  alternative_engine_weights:
+    faster_whisper_high_temp: 1.0      # High temperature faster-whisper
+    faster_whisper_low_temp: 0.8       # Low temperature faster-whisper  
+    openai_whisper_beam: 0.9           # OpenAI with beam search
+    openai_whisper_greedy: 0.7         # OpenAI greedy decoding
+    contextual_prompt: 1.2             # Context-aware prompting
+    alternative_chunking: 0.6          # Alternative chunking strategy
+  
+  # Performance optimization
+  enable_parallel_redecode: true       # Enable parallel re-decode processing
+  max_parallel_workers: 3              # Maximum parallel workers for re-decode
+  cache_redecode_results: true         # Cache re-decode results
+  
+  # Quality validation
+  require_improvement_validation: true  # Require validation of improvements
+  min_improvement_threshold: 0.1       # Minimum improvement score threshold
+  linguistic_plausibility_check: true  # Enable linguistic plausibility checking
   
   # Speech analysis parameters
   vad_frame_length_ms: 25.0            # VAD frame length (milliseconds)
