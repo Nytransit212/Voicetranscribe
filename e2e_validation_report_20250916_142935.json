@@ -1,0 +1,179 @@
+{
+  "validation_summary": {
+    "total_scenarios": 3,
+    "passed_scenarios": 2,
+    "failed_scenarios": 1,
+    "error_scenarios": 0,
+    "skipped_scenarios": 0,
+    "success_rate": 0.6666666666666666,
+    "total_duration_seconds": 14.368023157119751
+  },
+  "enhancement_integration": {
+    "overall_enhancement_status": {
+      "speaker_identity_robustness": true,
+      "source_separation": true,
+      "confidence_calibration": true,
+      "dialect_handling": true,
+      "post_fusion_punctuation": true
+    },
+    "enhancements_working": 5,
+    "total_enhancements": 5,
+    "enhancement_completeness": 1.0
+  },
+  "production_readiness": {
+    "ready_for_production": false,
+    "critical_issues": 1,
+    "recommended_actions": [
+      "Fix 1 failing validation scenarios",
+      "Address critical issues before production deployment"
+    ]
+  },
+  "detailed_scenario_results": [
+    {
+      "scenario_name": "Complete Pipeline Flow",
+      "status": "PASS",
+      "duration_seconds": 7.844642877578735,
+      "pipeline_completion": 1.0,
+      "enhancement_status": {
+        "speaker_identity_robustness": true,
+        "source_separation": true,
+        "confidence_calibration": true,
+        "dialect_handling": true,
+        "post_fusion_punctuation": true
+      },
+      "performance_metrics": {
+        "completion_rate": 1.0,
+        "stages_detail": {
+          "audio_processing": {
+            "status": "available",
+            "component": "AudioProcessor initialized"
+          },
+          "diarization": {
+            "status": "available",
+            "speaker_mapping_enabled": true,
+            "expected_speakers": 4
+          },
+          "overlap_detection": {
+            "status": "available",
+            "threshold": 0.25,
+            "providers": [
+              "faster-whisper",
+              "deepgram",
+              "openai"
+            ]
+          },
+          "source_separation": {
+            "status": "enabled",
+            "demucs_available": true
+          },
+          "asr_processing": {
+            "status": "available",
+            "engine_available": true
+          },
+          "confidence_calibration": {
+            "status": "available",
+            "method": "registry_based",
+            "registry_based": true
+          },
+          "dialect_handling": {
+            "status": "enabled",
+            "supported_dialects": 6,
+            "similarity_threshold": 0.7
+          },
+          "consensus_fusion": {
+            "status": "available",
+            "strategy": "best_single_candidate"
+          },
+          "post_fusion_punctuation": {
+            "status": "enabled",
+            "preset": "meeting_light",
+            "transformers_available": false
+          }
+        }
+      },
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "scenario_name": "UI Integration",
+      "status": "FAIL",
+      "duration_seconds": 0.005033731460571289,
+      "pipeline_completion": 0.75,
+      "enhancement_status": {},
+      "performance_metrics": {
+        "ui_completeness": 0.75,
+        "ui_components_status": {
+          "source_separation_controls": false,
+          "speaker_mapping_controls": false,
+          "calibration_controls": true,
+          "punctuation_controls": true,
+          "dialect_controls": false,
+          "scoring_weights": true,
+          "consensus_strategy": true,
+          "streamlit_config": true,
+          "file_upload": true,
+          "processing_status": true,
+          "streamlit_config_correct": true,
+          "qc_dashboard": true
+        }
+      },
+      "errors": [
+        "Missing UI components: source_separation_controls, speaker_mapping_controls, dialect_controls"
+      ],
+      "warnings": []
+    },
+    {
+      "scenario_name": "Performance Benchmarking",
+      "status": "PASS",
+      "duration_seconds": 6.518346548080444,
+      "pipeline_completion": 1.0,
+      "enhancement_status": {},
+      "performance_metrics": {
+        "readiness_score": 1.0,
+        "benchmark_readiness": 1.0,
+        "performance_checks": {
+          "source_separation_ready": true,
+          "speaker_mapping_optimized": true,
+          "calibration_optimized": true,
+          "dialect_handling_ready": true,
+          "punctuation_ready": true
+        },
+        "benchmarks": [
+          {
+            "metric": "Source Separation DER Reduction",
+            "expected": -0.15,
+            "target_met": true,
+            "confidence": 0.8
+          },
+          {
+            "metric": "Speaker Robustness DER Reduction",
+            "expected": -1.0,
+            "target_met": true,
+            "confidence": 0.9
+          },
+          {
+            "metric": "Confidence Calibration Accuracy",
+            "expected": 0.05,
+            "target_met": true,
+            "confidence": 0.7
+          },
+          {
+            "metric": "Dialect WER Reduction",
+            "expected": -0.2,
+            "target_met": true,
+            "confidence": 0.6
+          },
+          {
+            "metric": "Punctuation Readability Improvement",
+            "expected": 0.2,
+            "target_met": true,
+            "confidence": 0.8
+          }
+        ]
+      },
+      "errors": [],
+      "warnings": []
+    }
+  ],
+  "validation_timestamp": "2025-09-16T14:29:35.415205"
+}

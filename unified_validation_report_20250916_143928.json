@@ -1,0 +1,132 @@
+{
+  "validation_framework": "Unified Validation Framework v1.0",
+  "timestamp": "2025-09-16T14:39:28.278772",
+  "readiness_assessment": {
+    "overall_status": "NOT_READY",
+    "overall_score": 0.8,
+    "critical_tests": {
+      "passed": 3,
+      "total": 4,
+      "pass_rate": 0.75
+    },
+    "non_critical_tests": {
+      "passed": 0,
+      "total": 0,
+      "pass_rate": 1.0
+    },
+    "component_scores": {
+      "ui_integration": 1.0,
+      "component_availability": 0.0,
+      "configuration_integrity": 1.0,
+      "error_handling": 1.0
+    },
+    "deployment_blockers": [
+      "component_availability: EnsembleManager.__init__() got an unexpected keyword argument 'enable_source_separation'"
+    ],
+    "warnings": [],
+    "recommendations": [
+      "Address all critical test failures before production deployment"
+    ]
+  },
+  "detailed_results": [
+    {
+      "test_category": "ui_integration",
+      "test_name": "streamlit_controls",
+      "status": "PASS",
+      "score": 1.0,
+      "critical": true,
+      "details": {
+        "source_separation_controls": {
+          "score": 1.0,
+          "patterns_found": 3,
+          "total_patterns": 3,
+          "description": "Source separation enable/disable and configuration",
+          "status": "PASS"
+        },
+        "speaker_mapping_controls": {
+          "score": 1.0,
+          "patterns_found": 4,
+          "total_patterns": 4,
+          "description": "Speaker mapping with ECAPA-TDNN and backtracking",
+          "status": "PASS"
+        },
+        "dialect_controls": {
+          "score": 1.0,
+          "patterns_found": 4,
+          "total_patterns": 4,
+          "description": "Dialect handling and phonetic processing",
+          "status": "PASS"
+        },
+        "scoring_weights": {
+          "score": 1.0,
+          "patterns_found": 3,
+          "total_patterns": 3,
+          "description": "Multi-dimensional confidence scoring controls",
+          "status": "PASS"
+        },
+        "consensus_strategy": {
+          "score": 1.0,
+          "patterns_found": 3,
+          "total_patterns": 3,
+          "description": "Consensus strategy selection",
+          "status": "PASS"
+        },
+        "calibration_method": {
+          "score": 1.0,
+          "patterns_found": 3,
+          "total_patterns": 3,
+          "description": "Confidence calibration method selection",
+          "status": "PASS"
+        },
+        "punctuation_controls": {
+          "score": 1.0,
+          "patterns_found": 3,
+          "total_patterns": 3,
+          "description": "Post-fusion punctuation configuration",
+          "status": "PASS"
+        }
+      },
+      "error_message": null
+    },
+    {
+      "test_category": "component_availability",
+      "test_name": "core_components",
+      "status": "ERROR",
+      "score": 0.0,
+      "critical": true,
+      "details": {},
+      "error_message": "EnsembleManager.__init__() got an unexpected keyword argument 'enable_source_separation'"
+    },
+    {
+      "test_category": "configuration_integrity",
+      "test_name": "system_configuration",
+      "status": "PASS",
+      "score": 1.0,
+      "critical": true,
+      "details": {
+        "config_directory_exists": true,
+        "core_config_exists": true,
+        "asr_config_exists": true,
+        "diarization_config_exists": true,
+        "streamlit_config_exists": true,
+        "calibration_models_exist": true
+      },
+      "error_message": null
+    },
+    {
+      "test_category": "error_handling",
+      "test_name": "graceful_degradation",
+      "status": "PASS",
+      "score": 1.0,
+      "critical": true,
+      "details": {
+        "missing_api_key_handling": true,
+        "ffmpeg_availability_check": true,
+        "diarization_fallback": true,
+        "file_upload_validation": true,
+        "processing_error_recovery": true
+      },
+      "error_message": null
+    }
+  ]
+}

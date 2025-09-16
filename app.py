@@ -81,6 +81,44 @@ def main():
     if 'capitalization_enabled' not in st.session_state:
         st.session_state.capitalization_enabled = True
     
+    # Initialize source separation settings
+    if 'source_separation_enabled' not in st.session_state:
+        st.session_state.source_separation_enabled = True
+    if 'overlap_probability_threshold' not in st.session_state:
+        st.session_state.overlap_probability_threshold = 0.25
+    if 'source_separation_providers' not in st.session_state:
+        st.session_state.source_separation_providers = ['demucs', 'vocal_isolation', 'mixed_approach']
+    if 'demucs_model_name' not in st.session_state:
+        st.session_state.demucs_model_name = 'htdemucs_6s'
+    
+    # Initialize speaker mapping settings  
+    if 'speaker_mapping_enabled' not in st.session_state:
+        st.session_state.speaker_mapping_enabled = True
+    if 'enable_ecapa_tdnn' not in st.session_state:
+        st.session_state.enable_ecapa_tdnn = True
+    if 'ecapa_embedding_dim' not in st.session_state:
+        st.session_state.ecapa_embedding_dim = 192
+    if 'enable_speaker_backtracking' not in st.session_state:
+        st.session_state.enable_speaker_backtracking = True
+    if 'backtracking_segments' not in st.session_state:
+        st.session_state.backtracking_segments = 5
+    if 'speaker_consistency_threshold' not in st.session_state:
+        st.session_state.speaker_consistency_threshold = 0.7
+    
+    # Initialize dialect handling settings
+    if 'dialect_handling_enabled' not in st.session_state:
+        st.session_state.dialect_handling_enabled = True
+    if 'supported_dialects' not in st.session_state:
+        st.session_state.supported_dialects = ['general_american', 'southern_us', 'northeast_us', 'canadian_english', 'general_british']
+    if 'primary_dialect' not in st.session_state:
+        st.session_state.primary_dialect = 'general_american'
+    if 'cmudict_g2p_enabled' not in st.session_state:
+        st.session_state.cmudict_g2p_enabled = True
+    if 'phonetic_agreement_threshold' not in st.session_state:
+        st.session_state.phonetic_agreement_threshold = 0.8
+    if 'dialect_confidence_boost' not in st.session_state:
+        st.session_state.dialect_confidence_boost = 0.1
+
     # U7 Upgrade: Initialize U7 system settings
     if 'u7_enable_caching' not in st.session_state:
         st.session_state.u7_enable_caching = True
@@ -340,6 +378,240 @@ def main():
             st.info(f"**Normalization**: {disfluency_descriptions[selected_disfluency]}")
         else:
             st.info("💡 Enable punctuation processing to improve transcript readability and accuracy")
+    
+    # Source Separation Configuration
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("🎵 Source Separation Configuration", expanded=False):
+        st.markdown("**Configure overlap detection and audio source separation:**")
+        
+        # Enable source separation
+        source_separation_enabled = st.checkbox(
+            "Enable Source Separation",
+            value=st.session_state.source_separation_enabled,
+            help="Use Demucs neural source separation for overlapping speech scenarios"
+        )
+        st.session_state.source_separation_enabled = source_separation_enabled
+        
+        if source_separation_enabled:
+            # Overlap probability threshold
+            overlap_threshold = st.slider(
+                "Overlap Detection Threshold",
+                min_value=0.0,
+                max_value=1.0,
+                value=st.session_state.overlap_probability_threshold,
+                step=0.05,
+                help="Probability threshold for detecting overlapping speech segments (0.25 = conservative, 0.75 = aggressive)"
+            )
+            st.session_state.overlap_probability_threshold = overlap_threshold
+            
+            # Demucs model selection
+            demucs_models = {
+                'htdemucs': '🎯 HTDemucs (Fast, Good Quality)',
+                'htdemucs_6s': '🎯 HTDemucs 6-Source (Default)',
+                'htdemucs_ft': '🎯 HTDemucs Fine-tuned (High Quality)', 
+                'mdx_extra': '📊 MDX Extra (Experimental)'
+            }
+            
+            selected_demucs = st.selectbox(
+                "Demucs Model",
+                options=list(demucs_models.keys()),
+                format_func=lambda x: demucs_models[x],
+                index=list(demucs_models.keys()).index(st.session_state.demucs_model_name) if st.session_state.demucs_model_name in demucs_models else 1,
+                help="Choose Demucs model variant for source separation quality vs speed tradeoff"
+            )
+            st.session_state.demucs_model_name = selected_demucs
+            
+            # Source separation providers
+            provider_options = {
+                'demucs': '🎵 Demucs Neural Network',
+                'vocal_isolation': '🗣️ Vocal Isolation',
+                'mixed_approach': '🔀 Mixed Approach',
+                'spectral_subtraction': '📊 Spectral Subtraction'
+            }
+            
+            selected_providers = st.multiselect(
+                "Source Separation Providers",
+                options=list(provider_options.keys()),
+                default=st.session_state.source_separation_providers,
+                format_func=lambda x: provider_options[x],
+                help="Select multiple providers for ensemble source separation"
+            )
+            st.session_state.source_separation_providers = selected_providers
+            
+            # Show configuration summary
+            st.info(f"**Active**: {demucs_models[selected_demucs].split(' ', 1)[1]} with {len(selected_providers)} providers at {overlap_threshold:.2f} threshold")
+        else:
+            st.warning("⚠️ Source separation disabled - overlapping speech may reduce accuracy")
+    
+    # Speaker Mapping Configuration
+    st.sidebar.markdown("---")  
+    with st.sidebar.expander("👥 Speaker Mapping Configuration", expanded=False):
+        st.markdown("**Configure speaker identity robustness and tracking:**")
+        
+        # Enable speaker mapping
+        speaker_mapping_enabled = st.checkbox(
+            "Enable Speaker Mapping",
+            value=st.session_state.speaker_mapping_enabled,
+            help="Use advanced speaker identity tracking with ECAPA-TDNN embeddings"
+        )
+        st.session_state.speaker_mapping_enabled = speaker_mapping_enabled
+        
+        if speaker_mapping_enabled:
+            # ECAPA-TDNN settings
+            ecapa_enabled = st.checkbox(
+                "Enable ECAPA-TDNN Embeddings",
+                value=st.session_state.enable_ecapa_tdnn,
+                help="Use state-of-the-art ECAPA-TDNN neural network for speaker embeddings"
+            )
+            st.session_state.enable_ecapa_tdnn = ecapa_enabled
+            
+            if ecapa_enabled:
+                # ECAPA embedding dimension
+                embedding_dims = {
+                    192: '192-dim (Fast, Good Quality)',
+                    512: '512-dim (Standard, High Quality)',
+                    1024: '1024-dim (Slow, Highest Quality)'
+                }
+                
+                selected_dim = st.selectbox(
+                    "ECAPA Embedding Dimension",
+                    options=list(embedding_dims.keys()),
+                    format_func=lambda x: embedding_dims[x],
+                    index=list(embedding_dims.keys()).index(st.session_state.ecapa_embedding_dim) if st.session_state.ecapa_embedding_dim in embedding_dims else 0,
+                    help="Higher dimensions provide better speaker discrimination but slower processing"
+                )
+                st.session_state.ecapa_embedding_dim = selected_dim
+            
+            # Speaker backtracking
+            backtracking_enabled = st.checkbox(
+                "Enable Speaker Backtracking", 
+                value=st.session_state.enable_speaker_backtracking,
+                help="Retroactively correct speaker assignments based on voice consistency patterns"
+            )
+            st.session_state.enable_speaker_backtracking = backtracking_enabled
+            
+            if backtracking_enabled:
+                # Backtracking segments
+                backtrack_segments = st.slider(
+                    "Backtracking Segment Window",
+                    min_value=3,
+                    max_value=15,
+                    value=st.session_state.backtracking_segments,
+                    step=1,
+                    help="Number of segments to analyze for speaker consistency correction"
+                )
+                st.session_state.backtracking_segments = backtrack_segments
+                
+                # Speaker consistency threshold
+                consistency_threshold = st.slider(
+                    "Speaker Consistency Threshold",
+                    min_value=0.5,
+                    max_value=0.95,
+                    value=st.session_state.speaker_consistency_threshold,
+                    step=0.05,
+                    help="Minimum voice consistency required to maintain speaker assignment"
+                )
+                st.session_state.speaker_consistency_threshold = consistency_threshold
+            
+            # Show speaker mapping status
+            status_components = []
+            if ecapa_enabled:
+                status_components.append(f"ECAPA-TDNN ({st.session_state.ecapa_embedding_dim}D)")
+            if backtracking_enabled:
+                status_components.append(f"Backtracking ({st.session_state.backtracking_segments} segments)")
+            
+            if status_components:
+                st.success(f"**Active**: {', '.join(status_components)}")
+            else:
+                st.info("Basic speaker mapping without advanced features")
+        else:
+            st.warning("⚠️ Speaker mapping disabled - speaker boundaries may be less accurate")
+    
+    # Dialect Handling Configuration
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("🌍 Dialect Handling Configuration", expanded=False):
+        st.markdown("**Configure dialect-aware processing and phonetic agreement:**")
+        
+        # Enable dialect handling
+        dialect_handling_enabled = st.checkbox(
+            "Enable Dialect Handling",
+            value=st.session_state.dialect_handling_enabled,
+            help="Use dialect-specific processing with CMUdict and G2P phonetic agreement"
+        )
+        st.session_state.dialect_handling_enabled = dialect_handling_enabled
+        
+        if dialect_handling_enabled:
+            # Primary dialect selection
+            dialect_options = {
+                'general_american': '🇺🇸 General American (Default)',
+                'southern_us': '🏛️ Southern US',
+                'northeast_us': '🏙️ Northeast US', 
+                'midwest_us': '🌾 Midwest US',
+                'canadian_english': '🇨🇦 Canadian English',
+                'general_british': '🇬🇧 General British',
+                'australian_english': '🇦🇺 Australian English'
+            }
+            
+            selected_dialect = st.selectbox(
+                "Primary Dialect",
+                options=list(dialect_options.keys()),
+                format_func=lambda x: dialect_options[x],
+                index=list(dialect_options.keys()).index(st.session_state.primary_dialect) if st.session_state.primary_dialect in dialect_options else 0,
+                help="Select the primary dialect for phonetic processing and confidence scoring"
+            )
+            st.session_state.primary_dialect = selected_dialect
+            
+            # Supported dialects (multi-select)
+            supported_dialects = st.multiselect(
+                "Supported Dialects",
+                options=list(dialect_options.keys()),
+                default=st.session_state.supported_dialects,
+                format_func=lambda x: dialect_options[x],
+                help="Select all dialects to support for multi-dialect processing"
+            )
+            st.session_state.supported_dialects = supported_dialects
+            
+            # CMUdict + G2P settings
+            cmudict_g2p_enabled = st.checkbox(
+                "Enable CMUdict + G2P Phonetic Agreement",
+                value=st.session_state.cmudict_g2p_enabled,
+                help="Use CMUdict pronunciation dictionary with G2P fallback for phonetic validation"
+            )
+            st.session_state.cmudict_g2p_enabled = cmudict_g2p_enabled
+            
+            if cmudict_g2p_enabled:
+                # Phonetic agreement threshold
+                phonetic_threshold = st.slider(
+                    "Phonetic Agreement Threshold", 
+                    min_value=0.5,
+                    max_value=0.95,
+                    value=st.session_state.phonetic_agreement_threshold,
+                    step=0.05,
+                    help="Minimum phonetic similarity required for dialect confidence boost"
+                )
+                st.session_state.phonetic_agreement_threshold = phonetic_threshold
+                
+                # Dialect confidence boost
+                confidence_boost = st.slider(
+                    "Dialect Confidence Boost",
+                    min_value=0.0,
+                    max_value=0.3,
+                    value=st.session_state.dialect_confidence_boost,
+                    step=0.01,
+                    help="Confidence boost applied when phonetic agreement exceeds threshold"
+                )
+                st.session_state.dialect_confidence_boost = confidence_boost
+            
+            # Show dialect configuration summary
+            dialect_summary = f"Primary: {dialect_options[selected_dialect].split(' ', 1)[1]}"
+            if len(supported_dialects) > 1:
+                dialect_summary += f" + {len(supported_dialects)-1} others"
+            if cmudict_g2p_enabled:
+                dialect_summary += f", G2P@{phonetic_threshold:.2f}"
+            
+            st.success(f"**Active**: {dialect_summary}")
+        else:
+            st.warning("⚠️ Dialect handling disabled - may reduce accuracy for non-standard pronunciations")
     
     # A/B Testing Configuration
     st.sidebar.markdown("---")
@@ -610,8 +882,50 @@ def process_video_from_local_path(video_file_path, expected_speakers, noise_leve
             enable_versioning=True,
             consensus_strategy=st.session_state.consensus_strategy,
             calibration_method=st.session_state.calibration_method,
-            domain="meeting"  # Default domain for UI uploads
+            domain="meeting",  # Default domain for UI uploads
+            # Supported parameters only
+            enable_speaker_mapping=st.session_state.speaker_mapping_enabled,
+            enable_dialect_handling=st.session_state.dialect_handling_enabled,
+            supported_dialects=st.session_state.supported_dialects,
+            dialect_confidence_boost=st.session_state.dialect_confidence_boost
         )
+        
+        # Configure source separation settings
+        if hasattr(ensemble_manager, 'source_separation_engine') and ensemble_manager.source_separation_engine:
+            ensemble_manager.enable_source_separation = st.session_state.source_separation_enabled
+            ensemble_manager.overlap_probability_threshold = st.session_state.overlap_probability_threshold
+            if hasattr(ensemble_manager.source_separation_engine, 'configure'):
+                source_sep_config = {
+                    'providers': st.session_state.source_separation_providers,
+                    'demucs_model_name': st.session_state.demucs_model_name,
+                    'overlap_threshold': st.session_state.overlap_probability_threshold
+                }
+                ensemble_manager.source_separation_engine.configure(source_sep_config)
+        
+        # Configure detailed speaker mapping settings
+        if hasattr(ensemble_manager, 'speaker_mapper') and ensemble_manager.speaker_mapper:
+            detailed_speaker_config = {
+                'enable_ecapa_tdnn': st.session_state.enable_ecapa_tdnn,
+                'ecapa_embedding_dim': st.session_state.ecapa_embedding_dim,
+                'enable_speaker_backtracking': st.session_state.enable_speaker_backtracking,
+                'backtracking_segments': st.session_state.backtracking_segments,
+                'speaker_consistency_threshold': st.session_state.speaker_consistency_threshold
+            }
+            if hasattr(ensemble_manager.speaker_mapper, 'update_config'):
+                ensemble_manager.speaker_mapper.update_config(detailed_speaker_config)
+            else:
+                # Apply settings to speaker_mapping_config
+                ensemble_manager.speaker_mapping_config.update(detailed_speaker_config)
+        
+        # Configure detailed dialect handling settings
+        if hasattr(ensemble_manager, 'dialect_handling_engine') and ensemble_manager.dialect_handling_engine:
+            dialect_detailed_config = {
+                'primary_dialect': st.session_state.primary_dialect,
+                'cmudict_g2p_enabled': st.session_state.cmudict_g2p_enabled,
+                'phonetic_agreement_threshold': st.session_state.phonetic_agreement_threshold
+            }
+            if hasattr(ensemble_manager.dialect_handling_engine, 'configure'):
+                ensemble_manager.dialect_handling_engine.configure(dialect_detailed_config)
         
         # Configure post-fusion punctuation settings
         if hasattr(ensemble_manager, 'enable_post_fusion_punctuation'):
