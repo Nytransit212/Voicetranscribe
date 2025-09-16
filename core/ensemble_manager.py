@@ -25,6 +25,7 @@ from utils.deterministic_processing import get_deterministic_processor, ensure_d
 from utils.segment_worklist import get_worklist_manager, SegmentWorklistManager
 from utils.selective_asr import get_selective_asr_processor, SelectiveASRProcessor
 from utils.advanced_asr_scheduler import get_asr_scheduler, AdvancedASRScheduler
+from core.source_separation_engine import SourceSeparationEngine, SourceSeparationResult
 
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
@@ -65,6 +66,11 @@ class EnsembleManager:
         self.enable_selective_reprocessing = True
         self.confidence_threshold_for_flagging = 0.65
         self.max_segments_for_selective_reprocessing = 10
+        
+        # Source separation configuration
+        self.enable_source_separation = True
+        self.overlap_probability_threshold = 0.25
+        self.source_separation_providers = ['faster-whisper', 'deepgram', 'openai']
         
         # Initialize enhanced observability system
         self.obs_manager = initialize_observability(
@@ -114,6 +120,22 @@ class EnsembleManager:
         )
         self.transcript_formatter = TranscriptFormatter()
         
+        # Initialize source separation engine
+        try:
+            self.source_separation_engine = SourceSeparationEngine(
+                overlap_threshold=self.overlap_probability_threshold,
+                enable_caching=self.enable_caching
+            )
+            if self.source_separation_engine.is_available():
+                self.structured_logger.info("Source separation engine initialized successfully")
+            else:
+                self.structured_logger.warning("Source separation engine not available - Demucs models unavailable")
+                self.enable_source_separation = False
+        except Exception as e:
+            self.structured_logger.warning(f"Failed to initialize source separation engine: {e}")
+            self.source_separation_engine = None
+            self.enable_source_separation = False
+        
         # Initialize consensus module
         try:
             self.consensus_module = ConsensusModule(default_strategy=consensus_strategy)
@@ -130,6 +152,234 @@ class EnsembleManager:
         self.input_artifacts: Dict[str, Any] = {}
         self.intermediate_artifacts: Dict[str, Any] = {}
         self.output_artifacts: Dict[str, Any] = {}
+    
+    def _apply_source_separation_patches(self, 
+                                       original_segments: List[Dict[str, Any]], 
+                                       separation_results: List[SourceSeparationResult]) -> List[Dict[str, Any]]:
+        """
+        Apply source separation patches to diarization timeline by replacing overlapped intervals
+        
+        This is the CRITICAL method that ensures source-separated segments actually replace
+        overlapped regions in the diarization timeline instead of just being added as candidates.
+        
+        Args:
+            original_segments: Original diarization segments
+            separation_results: Results from source separation processing
+            
+        Returns:
+            Patched segments with overlap intervals replaced by source-separated segments
+        """
+        if not separation_results:
+            return original_segments
+        
+        self.structured_logger.info(f"Applying {len(separation_results)} source separation patches to timeline",
+                                  context={'original_segments': len(original_segments)})
+        
+        # Sort original segments by start time
+        working_segments = sorted(original_segments, key=lambda x: x['start'])
+        
+        # Apply each source separation result
+        for sep_result in separation_results:
+            if not sep_result.final_segments:
+                continue
+            
+            overlap_frame = sep_result.overlap_frame
+            
+            # Find and remove segments that overlap with the source separation frame
+            segments_to_remove = []
+            segments_to_modify = []
+            
+            for i, segment in enumerate(working_segments):
+                segment_start = segment['start']
+                segment_end = segment['end']
+                
+                # Check for overlap with source separation frame
+                if (segment_start < overlap_frame.end_time and segment_end > overlap_frame.start_time):
+                    
+                    # Full overlap - remove entirely
+                    if (segment_start >= overlap_frame.start_time and segment_end <= overlap_frame.end_time):
+                        segments_to_remove.append(i)
+                        self.structured_logger.debug(f"Removing fully overlapped segment {segment_start:.3f}-{segment_end:.3f}")
+                    
+                    # Partial overlap - trim segment
+                    else:
+                        # Segment extends before overlap frame
+                        if segment_start < overlap_frame.start_time < segment_end:
+                            # Trim segment to end at overlap start
+                            modified_segment = segment.copy()
+                            modified_segment['end'] = overlap_frame.start_time
+                            modified_segment['source_separation_trimmed'] = True
+                            modified_segment['original_end'] = segment_end
+                            segments_to_modify.append((i, modified_segment))
+                            
+                            self.structured_logger.debug(f"Trimming segment end {segment_start:.3f}-{segment_end:.3f} to {segment_start:.3f}-{overlap_frame.start_time:.3f}")
+                        
+                        # Segment extends after overlap frame
+                        elif segment_start < overlap_frame.end_time < segment_end:
+                            # Trim segment to start at overlap end
+                            modified_segment = segment.copy()
+                            modified_segment['start'] = overlap_frame.end_time
+                            modified_segment['source_separation_trimmed'] = True
+                            modified_segment['original_start'] = segment_start
+                            segments_to_modify.append((i, modified_segment))
+                            
+                            self.structured_logger.debug(f"Trimming segment start {segment_start:.3f}-{segment_end:.3f} to {overlap_frame.end_time:.3f}-{segment_end:.3f}")
+                        
+                        # Segment spans entire overlap frame - split into two segments
+                        elif segment_start < overlap_frame.start_time and segment_end > overlap_frame.end_time:
+                            # Create two segments: before and after overlap
+                            before_segment = segment.copy()
+                            before_segment['end'] = overlap_frame.start_time
+                            before_segment['source_separation_split'] = 'before'
+                            before_segment['original_end'] = segment_end
+                            
+                            after_segment = segment.copy()
+                            after_segment['start'] = overlap_frame.end_time
+                            after_segment['source_separation_split'] = 'after'
+                            after_segment['original_start'] = segment_start
+                            
+                            # Remove original and add both new segments
+                            segments_to_remove.append(i)
+                            working_segments.extend([before_segment, after_segment])
+                            
+                            self.structured_logger.debug(f"Splitting segment {segment_start:.3f}-{segment_end:.3f} around overlap {overlap_frame.start_time:.3f}-{overlap_frame.end_time:.3f}")
+            
+            # Apply modifications in reverse order to preserve indices
+            for i, modified_segment in reversed(segments_to_modify):
+                working_segments[i] = modified_segment
+            
+            # Remove segments in reverse order to preserve indices
+            for i in sorted(segments_to_remove, reverse=True):
+                removed_segment = working_segments.pop(i)
+                self.structured_logger.debug(f"Removed overlapped segment: {removed_segment.get('start', 0):.3f}-{removed_segment.get('end', 0):.3f}")
+            
+            # Insert source-separated segments
+            for final_segment in sep_result.final_segments:
+                # Ensure segment is properly formatted
+                patched_segment = {
+                    'start': final_segment['start'],
+                    'end': final_segment['end'],
+                    'speaker_id': final_segment['speaker_id'],
+                    'text': final_segment.get('text', ''),
+                    'confidence': final_segment.get('confidence', 0.5),
+                    
+                    # Mark as source separated
+                    'source_separated': True,
+                    'separation_confidence': final_segment.get('separation_confidence', 0.0),
+                    'attribution_confidence': final_segment.get('attribution_confidence', 0.0),
+                    'original_overlap_prob': final_segment.get('original_overlap_prob', 0.0),
+                    
+                    # Timeline replacement metadata
+                    'timeline_replacement': final_segment.get('timeline_replacement', {}),
+                    'overlap_frame_bounds': final_segment.get('overlap_frame_bounds', {}),
+                    'processing_metadata': final_segment.get('processing_metadata', {})
+                }
+                
+                working_segments.append(patched_segment)
+                self.structured_logger.debug(f"Inserted source-separated segment: {patched_segment['start']:.3f}-{patched_segment['end']:.3f} (speaker: {patched_segment['speaker_id']})")
+        
+        # Sort final segments by start time
+        working_segments.sort(key=lambda x: x['start'])
+        
+        # Validate timeline consistency
+        validated_segments = self._validate_patched_timeline(working_segments)
+        
+        self.structured_logger.info(f"Source separation patching completed",
+                                  context={
+                                      'original_segments': len(original_segments),
+                                      'patched_segments': len(validated_segments),
+                                      'separation_results_applied': len(separation_results),
+                                      'source_separated_segments': len([s for s in validated_segments if s.get('source_separated', False)])
+                                  })
+        
+        return validated_segments
+    
+    def _validate_patched_timeline(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Validate and fix issues in the patched timeline
+        
+        Args:
+            segments: Patched segments to validate
+            
+        Returns:
+            Validated and corrected segments
+        """
+        if not segments:
+            return segments
+        
+        validated = []
+        
+        for segment in segments:
+            # Skip invalid segments
+            if segment.get('end', 0) <= segment.get('start', 0):
+                continue
+            
+            # Skip very short segments (less than 50ms)
+            if segment.get('end', 0) - segment.get('start', 0) < 0.05:
+                continue
+            
+            # Ensure required fields
+            if not segment.get('speaker_id'):
+                segment['speaker_id'] = 'unknown'
+            
+            if not isinstance(segment.get('text'), str):
+                segment['text'] = str(segment.get('text', ''))
+            
+            if not isinstance(segment.get('confidence'), (int, float)):
+                segment['confidence'] = 0.5
+            
+            validated.append(segment)
+        
+        # Check for overlaps and resolve them
+        if len(validated) > 1:
+            validated = self._resolve_timeline_overlaps(validated)
+        
+        return validated
+    
+    def _resolve_timeline_overlaps(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Resolve any remaining overlaps in the patched timeline
+        
+        Args:
+            segments: Segments sorted by start time
+            
+        Returns:
+            Segments with overlaps resolved
+        """
+        if len(segments) <= 1:
+            return segments
+        
+        resolved = [segments[0]]
+        overlaps_fixed = 0
+        
+        for current_segment in segments[1:]:
+            previous_segment = resolved[-1]
+            
+            # Check for overlap
+            if current_segment['start'] < previous_segment['end']:
+                overlaps_fixed += 1
+                
+                # Resolve overlap by adjusting boundaries
+                overlap_midpoint = (current_segment['start'] + previous_segment['end']) / 2
+                
+                # Adjust previous segment end
+                previous_segment['end'] = overlap_midpoint
+                previous_segment['overlap_resolved'] = True
+                
+                # Adjust current segment start
+                current_segment['start'] = overlap_midpoint
+                current_segment['overlap_resolved'] = True
+                
+                self.structured_logger.debug(f"Resolved overlap at {overlap_midpoint:.3f}s between speakers {previous_segment.get('speaker_id')} and {current_segment.get('speaker_id')}")
+            
+            # Only add valid segments
+            if current_segment['end'] > current_segment['start']:
+                resolved.append(current_segment)
+        
+        if overlaps_fixed > 0:
+            self.structured_logger.info(f"Resolved {overlaps_fixed} timeline overlaps during source separation patching")
+        
+        return resolved
     
     @trace_stage("video_processing_pipeline")
     def process_video(self, video_path: str, progress_callback: Optional[Callable[[str, int, str], None]] = None) -> Dict[str, Any]:
@@ -317,7 +567,90 @@ class EnsembleManager:
             if progress_callback:
                 progress_callback("C", 35, f"Diarization complete - {len(diarization_variants)} variants with fusion created")
             
-            # Step 4: ASR Ensemble (35-75%)
+            # Step 3.5: Overlap Detection and Source Separation with Timeline Integration (35-40%)
+            source_separation_patches_applied = 0
+            if self.enable_source_separation and self.source_separation_engine:
+                if progress_callback:
+                    progress_callback("C2", 36, "Detecting overlaps and performing source separation...")
+                
+                source_sep_start_time = time.time()
+                self.structured_logger.stage_start("source_separation", "Processing overlap frames with timeline integration",
+                                                 context={'overlap_threshold': self.overlap_probability_threshold})
+                
+                # CRITICAL: Apply source separation with timeline patching for each diarization variant
+                total_overlap_frames = 0
+                total_patches_applied = 0
+                
+                for variant_idx, diarization_variant in enumerate(diarization_variants):
+                    try:
+                        # Extract segments from diarization variant
+                        variant_segments = diarization_variant.get('segments', [])
+                        
+                        if variant_segments:
+                            # Run source separation on this variant
+                            separation_results = self.source_separation_engine.process_audio_with_overlaps(
+                                clean_audio_path,
+                                variant_segments,
+                                asr_providers=self.source_separation_providers
+                            )
+                            
+                            total_overlap_frames += len(separation_results)
+                            
+                            # CRITICAL: Patch final_segments into diarization timeline
+                            if separation_results:
+                                patched_segments = self._apply_source_separation_patches(
+                                    variant_segments, separation_results
+                                )
+                                
+                                # Update the diarization variant with patched timeline
+                                diarization_variant['segments'] = patched_segments
+                                diarization_variant['source_separation_applied'] = True
+                                diarization_variant['source_separation_metadata'] = {
+                                    'overlap_frames_processed': len(separation_results),
+                                    'patches_applied': len([r for r in separation_results if r.final_segments]),
+                                    'processing_timestamp': time.time()
+                                }
+                                
+                                total_patches_applied += len([r for r in separation_results if r.final_segments])
+                                
+                                self.structured_logger.info(
+                                    f"Applied {len(separation_results)} source separation patches to variant {variant_idx}",
+                                    context={
+                                        'variant_id': diarization_variant.get('variant_id', variant_idx),
+                                        'original_segments': len(variant_segments),
+                                        'patched_segments': len(patched_segments),
+                                        'overlap_frames': len(separation_results)
+                                    }
+                                )
+                    
+                    except Exception as e:
+                        self.structured_logger.warning(f"Source separation failed for variant {variant_idx}: {e}")
+                        # Ensure variant is marked as unmodified
+                        diarization_variant['source_separation_applied'] = False
+                        continue
+                
+                # Clean up temporary files
+                if hasattr(self.source_separation_engine, 'cleanup_temp_files'):
+                    try:
+                        self.source_separation_engine.cleanup_temp_files([])
+                    except Exception as e:
+                        self.structured_logger.warning(f"Failed to cleanup source separation temp files: {e}")
+                
+                source_sep_time = time.time() - source_sep_start_time
+                source_separation_patches_applied = total_patches_applied
+                
+                self.structured_logger.stage_complete("source_separation", "Source separation timeline patching completed",
+                                                    duration=source_sep_time,
+                                                    metrics={
+                                                        'overlap_frames_processed': total_overlap_frames,
+                                                        'timeline_patches_applied': total_patches_applied,
+                                                        'variants_processed': len(diarization_variants)
+                                                    })
+                
+                if progress_callback:
+                    progress_callback("C2", 40, f"Source separation complete - {total_patches_applied} overlap intervals replaced in {len(diarization_variants)} diarization variants")
+            
+            # Step 4: ASR Ensemble (40-75%)
             if progress_callback:
                 progress_callback("D", 40, "Running expanded ASR ensemble (5 passes per diarization)...")
             
@@ -326,6 +659,17 @@ class EnsembleManager:
                                              context={'diarization_variants': len(diarization_variants), 'target_language': self.target_language})
             
             candidates = self.asr_engine.run_asr_ensemble(clean_audio_path, diarization_variants, target_language=self.target_language)
+            
+            # Log source separation integration results
+            if source_separation_patches_applied > 0:
+                self.structured_logger.info(
+                    f"Source separation timeline integration completed - {source_separation_patches_applied} overlap intervals replaced",
+                    context={
+                        'total_candidates': len(candidates),
+                        'patches_applied': source_separation_patches_applied,
+                        'modified_variants': sum(1 for v in diarization_variants if v.get('source_separation_applied', False))
+                    }
+                )
             
             # Track ASR artifacts (versioning)
             if self.enable_versioning and self.dvc_manager:

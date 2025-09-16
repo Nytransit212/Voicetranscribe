@@ -23,6 +23,14 @@ import warnings
 from dataclasses import dataclass, field
 from utils.structured_logger import StructuredLogger
 
+# Import for enhanced overlap detection
+@dataclass
+class OverlapDetectionResult:
+    """Result from enhanced overlap detection with probability scores"""
+    overlap_frames: List[Dict[str, Any]] = field(default_factory=list)
+    overlap_statistics: Dict[str, Any] = field(default_factory=dict)
+    requires_source_separation: bool = False
+
 
 @dataclass
 class StabilizationConfig:
@@ -47,6 +55,11 @@ class StabilizationConfig:
     # Metrics and reporting
     track_detailed_metrics: bool = True
     generate_stability_report: bool = True
+    
+    # Enhanced overlap detection parameters
+    enable_overlap_probability_detection: bool = True
+    overlap_probability_threshold: float = 0.25  # Threshold for source separation trigger
+    min_overlap_duration_for_separation: float = 0.1  # Minimum overlap duration to consider
 
 
 @dataclass
@@ -189,6 +202,147 @@ class TurnStabilizer:
                         f"transitions_eliminated={metrics.transitions_eliminated}")
         
         return working_segments, metrics
+    
+    def detect_overlap_frames_with_probability(self, segments: List[Dict[str, Any]], 
+                                             audio_duration: float) -> OverlapDetectionResult:
+        """
+        Enhanced overlap detection with probability calculation for source separation
+        
+        Args:
+            segments: Diarization segments with start, end, speaker_id, confidence
+            audio_duration: Total audio duration for normalization
+            
+        Returns:
+            OverlapDetectionResult with overlap frames and statistics
+        """
+        if not self.config.enable_overlap_probability_detection:
+            return OverlapDetectionResult()
+        
+        overlap_frames = []
+        total_overlap_duration = 0.0
+        
+        # Sort segments by start time
+        sorted_segments = sorted(segments, key=lambda x: x['start'])
+        
+        # Find overlapping segments and calculate probabilities
+        for i in range(len(sorted_segments)):
+            for j in range(i + 1, len(sorted_segments)):
+                seg1 = sorted_segments[i]
+                seg2 = sorted_segments[j]
+                
+                # Check for temporal overlap
+                overlap_start = max(seg1['start'], seg2['start'])
+                overlap_end = min(seg1['end'], seg2['end'])
+                
+                if overlap_start < overlap_end:
+                    overlap_duration = overlap_end - overlap_start
+                    
+                    # Check minimum duration threshold
+                    if overlap_duration >= self.config.min_overlap_duration_for_separation:
+                        # Calculate overlap probability
+                        overlap_prob = self._calculate_overlap_probability_score(
+                            seg1, seg2, overlap_duration, audio_duration
+                        )
+                        
+                        overlap_frame = {
+                            'start_time': overlap_start,
+                            'end_time': overlap_end,
+                            'duration': overlap_duration,
+                            'overlap_probability': overlap_prob,
+                            'speakers_involved': [seg1['speaker_id'], seg2['speaker_id']],
+                            'confidence_score': min(
+                                seg1.get('confidence', 1.0),
+                                seg2.get('confidence', 1.0)
+                            ),
+                            'segment_indices': [i, j],
+                            'metadata': {
+                                'seg1_duration': seg1['end'] - seg1['start'],
+                                'seg2_duration': seg2['end'] - seg2['start'],
+                                'overlap_ratio_seg1': overlap_duration / (seg1['end'] - seg1['start']),
+                                'overlap_ratio_seg2': overlap_duration / (seg2['end'] - seg2['start'])
+                            }
+                        }
+                        
+                        overlap_frames.append(overlap_frame)
+                        total_overlap_duration += overlap_duration
+        
+        # Determine if source separation is needed
+        high_prob_overlaps = [
+            frame for frame in overlap_frames 
+            if frame['overlap_probability'] >= self.config.overlap_probability_threshold
+        ]
+        requires_separation = len(high_prob_overlaps) > 0
+        
+        # Calculate statistics
+        overlap_statistics = {
+            'total_overlap_frames': len(overlap_frames),
+            'high_probability_frames': len(high_prob_overlaps),
+            'total_overlap_duration': total_overlap_duration,
+            'overlap_ratio': total_overlap_duration / audio_duration if audio_duration > 0 else 0.0,
+            'avg_overlap_probability': np.mean([f['overlap_probability'] for f in overlap_frames]) if overlap_frames else 0.0,
+            'max_overlap_probability': max([f['overlap_probability'] for f in overlap_frames]) if overlap_frames else 0.0
+        }
+        
+        self.logger.info(f"Overlap detection: {len(overlap_frames)} total frames, "
+                        f"{len(high_prob_overlaps)} requiring separation (≥{self.config.overlap_probability_threshold})")
+        
+        return OverlapDetectionResult(
+            overlap_frames=overlap_frames,
+            overlap_statistics=overlap_statistics,
+            requires_source_separation=requires_separation
+        )
+    
+    def _calculate_overlap_probability_score(self, 
+                                           seg1: Dict[str, Any], 
+                                           seg2: Dict[str, Any], 
+                                           overlap_duration: float,
+                                           audio_duration: float) -> float:
+        """
+        Calculate overlap probability based on multiple factors
+        
+        Args:
+            seg1, seg2: Overlapping segments
+            overlap_duration: Duration of overlap
+            audio_duration: Total audio duration
+            
+        Returns:
+            Overlap probability (0.0 to 1.0)
+        """
+        # Base probability from overlap duration
+        seg1_duration = seg1['end'] - seg1['start']
+        seg2_duration = seg2['end'] - seg2['start']
+        
+        # Overlap ratio relative to each segment
+        overlap_ratio_1 = overlap_duration / seg1_duration
+        overlap_ratio_2 = overlap_duration / seg2_duration
+        
+        # Base probability from maximum overlap ratio
+        base_prob = max(overlap_ratio_1, overlap_ratio_2)
+        
+        # Confidence adjustment
+        avg_confidence = (seg1.get('confidence', 1.0) + seg2.get('confidence', 1.0)) / 2
+        confidence_factor = 1.0 - (1.0 - avg_confidence) * 0.3  # 30% weight for confidence
+        
+        # Duration adjustment (longer overlaps are more likely to be real)
+        duration_factor = min(1.0, overlap_duration / 0.5)  # Normalize to 0.5 seconds
+        
+        # Speaker difference factor (different speakers more likely to overlap)
+        speaker_factor = 1.0 if seg1['speaker_id'] != seg2['speaker_id'] else 0.7
+        
+        # Temporal position factor (overlaps in middle of segments more likely)
+        seg1_center = (seg1['start'] + seg1['end']) / 2
+        seg2_center = (seg2['start'] + seg2['end']) / 2
+        overlap_center = (overlap_duration) / 2
+        
+        # Check if overlap is near segment centers
+        center_proximity_1 = 1.0 - abs(seg1_center - overlap_center) / (seg1_duration / 2) if seg1_duration > 0 else 0.5
+        center_proximity_2 = 1.0 - abs(seg2_center - overlap_center) / (seg2_duration / 2) if seg2_duration > 0 else 0.5
+        center_factor = (center_proximity_1 + center_proximity_2) / 2
+        
+        # Combined probability
+        overlap_prob = base_prob * confidence_factor * duration_factor * speaker_factor * center_factor
+        
+        return min(1.0, max(0.0, overlap_prob))
     
     def _detect_rapid_transitions(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -399,7 +553,9 @@ class TurnStabilizer:
                         'end': point['time'],
                         'speaker_id': current_speaker,
                         'confidence': self._estimate_segment_confidence(
-                            segment_start, point['time'], original_segments
+                            segment_start if segment_start is not None else 0.0, 
+                            point['time'] if point['time'] is not None else 0.0, 
+                            original_segments
                         ),
                         'filtered': True
                     })
@@ -415,7 +571,9 @@ class TurnStabilizer:
                 'end': temporal_sequence[-1]['time'],
                 'speaker_id': current_speaker,
                 'confidence': self._estimate_segment_confidence(
-                    segment_start, temporal_sequence[-1]['time'], original_segments
+                    segment_start if segment_start is not None else 0.0, 
+                    temporal_sequence[-1]['time'] if temporal_sequence[-1]['time'] is not None else 0.0, 
+                    original_segments
                 ),
                 'filtered': True
             })
