@@ -486,7 +486,7 @@ def is_feature_available(feature: str) -> bool:
     """Convenience function to check if feature is available"""
     return get_capability_manager().is_feature_available(feature)
 
-def require_feature(feature: str, fallback_msg: str = None) -> bool:
+def require_feature(feature: str, fallback_msg: Optional[str] = None) -> bool:
     """Require a feature and log appropriate message if unavailable"""
     manager = get_capability_manager()
     if manager.is_feature_available(feature):

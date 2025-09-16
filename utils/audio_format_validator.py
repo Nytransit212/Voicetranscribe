@@ -42,7 +42,7 @@ class ValidationResult:
     normalized_path: Optional[str] = None
     conversion_needed: bool = False
     error_message: Optional[str] = None
-    performance_metrics: Dict[str, Any] = None
+    performance_metrics: Optional[Dict[str, Any]] = None
 
 class AudioFormatValidator:
     """Validates and normalizes audio formats for ensemble processing"""
@@ -145,7 +145,7 @@ class AudioFormatValidator:
                 duration = len(y) / sr if channels == 1 else y.shape[1] / sr
                 
                 return AudioFormat(
-                    sample_rate=sr,
+                    sample_rate=int(sr),
                     channels=channels,
                     duration=duration,
                     format=audio_path.suffix.lower().lstrip('.')
@@ -344,4 +344,4 @@ def ensure_audio_format(audio_path: Union[str, Path]) -> str:
     if not result.valid:
         raise ValueError(f"Audio validation failed: {result.error_message}")
     
-    return result.normalized_path
+    return result.normalized_path or str(audio_path)
