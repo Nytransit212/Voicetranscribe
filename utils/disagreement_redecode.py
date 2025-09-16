@@ -1658,6 +1658,11 @@ def create_disagreement_redecode_engine(config: Optional[RedecodeConfig] = None)
     return DisagreementRedecodeEngine(config)
 
 
+# Module-level singleton instance
+_disagreement_redecode_engine_instance: Optional[DisagreementRedecodeEngine] = None
+_engine_lock = threading.Lock()
+
+
 def get_disagreement_redecode_engine() -> DisagreementRedecodeEngine:
     """
     Get singleton instance of disagreement re-decode engine
@@ -1665,6 +1670,9 @@ def get_disagreement_redecode_engine() -> DisagreementRedecodeEngine:
     Returns:
         Global DisagreementRedecodeEngine instance
     """
-    if not hasattr(get_disagreement_redecode_engine, '_instance'):
-        get_disagreement_redecode_engine._instance = DisagreementRedecodeEngine()
-    return get_disagreement_redecode_engine._instance
+    global _disagreement_redecode_engine_instance
+    if _disagreement_redecode_engine_instance is None:
+        with _engine_lock:
+            if _disagreement_redecode_engine_instance is None:
+                _disagreement_redecode_engine_instance = DisagreementRedecodeEngine()
+    return _disagreement_redecode_engine_instance

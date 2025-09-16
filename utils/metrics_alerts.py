@@ -109,7 +109,7 @@ class MetricAggregator:
         self._data = defaultdict(lambda: deque(maxlen=1000))  # Keep last 1000 points
         self._lock = threading.RLock()
     
-    def add_value(self, metric_name: str, value: float, timestamp: datetime = None):
+    def add_value(self, metric_name: str, value: float, timestamp: Optional[datetime] = None):
         """Add a metric value to the aggregation window"""
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
@@ -223,7 +223,7 @@ class AlertManager:
                       severity: AlertSeverity,
                       component: str,
                       session_id: str,
-                      context: Dict[str, Any] = None) -> Alert:
+                      context: Optional[Dict[str, Any]] = None) -> Alert:
         """Generate a new alert"""
         
         alert_id = f"{metric_name}_{component}_{int(time.time())}"
@@ -310,7 +310,7 @@ class AlertManager:
 class MetricsCollector:
     """Main metrics collection system with structured logging and alerting"""
     
-    def __init__(self, config: Dict[str, Any], session_id: str = None):
+    def __init__(self, config: Dict[str, Any], session_id: Optional[str] = None):
         self.config = config
         self.session_id = session_id or str(uuid.uuid4())[:8]
         self.enabled = config.get('enabled', True)
@@ -544,8 +544,8 @@ class MetricsCollector:
                      name: str, 
                      value: Union[float, int],
                      component: str,
-                     tags: Dict[str, str] = None,
-                     context: Dict[str, Any] = None):
+                     tags: Optional[Dict[str, str]] = None,
+                     context: Optional[Dict[str, Any]] = None):
         """Record a metric value with structured logging"""
         
         if not self.enabled:
@@ -627,7 +627,7 @@ class MetricsCollector:
                     severity=severity,
                     component=metric_value.component,
                     session_id=metric_value.session_id,
-                    context=metric_value.context
+                    context=metric_value.context or {}
                 )
                 break  # Only generate one alert per metric per check
     
@@ -650,7 +650,7 @@ class MetricsCollector:
                               stage: str, 
                               duration: float, 
                               component: str,
-                              quality_metrics: Dict[str, float] = None,
+                              quality_metrics: Optional[Dict[str, float]] = None,
                               **context):
         """Record metrics for a complete processing stage"""
         
@@ -842,7 +842,7 @@ class MetricsCollector:
         
         return gates
     
-    def export_ci_report(self, filepath: str = None) -> str:
+    def export_ci_report(self, filepath: Optional[str] = None) -> str:
         """Export CI metrics report to file"""
         
         report = self.get_ci_metrics_report()
@@ -850,10 +850,10 @@ class MetricsCollector:
         if filepath is None:
             filepath = f"ci_metrics_report_{self.session_id}_{int(time.time())}.json"
         
-        filepath = Path(filepath)
-        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath_obj = Path(filepath)
+        filepath_obj.parent.mkdir(parents=True, exist_ok=True)
         
-        with open(filepath, 'w') as f:
+        with open(filepath_obj, 'w') as f:
             json.dump(report, f, indent=2, default=str)
         
         logger.info(f"CI metrics report exported to {filepath}")
@@ -865,7 +865,7 @@ _global_metrics_collector: Optional[MetricsCollector] = None
 _collector_lock = threading.Lock()
 
 
-def get_metrics_collector(config: Dict[str, Any] = None, session_id: str = None) -> MetricsCollector:
+def get_metrics_collector(config: Optional[Dict[str, Any]] = None, session_id: Optional[str] = None) -> MetricsCollector:
     """Get or create global metrics collector instance"""
     global _global_metrics_collector
     
@@ -890,7 +890,7 @@ def get_metrics_collector(config: Dict[str, Any] = None, session_id: str = None)
         return _global_metrics_collector
 
 
-def initialize_metrics_system(config: Dict[str, Any], session_id: str = None) -> MetricsCollector:
+def initialize_metrics_system(config: Dict[str, Any], session_id: Optional[str] = None) -> MetricsCollector:
     """Initialize the global metrics system"""
     global _global_metrics_collector
     
@@ -903,7 +903,7 @@ def initialize_metrics_system(config: Dict[str, Any], session_id: str = None) ->
 
 
 # Decorator for automatic metrics collection
-def track_performance(metric_name: str = None, component: str = None):
+def track_performance(metric_name: Optional[str] = None, component: Optional[str] = None):
     """Decorator to automatically track performance metrics for functions"""
     
     def decorator(func: Callable):
@@ -929,7 +929,7 @@ def track_performance(metric_name: str = None, component: str = None):
 @contextmanager
 def track_processing_stage(stage_name: str, 
                           component: str,
-                          audio_duration: float = None,
+                          audio_duration: Optional[float] = None,
                           **context):
     """Context manager for tracking complete processing stages"""
     
