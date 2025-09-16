@@ -796,6 +796,9 @@ class EnsembleManager:
             
             # Create artifacts/reports directory
             reports_dir = Path("artifacts/reports")
+            if self.run_id is None:
+                self.structured_logger.warning("No run_id available for output persistence")
+                return
             run_dir = reports_dir / self.run_id
             run_dir.mkdir(parents=True, exist_ok=True)
             
