@@ -159,3 +159,47 @@ class Settings:
             'quality_gates': cls.QUALITY_GATES,
             'max_concurrent_requests': cls.MAX_CONCURRENT_ASR_REQUESTS
         }
+    
+    @classmethod
+    def get_config(cls) -> Dict[str, Any]:
+        """
+        Get general configuration dictionary.
+        
+        Returns:
+            General configuration dictionary with all settings
+        """
+        return {
+            'api': {
+                'openai_api_key': cls.OPENAI_API_KEY,
+                'huggingface_token': cls.HUGGINGFACE_TOKEN
+            },
+            'audio': {
+                'sample_rate': cls.AUDIO_SAMPLE_RATE,
+                'channels': cls.AUDIO_CHANNELS,
+                'max_duration': cls.MAX_AUDIO_DURATION
+            },
+            'diarization': {
+                'default_expected_speakers': cls.DEFAULT_EXPECTED_SPEAKERS,
+                'min_speakers': cls.MIN_SPEAKERS,
+                'max_speakers': cls.MAX_SPEAKERS,
+                'variants': cls.DIARIZATION_VARIANTS
+            },
+            'asr': {
+                'model': cls.ASR_MODEL,
+                'variants': cls.ASR_VARIANTS
+            },
+            'scoring': {
+                'confidence_weights': cls.CONFIDENCE_WEIGHTS,
+                'quality_gates': cls.QUALITY_GATES
+            },
+            'output': {
+                'speaker_colors': cls.SPEAKER_COLORS,
+                'supported_video_formats': cls.SUPPORTED_VIDEO_FORMATS,
+                'max_file_size_mb': cls.MAX_FILE_SIZE_MB
+            },
+            'processing': {
+                'max_concurrent_asr_requests': cls.MAX_CONCURRENT_ASR_REQUESTS,
+                'asr_timeout_seconds': cls.ASR_TIMEOUT_SECONDS,
+                'diarization_timeout_seconds': cls.DIARIZATION_TIMEOUT_SECONDS
+            }
+        }

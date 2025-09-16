@@ -20,6 +20,7 @@ from .alignment_fusion import TemporalAligner, WordAlignment, AlignmentFusionRes
 from .intelligent_controller import SegmentAnalysis, SegmentCandidate, IntelligentControllerResult
 from .asr_providers.base import ASRResult, ASRSegment, DecodeMode
 from utils.enhanced_structured_logger import create_enhanced_logger
+from utils.deterministic_parallel import StableTieBreaker
 
 @dataclass
 class TokenPosterior:

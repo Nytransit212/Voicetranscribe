@@ -11,18 +11,41 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.asr_engine import ASREngine
 from core.diarization_engine import DiarizationEngine
 from core.confidence_scorer import ConfidenceScorer
+from core.proper_noun_verifier import (
+    ProperNounVerifier, SpanCandidate, GlossaryEntry, 
+    requires_verification, is_proper_noun_span, is_number_span
+)
+from core.term_bias import AdaptiveBiasingEngine, create_adaptive_biasing_engine
 from utils.structured_logger import StructuredLogger
 
 class RepairEngine:
     """Handles targeted reprocessing and repair of transcript segments"""
     
-    def __init__(self):
+    def __init__(self, project_id: str = None, session_id: str = None):
         self.asr_engine = ASREngine()
         self.diarization_engine = DiarizationEngine()
         self.confidence_scorer = ConfidenceScorer()
         
+        # Initialize proper noun verifier
+        self.proper_noun_verifier = ProperNounVerifier()
+        
+        # Initialize adaptive biasing engine for glossary integration
+        self.biasing_engine = create_adaptive_biasing_engine()
+        
+        # Store project and session context for verifier integration
+        self.project_id = project_id
+        self.session_id = session_id
+        
         # Initialize structured logging
         self.structured_logger = StructuredLogger("repair_engine")
+        
+        # Verification telemetry
+        self.verification_stats = {
+            'verifier_invocations': 0,
+            'blocked_changes': 0,
+            'approved_changes': 0,
+            'blocked_unseen_variants': []
+        }
         
         # Repair-specific ASR configurations for different problem types
         self.repair_configs = {
@@ -199,7 +222,7 @@ class RepairEngine:
     def apply_segment_repair(self, master_transcript: Dict[str, Any], 
                            segment_index: int, repair_candidate: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Apply a repair candidate to the master transcript.
+        Apply a repair candidate to the master transcript with verifier integration.
         
         Args:
             master_transcript: Current master transcript
@@ -213,11 +236,15 @@ class RepairEngine:
         segments = updated_transcript['segments'].copy()
         
         if 0 <= segment_index < len(segments):
-            # Replace segment with repaired version
             old_segment = segments[segment_index]
             new_segment = repair_candidate['repaired_segment']
             
-            segments[segment_index] = new_segment
+            # Apply verifier constraints before making changes to proper nouns or numbers
+            verified_segment = self._verify_segment_repair(
+                old_segment, new_segment, repair_candidate, segment_index
+            )
+            
+            segments[segment_index] = verified_segment
             updated_transcript['segments'] = segments
             
             # Update metadata
@@ -476,3 +503,282 @@ class RepairEngine:
             report['recommendations'].append("Significant improvements achieved - consider applying repairs")
         
         return report
+    
+    # === VERIFIER INTEGRATION METHODS ===
+    
+    def _verify_segment_repair(self, 
+                              old_segment: Dict[str, Any], 
+                              new_segment: Dict[str, Any], 
+                              repair_candidate: Dict[str, Any],
+                              segment_index: int) -> Dict[str, Any]:
+        """
+        Verify segment repair using proper noun verifier constraints
+        
+        Args:
+            old_segment: Original segment
+            new_segment: Proposed new segment
+            repair_candidate: Full repair candidate information
+            segment_index: Index of segment being repaired
+            
+        Returns:
+            Verified segment (may be original or new based on verification)
+        """
+        old_text = old_segment.get('text', '')
+        new_text = new_segment.get('text', '')
+        
+        # Skip verification if verifier is disabled or texts are identical
+        if (not self.proper_noun_verifier.enabled or 
+            old_text == new_text or 
+            not requires_verification(new_text)):
+            return new_segment
+        
+        self.verification_stats['verifier_invocations'] += 1
+        
+        try:
+            # Get glossary entries for this project
+            glossary_entries = []
+            if self.project_id and self.biasing_engine:
+                glossary_data = self.biasing_engine.get_project_glossary_entries(
+                    project_id=self.project_id,
+                    max_entries=self.proper_noun_verifier.max_glossary_entries
+                )
+                
+                # Convert to GlossaryEntry objects
+                for entry_data in glossary_data:
+                    glossary_entry = GlossaryEntry(
+                        canonical_form=entry_data['canonical_form'],
+                        variants=entry_data['variants'],
+                        weight=entry_data['weight'],
+                        confidence_score=entry_data['confidence_score'],
+                        session_count=entry_data['session_count'],
+                        term_type=entry_data['term_type'],
+                        metadata=entry_data['metadata']
+                    )
+                    glossary_entries.append(glossary_entry)
+            
+            # Create span candidates from repair information
+            span_candidates = self._create_span_candidates_from_repair(
+                repair_candidate, old_segment, new_segment
+            )
+            
+            # Set up time window
+            time_window = (
+                old_segment.get('start', 0.0),
+                old_segment.get('end', 0.0)
+            )
+            
+            # Apply verifier
+            verification_result = self.proper_noun_verifier.verify(
+                span_candidates=span_candidates,
+                current_text=old_text,
+                glossary_entries=glossary_entries,
+                time_window=time_window,
+                rules=None  # Could be extended with custom rules
+            )
+            
+            # Update verification statistics
+            self._update_verification_stats(verification_result, old_text, new_text)
+            
+            # Determine final segment based on verification
+            if verification_result.is_verified and verification_result.verified_text != old_text:
+                # Verifier approved the change
+                final_segment = new_segment.copy()
+                final_segment['text'] = verification_result.verified_text
+                final_segment['verification_metadata'] = {
+                    'verifier_applied': True,
+                    'verification_source': verification_result.verification_source,
+                    'verification_score': verification_result.score,
+                    'verification_margin': verification_result.margin,
+                    'original_repair_text': new_text
+                }
+                
+                self.structured_logger.info("Verifier approved repair change", 
+                                          context={
+                                              'segment_index': segment_index,
+                                              'old_text': old_text,
+                                              'new_text': verification_result.verified_text,
+                                              'verification_source': verification_result.verification_source,
+                                              'score': verification_result.score,
+                                              'margin': verification_result.margin
+                                          })
+                return final_segment
+            
+            else:
+                # Verifier blocked the change or kept original
+                blocked_segment = old_segment.copy()
+                blocked_segment['verification_metadata'] = {
+                    'verifier_applied': True,
+                    'change_blocked': True,
+                    'blocked_text': new_text,
+                    'blocked_reason': 'unseen_variant' if verification_result.blocked_variants else 'insufficient_margin',
+                    'verification_score': verification_result.score,
+                    'verification_margin': verification_result.margin,
+                    'blocked_variants': verification_result.blocked_variants
+                }
+                
+                self.structured_logger.warning("Verifier blocked repair change", 
+                                             context={
+                                                 'segment_index': segment_index,
+                                                 'old_text': old_text,
+                                                 'blocked_text': new_text,
+                                                 'reason': blocked_segment['verification_metadata']['blocked_reason'],
+                                                 'blocked_variants': verification_result.blocked_variants,
+                                                 'margin': verification_result.margin
+                                             })
+                return blocked_segment
+                
+        except Exception as e:
+            # On verification error, default to keeping original segment
+            self.structured_logger.error("Verification failed, keeping original segment", 
+                                       context={
+                                           'segment_index': segment_index,
+                                           'error': str(e),
+                                           'old_text': old_text,
+                                           'new_text': new_text
+                                       })
+            
+            error_segment = old_segment.copy()
+            error_segment['verification_metadata'] = {
+                'verifier_applied': True,
+                'verification_error': str(e),
+                'change_blocked': True,
+                'blocked_reason': 'verification_error'
+            }
+            return error_segment
+    
+    def _create_span_candidates_from_repair(self, 
+                                           repair_candidate: Dict[str, Any],
+                                           old_segment: Dict[str, Any],
+                                           new_segment: Dict[str, Any]) -> List[SpanCandidate]:
+        """
+        Create span candidates from repair information
+        
+        Returns:
+            List of SpanCandidate objects for verification
+        """
+        candidates = []
+        
+        # Add original text as a candidate
+        old_candidate = SpanCandidate(
+            text=old_segment.get('text', ''),
+            engine_name='original',
+            confidence=old_segment.get('confidence', 0.0),
+            acoustic_score=old_segment.get('acoustic_score', 0.5),
+            start_time=old_segment.get('start', 0.0),
+            end_time=old_segment.get('end', 0.0),
+            metadata={'source': 'original_transcript'}
+        )
+        candidates.append(old_candidate)
+        
+        # Add new text as a candidate  
+        repair_engine_name = repair_candidate.get('repair_config', {}).get('engine', 'repair_engine')
+        new_candidate = SpanCandidate(
+            text=new_segment.get('text', ''),
+            engine_name=repair_engine_name,
+            confidence=new_segment.get('confidence', 0.0),
+            acoustic_score=new_segment.get('acoustic_score', 0.5),
+            start_time=new_segment.get('start', 0.0),
+            end_time=new_segment.get('end', 0.0),
+            metadata={
+                'source': 'repair_candidate',
+                'repair_id': repair_candidate.get('repair_id'),
+                'problem_type': repair_candidate.get('problem_type'),
+                'improvement_score': repair_candidate.get('improvement_score', 0.0)
+            }
+        )
+        candidates.append(new_candidate)
+        
+        # Could be extended to include other variants from repair process
+        
+        return candidates
+    
+    def _update_verification_stats(self, 
+                                  verification_result,
+                                  old_text: str, 
+                                  new_text: str):
+        """Update verification statistics based on result"""
+        if verification_result.blocked_variants:
+            self.verification_stats['blocked_changes'] += 1
+            self.verification_stats['blocked_unseen_variants'].extend(
+                verification_result.blocked_variants
+            )
+        
+        if verification_result.is_verified and verification_result.verified_text != old_text:
+            self.verification_stats['approved_changes'] += 1
+    
+    def get_verification_telemetry(self) -> Dict[str, Any]:
+        """Get verification telemetry data for reporting"""
+        verifier_telemetry = self.proper_noun_verifier.get_telemetry_summary()
+        
+        combined_telemetry = {
+            'repair_engine_stats': self.verification_stats,
+            'verifier_stats': verifier_telemetry,
+            'integration_metrics': {
+                'verifier_integration_enabled': self.proper_noun_verifier.enabled,
+                'project_context_available': bool(self.project_id),
+                'biasing_engine_available': bool(self.biasing_engine)
+            }
+        }
+        
+        return combined_telemetry
+    
+    def generate_verification_report(self, project_id: str = None) -> Dict[str, Any]:
+        """Generate verification report for blocked variants and changes"""
+        project_id = project_id or self.project_id or 'unknown'
+        
+        # Get blocked variants frequency
+        blocked_variants_counter = {}
+        for variant in self.verification_stats['blocked_unseen_variants']:
+            blocked_variants_counter[variant] = blocked_variants_counter.get(variant, 0) + 1
+        
+        # Get top 20 blocked variants
+        top_blocked = sorted(
+            blocked_variants_counter.items(), 
+            key=lambda x: x[1], 
+            reverse=True
+        )[:20]
+        
+        # Generate daily report from verifier
+        verifier_daily_report = self.proper_noun_verifier.generate_daily_report(project_id)
+        
+        report = {
+            'project_id': project_id,
+            'report_timestamp': time.time(),
+            'repair_engine_verification': {
+                'total_verifier_invocations': self.verification_stats['verifier_invocations'],
+                'blocked_changes': self.verification_stats['blocked_changes'],
+                'approved_changes': self.verification_stats['approved_changes'],
+                'block_rate': (self.verification_stats['blocked_changes'] / 
+                             max(1, self.verification_stats['verifier_invocations'])),
+                'top_blocked_variants': top_blocked
+            },
+            'verifier_daily_report': verifier_daily_report,
+            'recommendations': self._generate_verification_recommendations(top_blocked)
+        }
+        
+        return report
+    
+    def _generate_verification_recommendations(self, top_blocked: List[Tuple[str, int]]) -> List[str]:
+        """Generate recommendations based on blocked variants"""
+        recommendations = []
+        
+        if len(top_blocked) > 10:
+            recommendations.append(
+                "High number of blocked variants detected. Consider reviewing auto-glossary coverage."
+            )
+        
+        # Check for common patterns in blocked variants
+        proper_noun_blocks = sum(1 for variant, _ in top_blocked if is_proper_noun_span(variant))
+        number_blocks = sum(1 for variant, _ in top_blocked if is_number_span(variant))
+        
+        if proper_noun_blocks > 5:
+            recommendations.append(
+                f"Many proper noun variants blocked ({proper_noun_blocks}). Review entity recognition and glossary."
+            )
+        
+        if number_blocks > 3:
+            recommendations.append(
+                f"Multiple number variants blocked ({number_blocks}). Check numeric formatting rules."
+            )
+        
+        return recommendations

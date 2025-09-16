@@ -156,6 +156,21 @@ experimental:
   quality_controller: true
   enhanced_decode_strategies: true  # Enable enhanced decode strategy system
 
+# Post-Fusion Alignment Realigner
+realigner:
+  enabled: true                    # Enable post-fusion boundary realignment
+  max_boundary_shift_ms: 80        # Maximum allowed boundary movement (milliseconds)
+  energy_window_ms: 50             # Window size for energy analysis (milliseconds)
+  cost_weight_energy: 0.6          # Energy alignment cost weight (0.0 - 1.0)
+  cost_weight_distance: 0.4        # Distance penalty weight (0.0 - 1.0)
+  cost_weight_smoothness: 0.2      # Smoothness constraint weight (0.0 - 1.0)
+  min_word_duration_ms: 50         # Minimum word duration after realignment
+  energy_threshold: 0.3            # Energy threshold for boundary detection
+  boundary_search_radius_ms: 100   # Search radius for boundary candidates
+  dtw_constraint_window: 0.15      # DTW constraint window (15% of sequence length)
+  enable_fallback: true            # Enable graceful fallback on errors
+  validate_timing_constraints: true # Enable strict timing validation
+
 # Consensus and Calibration Integration
 consensus:
   enabled: true
@@ -176,3 +191,22 @@ pipeline:
   enable_methodology_comparison: true
   record_processing_metadata: true
   enable_enhanced_decode: true  # Enable enhanced decode strategy system in pipeline
+
+# Source Separation Quality Gating
+separation:
+  enabled: true                 # Enable source separation processing
+  min_overlap_percent: 8.0      # Minimum overlap percentage to trigger separation
+  min_stem_snr_db: 12.0         # Minimum stem SNR (dB) to pass QA gate
+  max_stem_leakage: 0.12        # Maximum voice leakage rate between stems
+  enable_quality_gating: true   # Enable quality-based gating decisions
+  fallback_to_single_channel: true  # Fallback to single-channel when QA fails
+
+# Proper Noun and Number Verifier
+verifier:
+  enabled: true                 # Enable constrained proper noun and number verification
+  min_margin: 0.1              # Minimum scoring margin for variant acceptance
+  max_glossary_entries: 50     # Top K glossary entries to include in allowed set
+  glossary_weight_bonus: 0.2   # Bonus scoring weight for auto-glossary matches
+  block_unseen_variants: true  # Block variants not in observed or glossary sets
+  enable_number_formatting: true  # Preserve exact formatting for numbers/alphanumerics
+  enable_telemetry: true       # Enable detailed metrics and logging

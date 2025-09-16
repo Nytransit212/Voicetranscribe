@@ -42,6 +42,14 @@ class OverlapMetrics:
     average_stem_leakage_score: float = 0.0
     separation_success_rate: float = 0.0
     
+    # Quality gating metrics
+    stem_snr_db: List[float] = field(default_factory=list)
+    stem_leakage_rate: List[float] = field(default_factory=list)
+    stem_artifact_scores: List[float] = field(default_factory=list)
+    quality_gates_passed: bool = False
+    fallback_reason: Optional[str] = None
+    fallback_applied_count: int = 0
+    
     # Processing metrics
     asr_runtime_ms_by_stem: Dict[str, float] = field(default_factory=dict)
     total_asr_runtime_ms: float = 0.0
@@ -61,7 +69,6 @@ class OverlapMetrics:
     
     # System metrics
     cache_hit_rate: float = 0.0
-    fallback_applied_count: int = 0
     processing_budget_utilization: float = 0.0
 
 @dataclass 

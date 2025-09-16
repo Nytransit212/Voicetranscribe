@@ -54,6 +54,7 @@ dependencies = [
     "pronouncing>=0.2.0",
     "epitran>=1.26.0",
     "phonemizer>=3.3.0",
+    "pydantic>=2.11.8",
 ]
 
 [project.optional-dependencies]

@@ -295,6 +295,294 @@ class TimingValidator:
         else:
             return "severe"
 
+class ProtectedTokenValidator:
+    """Validates protected token preservation with sophisticated rules"""
+    
+    def __init__(self):
+        self.logger = create_enhanced_logger("protected_token_validator")
+        
+        # Protection rule types
+        self.protection_rules = {
+            'exact_preservation': "Token must be preserved exactly as-is",
+            'no_punctuation_insertion': "No punctuation may be inserted inside protected tokens", 
+            'no_spacing_changes': "Spacing within protected tokens must be preserved",
+            'no_case_changes': "Case changes in protected alphanumeric sequences not allowed",
+            'preserve_structure': "Exact formatting and structure must be preserved"
+        }
+    
+    def validate_protected_tokens(self, original_text: str, normalized_text: str,
+                                protected_regions: List[Tuple[int, int, str, str]]) -> List[GuardrailViolation]:
+        """
+        Validate that protected token regions are preserved according to strict rules
+        
+        Args:
+            original_text: Original text
+            normalized_text: Normalized text
+            protected_regions: List of (start, end, text, reason) tuples from AcronymProtector
+            
+        Returns:
+            List of GuardrailViolation objects for any protection rule violations
+        """
+        violations = []
+        
+        if not protected_regions:
+            return violations
+        
+        self.logger.debug(f"Validating {len(protected_regions)} protected regions")
+        
+        for start_pos, end_pos, original_token, protection_reason in protected_regions:
+            # Extract corresponding region from normalized text
+            normalized_token = self._extract_corresponding_region(
+                original_text, normalized_text, start_pos, end_pos
+            )
+            
+            if normalized_token is None:
+                # Protected token completely removed
+                violations.append(GuardrailViolation(
+                    rule_name="protected_token_preservation",
+                    violation_type="protected_change",
+                    severity="critical",
+                    details=f"Protected token '{original_token}' was completely removed",
+                    position=start_pos,
+                    affected_tokens=[original_token],
+                    recommended_action="restore_protected_token",
+                    automatic_fix_available=True
+                ))
+                continue
+            
+            # Perform detailed validation of the protected token
+            token_violations = self._validate_single_protected_token(
+                original_token, normalized_token, protection_reason, start_pos
+            )
+            violations.extend(token_violations)
+        
+        if violations:
+            self.logger.warning(f"Found {len(violations)} protected token violations", 
+                               context={'violation_types': [v.violation_type for v in violations]})
+        
+        return violations
+    
+    def _extract_corresponding_region(self, original_text: str, normalized_text: str,
+                                     start_pos: int, end_pos: int) -> Optional[str]:
+        """
+        Extract the corresponding region from normalized text for a protected region
+        
+        This uses approximate character position mapping since normalization may change positions
+        """
+        # Simple approach: try to find the token in the normalized text
+        original_token = original_text[start_pos:end_pos]
+        
+        # Try exact match first
+        if original_token in normalized_text:
+            return original_token
+        
+        # Try case-insensitive match
+        normalized_lower = normalized_text.lower()
+        original_lower = original_token.lower()
+        
+        if original_lower in normalized_lower:
+            # Find the actual case in normalized text
+            idx = normalized_lower.index(original_lower)
+            return normalized_text[idx:idx + len(original_token)]
+        
+        # Try to find partial matches or corrupted versions
+        words_original = original_token.split()
+        if len(words_original) > 1:
+            # Multi-word protected token - check if parts are present
+            parts_found = []
+            for word in words_original:
+                if word.lower() in normalized_lower:
+                    parts_found.append(word)
+            
+            if parts_found:
+                # Some parts found - reconstruct what we can find
+                return " ".join(parts_found)
+        
+        # Token appears to be missing or heavily corrupted
+        return None
+    
+    def _validate_single_protected_token(self, original_token: str, normalized_token: str,
+                                       protection_reason: str, position: int) -> List[GuardrailViolation]:
+        """Validate a single protected token against all protection rules"""
+        violations = []
+        
+        # Rule 1: Exact preservation for high-priority tokens
+        if self._is_high_priority_token(protection_reason):
+            if original_token != normalized_token:
+                violations.append(GuardrailViolation(
+                    rule_name="exact_preservation",
+                    violation_type="protected_change",
+                    severity="critical",
+                    details=f"High-priority protected token changed: '{original_token}' → '{normalized_token}'",
+                    position=position,
+                    affected_tokens=[original_token],
+                    recommended_action="restore_exact_token",
+                    automatic_fix_available=True
+                ))
+        else:
+            # For other tokens, check specific rules
+            
+            # Rule 2: No punctuation insertion inside tokens
+            punct_violations = self._check_punctuation_insertion(original_token, normalized_token, position)
+            violations.extend(punct_violations)
+            
+            # Rule 3: No spacing changes inside tokens
+            spacing_violations = self._check_spacing_changes(original_token, normalized_token, position)
+            violations.extend(spacing_violations)
+            
+            # Rule 4: No case changes for alphanumeric sequences
+            case_violations = self._check_case_changes(original_token, normalized_token, position)
+            violations.extend(case_violations)
+            
+            # Rule 5: Preserve structural formatting (hyphens, dots, etc.)
+            structure_violations = self._check_structure_preservation(original_token, normalized_token, position)
+            violations.extend(structure_violations)
+        
+        return violations
+    
+    def _is_high_priority_token(self, protection_reason: str) -> bool:
+        """Check if token is high priority and requires exact preservation"""
+        high_priority_categories = {
+            'legal_cases', 'doses_units', 'mixed_alphanumeric', 'versions'
+        }
+        
+        for category in high_priority_categories:
+            if category in protection_reason:
+                return True
+        
+        return False
+    
+    def _check_punctuation_insertion(self, original: str, normalized: str, position: int) -> List[GuardrailViolation]:
+        """Check for punctuation inserted inside protected tokens"""
+        violations = []
+        
+        # Remove common punctuation to compare core content
+        punct_chars = set('.,!?;:()[]{}"\'-')
+        
+        original_clean = ''.join(c for c in original if c not in punct_chars)
+        normalized_clean = ''.join(c for c in normalized if c not in punct_chars)
+        
+        # If core content is same but normalized has more punctuation
+        if (original_clean == normalized_clean and 
+            len([c for c in normalized if c in punct_chars]) > len([c for c in original if c in punct_chars])):
+            
+            # Find inserted punctuation
+            orig_punct = set(c for c in original if c in punct_chars)
+            norm_punct = set(c for c in normalized if c in punct_chars)
+            inserted = norm_punct - orig_punct
+            
+            if inserted:
+                violations.append(GuardrailViolation(
+                    rule_name="no_punctuation_insertion", 
+                    violation_type="protected_change",
+                    severity="moderate",
+                    details=f"Punctuation inserted in protected token: added {list(inserted)} to '{original}'",
+                    position=position,
+                    affected_tokens=[original],
+                    recommended_action="remove_inserted_punctuation",
+                    automatic_fix_available=True
+                ))
+        
+        return violations
+    
+    def _check_spacing_changes(self, original: str, normalized: str, position: int) -> List[GuardrailViolation]:
+        """Check for spacing changes inside protected tokens"""
+        violations = []
+        
+        # Count and compare spaces
+        orig_spaces = original.count(' ')
+        norm_spaces = normalized.count(' ')
+        
+        if orig_spaces != norm_spaces:
+            violations.append(GuardrailViolation(
+                rule_name="no_spacing_changes",
+                violation_type="protected_change", 
+                severity="moderate",
+                details=f"Spacing changed in protected token: '{original}' → '{normalized}'",
+                position=position,
+                affected_tokens=[original],
+                recommended_action="restore_original_spacing",
+                automatic_fix_available=True
+            ))
+        
+        # Check for space insertion/removal patterns
+        if orig_spaces == norm_spaces:
+            # Same number of spaces but different positions
+            orig_words = original.split()
+            norm_words = normalized.split()
+            
+            if orig_words != norm_words and ''.join(orig_words) == ''.join(norm_words):
+                violations.append(GuardrailViolation(
+                    rule_name="no_spacing_changes",
+                    violation_type="protected_change",
+                    severity="minor",
+                    details=f"Space positioning changed in protected token: '{original}' → '{normalized}'",
+                    position=position,
+                    affected_tokens=[original],
+                    recommended_action="restore_original_spacing",
+                    automatic_fix_available=True
+                ))
+        
+        return violations
+    
+    def _check_case_changes(self, original: str, normalized: str, position: int) -> List[GuardrailViolation]:
+        """Check for case changes in protected alphanumeric sequences"""
+        violations = []
+        
+        if original.lower() == normalized.lower() and original != normalized:
+            # Case change detected
+            
+            # Identify what type of case change occurred
+            case_changes = []
+            for i, (orig_char, norm_char) in enumerate(zip(original, normalized)):
+                if orig_char != norm_char and orig_char.isalpha():
+                    case_changes.append((i, orig_char, norm_char))
+            
+            if case_changes:
+                severity = "moderate"
+                
+                # Check if this affects alphanumeric ID patterns
+                if any(c.isdigit() for c in original) and any(c.isalpha() for c in original):
+                    severity = "critical"  # Mixed alphanumeric IDs need exact case
+                
+                violations.append(GuardrailViolation(
+                    rule_name="no_case_changes",
+                    violation_type="protected_change",
+                    severity=severity,
+                    details=f"Case changed in protected alphanumeric token: '{original}' → '{normalized}'",
+                    position=position,
+                    affected_tokens=[original],
+                    recommended_action="restore_original_case",
+                    automatic_fix_available=True
+                ))
+        
+        return violations
+    
+    def _check_structure_preservation(self, original: str, normalized: str, position: int) -> List[GuardrailViolation]:
+        """Check that structural formatting is preserved"""
+        violations = []
+        
+        # Define structural characters that should be preserved exactly
+        structural_chars = set('-_./')
+        
+        orig_structure = [c for c in original if c in structural_chars]
+        norm_structure = [c for c in normalized if c in structural_chars]
+        
+        if orig_structure != norm_structure:
+            violations.append(GuardrailViolation(
+                rule_name="preserve_structure",
+                violation_type="protected_change",
+                severity="critical", 
+                details=f"Structural formatting changed in protected token: '{original}' → '{normalized}'",
+                position=position,
+                affected_tokens=[original],
+                recommended_action="restore_structural_formatting",
+                automatic_fix_available=True
+            ))
+        
+        return violations
+
+
 class SemanticDriftDetector:
     """Detects potential semantic drift during normalization"""
     
@@ -489,6 +777,7 @@ class GuardrailVerifier:
         )
         self.semantic_detector = SemanticDriftDetector()
         self.change_auditor = ChangeAuditor()
+        self.protected_token_validator = ProtectedTokenValidator()
         
         # Violation thresholds
         self.token_invention_threshold = self.config.get('token_invention_threshold', 0.0)  # Zero tolerance
@@ -506,6 +795,7 @@ class GuardrailVerifier:
                            normalized_tokens: List[Dict[str, Any]] = None,
                            normalization_changes: List[Any] = None,
                            protected_tokens: List[str] = None,
+                           protected_regions: List[Tuple[int, int, str, str]] = None,
                            current_profile: str = "readable") -> GuardrailResult:
         """
         Perform comprehensive guardrail verification
@@ -578,8 +868,14 @@ class GuardrailVerifier:
         )
         violations.extend(semantic_violations)
         
-        # 5. Protected token preservation
-        if protected_tokens:
+        # 5. Protected token preservation using sophisticated validation
+        if protected_regions:
+            protected_violations = self.protected_token_validator.validate_protected_tokens(
+                original_text, normalized_text, protected_regions
+            )
+            violations.extend(protected_violations)
+        elif protected_tokens:
+            # Fallback to basic check if no regions provided
             protected_violations = self._check_protected_token_preservation(
                 original_text, normalized_text, protected_tokens
             )

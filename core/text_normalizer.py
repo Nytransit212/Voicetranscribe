@@ -68,18 +68,78 @@ class NormalizationMetrics:
     profile_downgrades_count: int = 0
     avg_readability_improvement: float = 0.0
     total_processing_time_ms: float = 0.0
+    
+    # Domain-free ID protection metrics
+    protected_tokens_found: int = 0
+    protected_tokens_violations: int = 0
+    mixed_alphanumeric_protected: int = 0
+    legal_cases_protected: int = 0
+    doses_units_protected: int = 0
+    versions_protected: int = 0
+    date_codes_protected: int = 0
+    protected_token_rate: float = 0.0  # Percentage of tokens protected
+    protected_token_error_rate: float = 0.0  # Error rate for protected tokens
+    guardrail_confidence_score: float = 1.0  # Overall confidence from GuardrailVerifier
+    protection_pattern_matches: int = 0  # Total pattern matches found
+    protection_pattern_conflicts: int = 0  # Conflicting pattern matches resolved
+    high_priority_protections: int = 0  # Critical protections (legal cases, doses, etc.)
+    normalization_guardrail_violations: int = 0  # Specific guardrail violations
 
 class AcronymProtector:
-    """Handles protection of acronyms and technical terms"""
+    """Enhanced domain-free acronym and ID protection system"""
     
     def __init__(self, patterns: Dict[str, List[str]]):
         self.patterns = patterns
         self.logger = create_enhanced_logger("acronym_protector")
         
+        # Category priorities for overlap resolution (higher = more important)
+        self.category_priorities = {
+            'legal_cases': 100,        # Highest priority - legal case IDs
+            'doses_units': 95,         # Medical doses - critical accuracy
+            'mixed_alphanumeric': 90,  # SKUs, product codes
+            'versions': 85,            # Version numbers
+            'date_codes': 80,          # Date/time codes
+            'acronyms': 75,            # Standard acronyms
+            'technical_terms': 70,     # Technical terms
+            'numbers': 60              # General numbers - lowest priority
+        }
+        
+        # Pattern quality scoring for pattern selection
+        self.pattern_quality_weights = {
+            'specificity': 0.4,    # How specific the pattern is
+            'boundary_strength': 0.3, # How well-bounded the pattern is
+            'format_complexity': 0.3  # How complex the format structure is
+        }
+        
         # Compile regex patterns for efficiency
         self.compiled_patterns = {}
+        self.pattern_metadata = {}
+        
         for category, pattern_list in patterns.items():
-            self.compiled_patterns[category] = [re.compile(p) for p in pattern_list]
+            self.compiled_patterns[category] = []
+            self.pattern_metadata[category] = []
+            
+            for pattern_str in pattern_list:
+                try:
+                    compiled_pattern = re.compile(pattern_str, re.IGNORECASE)
+                    self.compiled_patterns[category].append(compiled_pattern)
+                    
+                    # Calculate pattern quality score
+                    quality_score = self._calculate_pattern_quality(pattern_str)
+                    self.pattern_metadata[category].append({
+                        'pattern': pattern_str,
+                        'quality_score': quality_score,
+                        'specificity_level': self._get_specificity_level(pattern_str)
+                    })
+                    
+                except re.error as e:
+                    self.logger.warning(f"Invalid regex pattern in category '{category}': {pattern_str} - {e}")
+        
+        self.logger.info(f"AcronymProtector initialized with {len(self.compiled_patterns)} categories", 
+                        context={
+                            'categories': list(self.compiled_patterns.keys()),
+                            'total_patterns': sum(len(patterns) for patterns in self.compiled_patterns.values())
+                        })
     
     def identify_protected_tokens(self, text: str) -> List[Tuple[int, int, str, str]]:
         """
@@ -88,32 +148,211 @@ class AcronymProtector:
         Returns:
             List of (start_pos, end_pos, token_text, protection_reason) tuples
         """
-        protected = []
+        if not text.strip():
+            return []
         
+        protected_candidates = []
+        
+        # Find all pattern matches with detailed metadata
         for category, compiled_patterns in self.compiled_patterns.items():
-            for pattern in compiled_patterns:
+            for pattern_idx, pattern in enumerate(compiled_patterns):
                 for match in pattern.finditer(text):
-                    protected.append((
-                        match.start(),
-                        match.end(),
-                        match.group(),
-                        f"protected_{category}"
-                    ))
+                    # Get pattern metadata
+                    metadata = self.pattern_metadata[category][pattern_idx]
+                    
+                    # Calculate confidence score for this match
+                    confidence = self._calculate_match_confidence(match, text, metadata)
+                    
+                    protected_candidates.append({
+                        'start': match.start(),
+                        'end': match.end(),
+                        'text': match.group(),
+                        'category': category,
+                        'priority': self.category_priorities.get(category, 50),
+                        'confidence': confidence,
+                        'pattern': metadata['pattern'],
+                        'quality_score': metadata['quality_score'],
+                        'reason': f"protected_{category}_{metadata['specificity_level']}"
+                    })
         
-        # Sort by start position and merge overlapping protections
-        protected.sort(key=lambda x: x[0])
-        merged = []
+        # Sort by start position for overlap resolution
+        protected_candidates.sort(key=lambda x: (x['start'], x['end']))
         
-        for start, end, token, reason in protected:
-            if merged and start <= merged[-1][1]:
-                # Overlapping - extend the previous protection
-                merged[-1] = (merged[-1][0], max(end, merged[-1][1]), 
-                             text[merged[-1][0]:max(end, merged[-1][1])], 
-                             f"{merged[-1][3]}+{reason}")
+        # Resolve overlaps using sophisticated logic
+        resolved_protections = self._resolve_overlapping_protections(protected_candidates)
+        
+        # Convert to expected format
+        final_protections = []
+        for protection in resolved_protections:
+            final_protections.append((
+                protection['start'],
+                protection['end'],
+                protection['text'],
+                protection['reason']
+            ))
+        
+        self.logger.debug(f"Protected {len(final_protections)} tokens from {len(protected_candidates)} candidates", 
+                         context={
+                             'candidates': len(protected_candidates),
+                             'final_protections': len(final_protections),
+                             'categories_found': list(set(p['category'] for p in protected_candidates))
+                         })
+        
+        return final_protections
+    
+    def _calculate_pattern_quality(self, pattern_str: str) -> float:
+        """Calculate quality score for a regex pattern"""
+        try:
+            # Specificity: More specific character classes and quantifiers = higher score
+            specificity_score = 0.5
+            if '[A-Z]' in pattern_str or '[0-9]' in pattern_str:
+                specificity_score += 0.2
+            if r'\b' in pattern_str:  # Word boundaries
+                specificity_score += 0.2
+            if '{' in pattern_str:  # Specific quantifiers
+                specificity_score += 0.1
+            
+            # Boundary strength: Well-bounded patterns are better
+            boundary_score = 0.5
+            if pattern_str.startswith(r'\b') and pattern_str.endswith(r'\b'):
+                boundary_score = 1.0
+            elif r'\b' in pattern_str:
+                boundary_score = 0.7
+            
+            # Format complexity: More structure = higher quality
+            complexity_score = 0.5
+            structure_indicators = ['-', '.', '/', '\\s+', '\\d+', '[A-Z]+', '[0-9]+']
+            complexity_score += min(0.5, len([ind for ind in structure_indicators if ind in pattern_str]) * 0.1)
+            
+            # Weighted final score
+            weights = self.pattern_quality_weights
+            final_score = (
+                specificity_score * weights['specificity'] +
+                boundary_score * weights['boundary_strength'] +
+                complexity_score * weights['format_complexity']
+            )
+            
+            return min(1.0, max(0.0, final_score))
+            
+        except Exception as e:
+            self.logger.warning(f"Error calculating pattern quality for '{pattern_str}': {e}")
+            return 0.5  # Default moderate quality
+    
+    def _get_specificity_level(self, pattern_str: str) -> str:
+        """Determine specificity level of pattern"""
+        if '{' in pattern_str and '[A-Z]' in pattern_str and '[0-9]' in pattern_str:
+            return 'high'
+        elif '[A-Z]' in pattern_str or '[0-9]' in pattern_str:
+            return 'medium' 
+        else:
+            return 'low'
+    
+    def _calculate_match_confidence(self, match: re.Match, text: str, metadata: Dict[str, Any]) -> float:
+        """Calculate confidence score for a specific match"""
+        base_confidence = metadata['quality_score']
+        
+        # Adjust based on match characteristics
+        matched_text = match.group()
+        
+        # Length factor: Reasonable length increases confidence
+        length_factor = 1.0
+        if len(matched_text) < 3:
+            length_factor = 0.8  # Very short matches are less reliable
+        elif len(matched_text) > 20:
+            length_factor = 0.9  # Very long matches might be overzealous
+        
+        # Context factor: Check surrounding context
+        context_factor = 1.0
+        start_pos = match.start()
+        end_pos = match.end()
+        
+        # Check if it's surrounded by appropriate characters
+        if start_pos > 0:
+            prev_char = text[start_pos - 1]
+            if prev_char.isalnum():  # No word boundary before
+                context_factor *= 0.9
+        
+        if end_pos < len(text):
+            next_char = text[end_pos]
+            if next_char.isalnum():  # No word boundary after
+                context_factor *= 0.9
+        
+        # Character composition factor
+        composition_factor = 1.0
+        if any(c.isdigit() for c in matched_text) and any(c.isalpha() for c in matched_text):
+            composition_factor = 1.1  # Mixed alphanumeric is often ID-like
+        
+        final_confidence = base_confidence * length_factor * context_factor * composition_factor
+        return min(1.0, max(0.0, final_confidence))
+    
+    def _resolve_overlapping_protections(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Resolve overlapping protection candidates using sophisticated logic"""
+        if not candidates:
+            return []
+        
+        resolved = []
+        i = 0
+        
+        while i < len(candidates):
+            current = candidates[i]
+            overlapping = [current]
+            
+            # Find all overlapping candidates
+            j = i + 1
+            while j < len(candidates) and candidates[j]['start'] < current['end']:
+                overlapping.append(candidates[j])
+                current['end'] = max(current['end'], candidates[j]['end'])  # Extend current span
+                j += 1
+            
+            if len(overlapping) == 1:
+                # No overlap, keep as-is
+                resolved.append(overlapping[0])
             else:
-                merged.append((start, end, token, reason))
+                # Resolve overlap using priority and confidence
+                best_protection = self._select_best_protection(overlapping)
+                resolved.append(best_protection)
+            
+            i = j if j > i + 1 else i + 1
         
-        return merged
+        return resolved
+    
+    def _select_best_protection(self, overlapping_candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Select the best protection from overlapping candidates"""
+        if len(overlapping_candidates) == 1:
+            return overlapping_candidates[0]
+        
+        # Score each candidate
+        best_candidate = None
+        best_score = -1
+        
+        for candidate in overlapping_candidates:
+            # Composite score based on priority, confidence, and quality
+            score = (
+                candidate['priority'] * 0.5 +           # Category priority
+                candidate['confidence'] * 100 * 0.3 +    # Match confidence  
+                candidate['quality_score'] * 100 * 0.2   # Pattern quality
+            )
+            
+            if score > best_score:
+                best_score = score
+                best_candidate = candidate
+        
+        # Extend protection to cover all overlapping spans if beneficial
+        min_start = min(c['start'] for c in overlapping_candidates)
+        max_end = max(c['end'] for c in overlapping_candidates)
+        
+        if best_candidate:
+            # Update span to cover merged area and update reason
+            best_candidate['start'] = min_start
+            best_candidate['end'] = max_end
+            best_candidate['text'] = best_candidate['text']  # Keep original text, will be re-extracted
+            
+            # Update reason to reflect multiple categories if applicable
+            categories = list(set(c['category'] for c in overlapping_candidates))
+            if len(categories) > 1:
+                best_candidate['reason'] = f"protected_multi_{'+'.join(sorted(categories))}"
+        
+        return best_candidate or overlapping_candidates[0]
 
 class SemanticDisfluencyAnalyzer:
     """Analyzes disfluencies with semantic awareness"""
@@ -951,7 +1190,68 @@ class TextNormalizer:
     def _validate_final_result(self, original_text: str, normalized_text: str, 
                               original_tokens: List[WordToken], 
                               profile_config: Dict[str, Any]) -> List[str]:
-        """Validate the final normalization result against guardrails"""
+        """Validate the final normalization result against enhanced guardrails"""
+        violations = []
+        
+        try:
+            # Import GuardrailVerifier if available
+            from core.guardrail_verifier import GuardrailVerifier
+            
+            # Get protected regions from AcronymProtector for sophisticated validation
+            protected_regions = self.acronym_protector.identify_protected_tokens(original_text)
+            
+            # Initialize GuardrailVerifier with profile configuration
+            guardrail_config = profile_config.get('guardrails', {})
+            verifier = GuardrailVerifier(guardrail_config)
+            
+            # Perform comprehensive verification
+            result = verifier.verify_normalization(
+                original_text=original_text,
+                normalized_text=normalized_text,
+                original_tokens=None,  # We don't have the exact format expected
+                normalized_tokens=None,
+                normalization_changes=None,
+                protected_tokens=[t.text for t in original_tokens if t.is_protected],
+                protected_regions=protected_regions,
+                current_profile=getattr(self, '_current_profile', 'readable')
+            )
+            
+            # Convert GuardrailResult violations to string format for backward compatibility
+            for violation in result.violations:
+                if violation.severity in ['critical', 'severe']:
+                    violations.append(f"{violation.rule_name}: {violation.details}")
+                elif violation.severity == 'moderate':
+                    violations.append(f"{violation.rule_name}: {violation.details}")
+            
+            # Update metrics with protection statistics
+            if hasattr(self, 'metrics'):
+                self.metrics.protected_tokens_found = len(protected_regions)
+                self.metrics.protected_tokens_violations = len([v for v in result.violations if 'protected' in v.violation_type])
+                self.metrics.guardrail_confidence_score = result.confidence_score
+            
+            self.logger.debug(f"Enhanced guardrail validation completed", context={
+                'protected_regions_found': len(protected_regions),
+                'total_violations': len(result.violations),
+                'confidence_score': result.confidence_score,
+                'critical_violations': len([v for v in result.violations if v.severity == 'critical'])
+            })
+        
+        except ImportError:
+            self.logger.warning("GuardrailVerifier not available, falling back to basic validation")
+            # Fall back to basic validation
+            violations = self._basic_validation_fallback(original_text, normalized_text, original_tokens, profile_config)
+        
+        except Exception as e:
+            self.logger.error(f"Error in enhanced guardrail validation: {e}", context={'error': str(e)})
+            # Fall back to basic validation
+            violations = self._basic_validation_fallback(original_text, normalized_text, original_tokens, profile_config)
+        
+        return violations
+    
+    def _basic_validation_fallback(self, original_text: str, normalized_text: str,
+                                  original_tokens: List[WordToken], 
+                                  profile_config: Dict[str, Any]) -> List[str]:
+        """Fallback to basic validation if enhanced system is not available"""
         violations = []
         
         # Token preservation check

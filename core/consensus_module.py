@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 import math
 from difflib import SequenceMatcher
 from utils.enhanced_structured_logger import create_enhanced_logger
+from utils.deterministic_parallel import StableTieBreaker
 from core.alignment_fusion import AlignmentAwareFusionEngine, AlignmentFusionResult
 
 @dataclass
@@ -97,50 +98,14 @@ class BestSingleCandidateStrategy(ConsensusStrategy):
         )
     
     def _apply_tie_breakers(self, tied_candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Apply tie-breaking rules to select winner (current system logic)"""
+        """Apply deterministic tie-breaking rules to select winner"""
         
-        # Tie-breaker 1: Prefer higher A score
-        max_a_score = max(c['confidence_scores']['A_asr_alignment'] for c in tied_candidates)
-        candidates = [c for c in tied_candidates 
-                     if abs(c['confidence_scores']['A_asr_alignment'] - max_a_score) < 0.001]
-        
-        if len(candidates) == 1:
-            return candidates[0]
-        
-        # Tie-breaker 2: Prefer higher R score
-        max_r_score = max(c['confidence_scores']['R_agreement'] for c in candidates)
-        candidates = [c for c in candidates 
-                     if abs(c['confidence_scores']['R_agreement'] - max_r_score) < 0.001]
-        
-        if len(candidates) == 1:
-            return candidates[0]
-        
-        # Tie-breaker 3: Prefer fewer speaker switches per hour
-        switch_rates = []
-        for candidate in candidates:
-            segments = candidate.get('aligned_segments', [])
-            if len(segments) < 2:
-                switch_rates.append(0.0)
-                continue
-            
-            switches = 0
-            for i in range(len(segments) - 1):
-                if segments[i]['speaker_id'] != segments[i+1]['speaker_id']:
-                    switches += 1
-            
-            duration_hours = (segments[-1]['end'] - segments[0]['start']) / 3600
-            switch_rate = switches / max(duration_hours, 0.1)
-            switch_rates.append(switch_rate)
-        
-        min_switch_rate = min(switch_rates)
-        candidates = [candidates[i] for i, rate in enumerate(switch_rates) 
-                     if abs(rate - min_switch_rate) < 0.1]
-        
-        if len(candidates) == 1:
-            return candidates[0]
-        
-        # Final tie-breaker: Return first candidate (deterministic)
-        return candidates[0]
+        # Use stable tie-breaker for deterministic results
+        return StableTieBreaker.break_ties_by_score_then_lexical(
+            tied_candidates, 
+            score_key='confidence_scores',
+            fallback_key='candidate_id'
+        )
     
     def apply_session_bias(self, session_bias_list) -> None:
         """Best single candidate doesn't modify selection based on session bias"""

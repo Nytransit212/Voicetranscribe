@@ -59,12 +59,23 @@ class OverlapFrame:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
+class StemQualityMetrics:
+    """Quality assessment metrics for a separated stem"""
+    stem_id: str
+    snr_db: float
+    leakage_rate: float
+    artifact_score: float
+    duration_sec: float
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
 class SeparatedStem:
     """Represents a separated audio stem for a single speaker"""
     speaker_id: str
     stem_path: str
     confidence: float
     processing_metadata: Dict[str, Any] = field(default_factory=dict)
+    quality_metrics: Optional[StemQualityMetrics] = None
 
 @dataclass
 class StemTranscription:
@@ -481,11 +492,14 @@ class SourceSeparationEngine:
             with torch.no_grad():
                 sources = apply_model(self.model, waveform.unsqueeze(0).to(self.device), device=self.device)[0]
             
-            # Create separated stems
+            # Create separated stems with QA metrics
             separated_stems = []
             
             # Get source names from model
             source_names = getattr(self.model, 'sources', ['vocals', 'drums', 'bass', 'other'])
+            
+            # Collect all stem tensors for leakage computation
+            stem_tensors = [sources[i] for i in range(min(len(source_names), self.max_stems, sources.shape[0]))]
             
             for i, source_name in enumerate(source_names[:self.max_stems]):
                 if i < sources.shape[0]:
@@ -498,8 +512,18 @@ class SourceSeparationEngine:
                         # Calculate stem confidence based on energy
                         stem_confidence = self._calculate_stem_confidence(sources[i])
                         
+                        # Compute comprehensive QA metrics for this stem
+                        stem_id = f"stem_{i}_{source_name}"
+                        qa_metrics = self._compute_stem_qa_metrics(
+                            stem_tensor=sources[i],
+                            stem_id=stem_id,
+                            sample_rate=int(model_sample_rate),
+                            all_stems=stem_tensors,
+                            overlap_frame=overlap_frame
+                        )
+                        
                         separated_stem = SeparatedStem(
-                            speaker_id=f"stem_{i}_{source_name}",
+                            speaker_id=stem_id,
                             stem_path=stem_path,
                             confidence=stem_confidence,
                             processing_metadata={
@@ -507,9 +531,14 @@ class SourceSeparationEngine:
                                 'source_index': i,
                                 'model_sample_rate': model_sample_rate,
                                 'original_sample_rate': sample_rate
-                            }
+                            },
+                            quality_metrics=qa_metrics
                         )
                         separated_stems.append(separated_stem)
+            
+            # Save QA metrics to stems manifest
+            if separated_stems:
+                self._save_stems_manifest(separated_stems, overlap_frame)
             
             return separated_stems
             
@@ -553,6 +582,448 @@ class SourceSeparationEngine:
             
         except Exception:
             return 0.5  # Default confidence
+    
+    def _compute_stem_qa_metrics(self, 
+                                stem_tensor: torch.Tensor,
+                                stem_id: str,
+                                sample_rate: int,
+                                all_stems: List[torch.Tensor],
+                                overlap_frame: OverlapFrame) -> StemQualityMetrics:
+        """
+        Compute comprehensive quality assessment metrics for a separated stem
+        
+        Args:
+            stem_tensor: Audio tensor for the stem
+            stem_id: Unique identifier for the stem
+            sample_rate: Audio sample rate
+            all_stems: List of all separated stems for leakage calculation
+            overlap_frame: Overlap frame metadata
+            
+        Returns:
+            StemQualityMetrics with computed quality scores
+        """
+        try:
+            duration_sec = stem_tensor.shape[-1] / sample_rate
+            
+            # Compute wideband SNR using VAD-based voiced frame detection
+            snr_db = self._compute_wideband_snr(stem_tensor, sample_rate)
+            
+            # Compute voice leakage rate via cross-correlation with other stems
+            leakage_rate = self._compute_voice_leakage_rate(stem_tensor, all_stems, sample_rate)
+            
+            # Compute residual artifact score using transient and musical noise detection
+            artifact_score = self._compute_artifact_score(stem_tensor, sample_rate)
+            
+            return StemQualityMetrics(
+                stem_id=stem_id,
+                snr_db=snr_db,
+                leakage_rate=leakage_rate,
+                artifact_score=artifact_score,
+                duration_sec=duration_sec,
+                metadata={
+                    'sample_rate': sample_rate,
+                    'num_samples': stem_tensor.shape[-1],
+                    'num_channels': stem_tensor.shape[0] if len(stem_tensor.shape) > 1 else 1,
+                    'overlap_frame_start': overlap_frame.start_time,
+                    'overlap_frame_end': overlap_frame.end_time
+                }
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to compute QA metrics for stem {stem_id}: {e}")
+            # Return default metrics on failure
+            return StemQualityMetrics(
+                stem_id=stem_id,
+                snr_db=0.0,
+                leakage_rate=1.0,  # High leakage indicates poor quality
+                artifact_score=1.0,  # High artifact score indicates poor quality
+                duration_sec=stem_tensor.shape[-1] / sample_rate if sample_rate > 0 else 0.0,
+                metadata={'error': str(e)}
+            )
+    
+    def _compute_wideband_snr(self, stem_tensor: torch.Tensor, sample_rate: int) -> float:
+        """
+        Compute wideband SNR using VAD-based voiced frame detection
+        
+        This method computes the signal-to-noise ratio by:
+        1. Detecting voiced frames using energy and spectral features
+        2. Computing speech energy on voiced frames only
+        3. Computing noise energy on unvoiced frames
+        4. Returning the SNR in dB
+        
+        Args:
+            stem_tensor: Audio tensor for the stem
+            sample_rate: Audio sample rate
+            
+        Returns:
+            SNR in dB (higher is better)
+        """
+        try:
+            # Convert to mono if stereo
+            if len(stem_tensor.shape) > 1 and stem_tensor.shape[0] > 1:
+                audio = torch.mean(stem_tensor, dim=0)
+            else:
+                audio = stem_tensor.squeeze()
+            
+            # Frame-based analysis (25ms frames with 10ms hop)
+            frame_length = int(0.025 * sample_rate)  # 25ms
+            hop_length = int(0.010 * sample_rate)    # 10ms
+            
+            # Simple VAD using energy and zero-crossing rate
+            voiced_frames = []
+            noise_frames = []
+            
+            for i in range(0, len(audio) - frame_length, hop_length):
+                frame = audio[i:i + frame_length]
+                
+                # Energy-based features
+                energy = torch.sum(frame ** 2)
+                rms_energy = torch.sqrt(energy / len(frame))
+                
+                # Zero-crossing rate
+                zero_crossings = torch.sum(torch.diff(torch.sign(frame)) != 0)
+                zcr = zero_crossings / len(frame)
+                
+                # Simple VAD decision (tuned thresholds)
+                energy_threshold = 0.01
+                zcr_threshold = 0.3
+                
+                if rms_energy > energy_threshold and zcr < zcr_threshold:
+                    voiced_frames.append(frame)
+                else:
+                    noise_frames.append(frame)
+            
+            # Compute energies
+            if voiced_frames and noise_frames:
+                voiced_energy = torch.mean(torch.stack([torch.sum(f ** 2) for f in voiced_frames]))
+                noise_energy = torch.mean(torch.stack([torch.sum(f ** 2) for f in noise_frames]))
+                
+                # Avoid division by zero
+                if noise_energy > 1e-10:
+                    snr_linear = voiced_energy / noise_energy
+                    snr_db = 10 * torch.log10(snr_linear).item()
+                else:
+                    snr_db = 50.0  # Very high SNR if no noise detected
+            else:
+                # Fallback: overall energy-based estimate
+                signal_power = torch.mean(audio ** 2)
+                # Estimate noise as bottom 10th percentile of frame energies
+                frame_energies = []
+                for i in range(0, len(audio) - frame_length, hop_length):
+                    frame = audio[i:i + frame_length]
+                    frame_energies.append(torch.mean(frame ** 2))
+                
+                if frame_energies:
+                    noise_power = torch.quantile(torch.stack(frame_energies), 0.1)
+                    if noise_power > 1e-10:
+                        snr_db = 10 * torch.log10(signal_power / noise_power).item()
+                    else:
+                        snr_db = 30.0  # Default high SNR
+                else:
+                    snr_db = 10.0  # Default moderate SNR
+            
+            return max(0.0, min(50.0, snr_db))  # Clamp to reasonable range
+            
+        except Exception as e:
+            self.logger.warning(f"SNR computation failed: {e}")
+            return 10.0  # Default moderate SNR
+    
+    def _compute_voice_leakage_rate(self, 
+                                   stem_tensor: torch.Tensor, 
+                                   all_stems: List[torch.Tensor], 
+                                   sample_rate: int) -> float:
+        """
+        Compute voice leakage rate via cross-correlation with other stems
+        
+        This method analyzes leakage by:
+        1. Computing cross-correlation with other stems
+        2. Focusing on single-speaker intervals (non-overlap segments)
+        3. Measuring normalized correlation as leakage indicator
+        
+        Args:
+            stem_tensor: Current stem audio tensor
+            all_stems: List of all separated stems
+            sample_rate: Audio sample rate
+            
+        Returns:
+            Leakage rate (0.0 = no leakage, 1.0 = high leakage)
+        """
+        try:
+            if len(all_stems) <= 1:
+                return 0.0  # No leakage possible with single stem
+            
+            # Convert to mono if needed
+            if len(stem_tensor.shape) > 1 and stem_tensor.shape[0] > 1:
+                current_stem = torch.mean(stem_tensor, dim=0)
+            else:
+                current_stem = stem_tensor.squeeze()
+            
+            # Normalize current stem
+            current_stem = current_stem / (torch.std(current_stem) + 1e-8)
+            
+            leakage_scores = []
+            
+            for i, other_stem_tensor in enumerate(all_stems):
+                # Skip self-comparison
+                if torch.equal(stem_tensor, other_stem_tensor):
+                    continue
+                
+                # Convert to mono and normalize
+                if len(other_stem_tensor.shape) > 1 and other_stem_tensor.shape[0] > 1:
+                    other_stem = torch.mean(other_stem_tensor, dim=0)
+                else:
+                    other_stem = other_stem_tensor.squeeze()
+                
+                other_stem = other_stem / (torch.std(other_stem) + 1e-8)
+                
+                # Ensure same length
+                min_length = min(len(current_stem), len(other_stem))
+                current_segment = current_stem[:min_length]
+                other_segment = other_stem[:min_length]
+                
+                # Compute normalized cross-correlation at zero lag
+                correlation = torch.sum(current_segment * other_segment) / min_length
+                leakage_scores.append(abs(correlation.item()))
+            
+            # Return maximum leakage across all other stems
+            if leakage_scores:
+                max_leakage = max(leakage_scores)
+                return min(1.0, max_leakage)  # Clamp to [0, 1]
+            else:
+                return 0.0
+                
+        except Exception as e:
+            self.logger.warning(f"Leakage computation failed: {e}")
+            return 0.5  # Default moderate leakage
+    
+    def _compute_artifact_score(self, stem_tensor: torch.Tensor, sample_rate: int) -> float:
+        """
+        Compute residual artifact score using transient click and musical noise detection
+        
+        This method detects artifacts by:
+        1. Identifying sudden transient spikes (clicks)
+        2. Detecting tonal artifacts (musical noise)
+        3. Computing artifact density and severity
+        
+        Args:
+            stem_tensor: Audio tensor for the stem
+            sample_rate: Audio sample rate
+            
+        Returns:
+            Artifact score (0.0 = clean, 1.0 = heavily artifacted)
+        """
+        try:
+            # Convert to mono if needed
+            if len(stem_tensor.shape) > 1 and stem_tensor.shape[0] > 1:
+                audio = torch.mean(stem_tensor, dim=0)
+            else:
+                audio = stem_tensor.squeeze()
+            
+            artifact_indicators = []
+            
+            # 1. Transient click detection
+            # Compute first-order difference (derivative)
+            diff_signal = torch.diff(audio)
+            
+            # Find sudden spikes in derivative (clicks)
+            click_threshold = 3.0 * torch.std(diff_signal)
+            click_locations = torch.abs(diff_signal) > click_threshold
+            click_rate = torch.sum(click_locations.float()) / len(diff_signal)
+            artifact_indicators.append(min(1.0, click_rate * 1000))  # Scale to [0,1]
+            
+            # 2. Musical noise detection via spectral analysis
+            # Frame-based analysis
+            frame_length = int(0.025 * sample_rate)  # 25ms
+            hop_length = int(0.0125 * sample_rate)   # 12.5ms
+            
+            spectral_artifacts = []
+            
+            for i in range(0, len(audio) - frame_length, hop_length):
+                frame = audio[i:i + frame_length]
+                
+                # Apply window to reduce spectral leakage
+                window = torch.hann_window(len(frame))
+                windowed_frame = frame * window
+                
+                # Compute magnitude spectrum
+                fft = torch.fft.fft(windowed_frame)
+                magnitude = torch.abs(fft[:len(fft)//2])
+                
+                # Detect tonal peaks (musical noise indicators)
+                if len(magnitude) > 10:
+                    # Smooth spectrum for baseline
+                    kernel_size = max(3, len(magnitude) // 20)
+                    if kernel_size % 2 == 0:
+                        kernel_size += 1
+                    
+                    # Simple moving average for smoothing
+                    smoothed = torch.nn.functional.conv1d(
+                        magnitude.unsqueeze(0).unsqueeze(0),
+                        torch.ones(1, 1, kernel_size) / kernel_size,
+                        padding=kernel_size//2
+                    ).squeeze()
+                    
+                    # Find peaks above smoothed baseline
+                    peak_ratio = magnitude / (smoothed + 1e-8)
+                    tonal_peaks = torch.sum(peak_ratio > 3.0).float()  # Peaks 3x above baseline
+                    spectral_artifacts.append(tonal_peaks / len(magnitude))
+            
+            if spectral_artifacts:
+                musical_noise_score = torch.mean(torch.stack(spectral_artifacts)).item()
+                artifact_indicators.append(min(1.0, musical_noise_score * 10))
+            
+            # 3. Overall signal dynamics analysis
+            # Detect unnatural amplitude variations
+            rms_frames = []
+            for i in range(0, len(audio) - frame_length, hop_length):
+                frame = audio[i:i + frame_length]
+                rms = torch.sqrt(torch.mean(frame ** 2))
+                rms_frames.append(rms)
+            
+            if rms_frames:
+                rms_signal = torch.stack(rms_frames)
+                # High variance in RMS can indicate artifacts
+                rms_variance = torch.var(rms_signal) / (torch.mean(rms_signal) + 1e-8)
+                dynamics_score = min(1.0, rms_variance.item())
+                artifact_indicators.append(dynamics_score)
+            
+            # Combine artifact indicators
+            if artifact_indicators:
+                # Use maximum as worst-case indicator
+                final_score = max(artifact_indicators)
+                return min(1.0, max(0.0, final_score))
+            else:
+                return 0.1  # Default low artifact score
+                
+        except Exception as e:
+            self.logger.warning(f"Artifact score computation failed: {e}")
+            return 0.5  # Default moderate artifact score
+    
+    def _save_stems_manifest(self, separated_stems: List[SeparatedStem], overlap_frame: OverlapFrame) -> None:
+        """
+        Save stem QA metrics to stems_manifest.json for analysis and debugging
+        
+        Args:
+            separated_stems: List of separated stems with QA metrics
+            overlap_frame: Overlap frame metadata
+        """
+        try:
+            manifest_data = {
+                'overlap_frame': {
+                    'start_time': overlap_frame.start_time,
+                    'end_time': overlap_frame.end_time,
+                    'duration': overlap_frame.duration,
+                    'overlap_probability': overlap_frame.overlap_probability,
+                    'speakers_involved': overlap_frame.speakers_involved
+                },
+                'separation_timestamp': time.time(),
+                'model_info': {
+                    'model_name': self.model_name,
+                    'device': self.device,
+                    'num_stems_generated': len(separated_stems)
+                },
+                'stems': []
+            }
+            
+            for stem in separated_stems:
+                if stem.quality_metrics:
+                    stem_data = {
+                        'stem_id': stem.quality_metrics.stem_id,
+                        'snr_db': stem.quality_metrics.snr_db,
+                        'leakage_rate': stem.quality_metrics.leakage_rate,
+                        'artifact_score': stem.quality_metrics.artifact_score,
+                        'duration_sec': stem.quality_metrics.duration_sec,
+                        'stem_path': stem.stem_path,
+                        'confidence': stem.confidence,
+                        'metadata': stem.quality_metrics.metadata
+                    }
+                    manifest_data['stems'].append(stem_data)
+            
+            # Save to artifacts directory
+            artifacts_dir = Path("artifacts/manifests")
+            artifacts_dir.mkdir(parents=True, exist_ok=True)
+            
+            manifest_filename = f"stems_manifest_{overlap_frame.start_time:.3f}_{overlap_frame.end_time:.3f}.json"
+            manifest_path = artifacts_dir / manifest_filename
+            
+            with open(manifest_path, 'w') as f:
+                json.dump(manifest_data, f, indent=2)
+            
+            self.logger.info(f"Saved stems manifest to {manifest_path}",
+                           context={
+                               'num_stems': len(separated_stems),
+                               'manifest_path': str(manifest_path),
+                               'overlap_frame_duration': overlap_frame.duration
+                           })
+                           
+        except Exception as e:
+            self.logger.error(f"Failed to save stems manifest: {e}")
+    
+    def evaluate_stem_quality_gates(self, separated_stems: List[SeparatedStem], config: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Evaluate stem quality against configured gates to determine if separation should be used
+        
+        Args:
+            separated_stems: List of separated stems with QA metrics
+            config: Configuration with gate thresholds
+            
+        Returns:
+            Tuple of (gates_passed: bool, fallback_reason: str)
+        """
+        try:
+            if not separated_stems:
+                return False, "no_stems_generated"
+            
+            # Extract QA metrics from stems
+            snr_values = []
+            leakage_values = []
+            artifact_values = []
+            
+            for stem in separated_stems:
+                if stem.quality_metrics:
+                    snr_values.append(stem.quality_metrics.snr_db)
+                    leakage_values.append(stem.quality_metrics.leakage_rate)
+                    artifact_values.append(stem.quality_metrics.artifact_score)
+            
+            if not snr_values:
+                return False, "no_qa_metrics_available"
+            
+            # Get gate thresholds from config
+            min_stem_snr_db = config.get('separation', {}).get('min_stem_snr_db', 12.0)
+            max_stem_leakage = config.get('separation', {}).get('max_stem_leakage', 0.12)
+            min_overlap_percent = config.get('separation', {}).get('min_overlap_percent', 8.0)
+            
+            # Compute aggregate metrics
+            avg_snr_db = sum(snr_values) / len(snr_values)
+            median_leakage_rate = sorted(leakage_values)[len(leakage_values) // 2]
+            avg_artifact_score = sum(artifact_values) / len(artifact_values)
+            
+            # Gate 1: Average SNR check
+            if avg_snr_db < min_stem_snr_db:
+                return False, f"avg_snr_too_low_{avg_snr_db:.1f}_below_{min_stem_snr_db}"
+            
+            # Gate 2: Median leakage rate check
+            if median_leakage_rate > max_stem_leakage:
+                return False, f"median_leakage_too_high_{median_leakage_rate:.3f}_above_{max_stem_leakage}"
+            
+            # Gate 3: Artifact score check (additional quality gate)
+            if avg_artifact_score > 0.5:  # High artifact threshold
+                return False, f"avg_artifacts_too_high_{avg_artifact_score:.3f}_above_0.5"
+            
+            # All gates passed
+            self.logger.info("Stem quality gates passed",
+                           context={
+                               'avg_snr_db': avg_snr_db,
+                               'median_leakage_rate': median_leakage_rate,
+                               'avg_artifact_score': avg_artifact_score,
+                               'num_stems': len(separated_stems)
+                           })
+            
+            return True, "quality_gates_passed"
+            
+        except Exception as e:
+            self.logger.error(f"Failed to evaluate stem quality gates: {e}")
+            return False, f"gate_evaluation_error_{str(e)}"
     
     def _transcribe_stems(self, 
                          stems: List[SeparatedStem], 

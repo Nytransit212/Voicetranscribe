@@ -14,8 +14,11 @@ Author: Advanced Ensemble Transcription System
 """
 
 import numpy as np
-from typing import List, Dict, Any, Optional, Tuple
+import librosa
+import soundfile as sf
+from typing import List, Dict, Any, Optional, Tuple, Union
 from dataclasses import dataclass, field
+from pathlib import Path
 from utils.enhanced_structured_logger import create_enhanced_logger
 
 @dataclass
@@ -41,6 +44,12 @@ class OverlapDetectionConfig:
     # Reporting and metrics
     track_detailed_statistics: bool = True
     generate_overlap_report: bool = True
+    
+    # VAD energy curve parameters
+    vad_frame_length_ms: float = 25.0  # Frame length for VAD analysis (milliseconds)
+    vad_hop_length_ms: float = 10.0    # Hop length for VAD frames (milliseconds)
+    energy_smoothing_window: int = 3    # Smoothing window for energy calculation
+    voice_activity_threshold: float = 0.01  # Threshold for voice activity detection
 
 @dataclass 
 class OverlapFrame:
@@ -55,12 +64,22 @@ class OverlapFrame:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
+class VADEnergyFrame:
+    """VAD energy frame for realignment"""
+    timestamp: float
+    energy_level: float
+    is_voiced: bool
+    is_boundary_candidate: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
 class OverlapDetectionResult:
     """Complete result from overlap detection analysis"""
     overlap_frames: List[OverlapFrame] = field(default_factory=list)
     overlap_statistics: Dict[str, Any] = field(default_factory=dict)
     requires_source_separation: bool = False
     detection_metadata: Dict[str, Any] = field(default_factory=dict)
+    vad_energy_curve: List[VADEnergyFrame] = field(default_factory=list)
 
 class UnifiedOverlapDetector:
     """
@@ -207,6 +226,11 @@ class UnifiedOverlapDetector:
             }
         )
         
+        # Generate VAD energy curve if audio data is provided
+        if 'audio_file_path' in segments[0].get('metadata', {}):
+            audio_path = segments[0]['metadata']['audio_file_path']
+            detection_result.vad_energy_curve = self.generate_vad_energy_curve(audio_path, audio_duration)
+        
         # Store result for history
         self.last_detection_result = detection_result
         if self.config.track_detailed_statistics:
@@ -348,6 +372,95 @@ class UnifiedOverlapDetector:
             'requires_source_separation': result.requires_source_separation,
             'avg_overlap_probability': result.overlap_statistics.get('avg_overlap_probability', 0.0)
         }
+    
+    def generate_vad_energy_curve(self, audio_file_path: Union[str, Path], duration: float) -> List[VADEnergyFrame]:
+        """
+        Generate VAD energy curve for boundary realignment
+        
+        Args:
+            audio_file_path: Path to audio file
+            duration: Total audio duration
+            
+        Returns:
+            List of VAD energy frames
+        """
+        try:
+            # Load audio file
+            audio_data, sample_rate = librosa.load(str(audio_file_path), sr=None)
+            
+            # Calculate frame parameters
+            frame_length_samples = int(self.config.vad_frame_length_ms * sample_rate / 1000)
+            hop_length_samples = int(self.config.vad_hop_length_ms * sample_rate / 1000)
+            
+            # Calculate short-time energy
+            energy = librosa.feature.rms(
+                y=audio_data,
+                frame_length=frame_length_samples,
+                hop_length=hop_length_samples,
+                center=True
+            )[0]
+            
+            # Apply smoothing to energy curve
+            if self.config.energy_smoothing_window > 1:
+                kernel = np.ones(self.config.energy_smoothing_window) / self.config.energy_smoothing_window
+                energy = np.convolve(energy, kernel, mode='same')
+            
+            # Generate time stamps
+            times = librosa.frames_to_time(
+                frames=np.arange(len(energy)),
+                sr=sample_rate,
+                hop_length=hop_length_samples
+            )
+            
+            # Generate VAD frames
+            vad_frames = []
+            for i, (timestamp, energy_level) in enumerate(zip(times, energy)):
+                # Voice activity detection
+                is_voiced = energy_level > self.config.voice_activity_threshold
+                
+                # Detect potential boundary candidates (energy transitions)
+                is_boundary_candidate = False
+                if i > 0 and i < len(energy) - 1:
+                    # Check for significant energy change
+                    prev_energy = energy[i-1]
+                    next_energy = energy[i+1]
+                    energy_gradient = abs(next_energy - prev_energy)
+                    
+                    # Mark as boundary candidate if significant energy change
+                    if energy_gradient > (np.std(energy) * 0.5):
+                        is_boundary_candidate = True
+                
+                vad_frame = VADEnergyFrame(
+                    timestamp=float(timestamp),
+                    energy_level=float(energy_level),
+                    is_voiced=is_voiced,
+                    is_boundary_candidate=is_boundary_candidate,
+                    metadata={
+                        'frame_index': i,
+                        'sample_rate': sample_rate,
+                        'frame_length_ms': self.config.vad_frame_length_ms,
+                        'hop_length_ms': self.config.vad_hop_length_ms
+                    }
+                )
+                vad_frames.append(vad_frame)
+            
+            self.logger.info(
+                f"Generated VAD energy curve with {len(vad_frames)} frames",
+                context={
+                    'audio_duration': duration,
+                    'frame_length_ms': self.config.vad_frame_length_ms,
+                    'hop_length_ms': self.config.vad_hop_length_ms,
+                    'voiced_frames': sum(1 for f in vad_frames if f.is_voiced),
+                    'boundary_candidates': sum(1 for f in vad_frames if f.is_boundary_candidate)
+                }
+            )
+            
+            return vad_frames
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate VAD energy curve: {str(e)}")
+            # Return empty energy curve as fallback
+            return []
     
     def clear_history(self):
         """Clear detection history for memory management"""

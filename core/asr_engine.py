@@ -7,6 +7,7 @@ from openai import OpenAI
 import librosa
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from utils.deterministic_parallel import DeterministicThreadPoolExecutor, ensure_deterministic_futures_processing
 import queue
 import time
 import logging
@@ -18,6 +19,7 @@ from utils.reliability_config import get_concurrency_config, get_timeout_config
 from utils.resilient_api import openai_retry
 from core.circuit_breaker import CircuitBreakerOpenException
 from core.decode_strategy_enhancer import DecodeStrategyEnhancer, DecodeResult
+from core.run_context import get_global_run_context, apply_stage_seeding
 
 class ASREngine:
     """Handles Automatic Speech Recognition with ensemble variants"""
@@ -74,6 +76,10 @@ class ASREngine:
                                           context={'diarization_variants': len(diarization_variants), 'target_language': target_language})
         
         print(f"🎤 Starting ASR ensemble processing for {len(diarization_variants)} diarization variants...")
+        
+        # Apply deterministic seeding for ASR stage
+        apply_stage_seeding('asr')
+        
         candidates = []
         
         # For each diarization variant, run 5 ASR passes

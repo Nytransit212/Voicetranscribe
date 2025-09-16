@@ -8,6 +8,9 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
+import hydra
+from omegaconf import DictConfig
+
 from core.audio_processor import AudioProcessor
 from core.diarization_engine import DiarizationEngine
 from core.asr_engine import ASREngine
@@ -43,6 +46,23 @@ from core.speaker_relabeler import SpeakerRelabeler, RelabelingResult
 from utils.embedding_cache import get_embedding_cache
 from utils.capability_manager import get_capability_manager, check_system_capabilities, is_feature_available, require_feature
 from utils.audio_format_validator import get_audio_validator, ensure_audio_format
+from utils.manifest import create_manifest_manager, ManifestManager
+from core.run_context import RunContext, create_run_context, set_global_run_context, get_global_run_context
+from utils.model_version_resolver import get_model_resolver
+from utils.atomic_io import (
+    get_atomic_io_manager, 
+    atomic_write, 
+    TempDirectoryScope,
+    create_run_temp_directory,
+    get_run_temp_subdir
+)
+from core.post_fusion_realigner import (
+    PostFusionRealigner,
+    create_post_fusion_realigner,
+    convert_transcript_to_realigner_format,
+    convert_realigner_result_to_transcript_format,
+    RealignerConfig
+)
 
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
@@ -70,6 +90,10 @@ class EnsembleManager:
         self.text_normalizer = None  # Will be initialized when needed
         self.guardrail_verifier = None  # Will be initialized when needed
         self.normalization_config_path = "config/normalization_profiles.yaml"
+        
+        # Post-fusion realigner configuration
+        self.enable_post_fusion_realigner = True
+        self.post_fusion_realigner = None  # Will be initialized when needed
         self.speaker_mapping_config = speaker_mapping_config or {
             # Core parameters
             'similarity_threshold': 0.7,
@@ -149,6 +173,10 @@ class EnsembleManager:
         # (run_id will be set later based on input for deterministic processing)
         self.run_id = None  # Will be set in process_video method
         
+        # Manifest integrity system (will be initialized in process_video)
+        self.manifest_manager: Optional[ManifestManager] = None
+        self.enable_manifest_tracking = True  # Enable/disable manifest integrity system
+        
         # Initialize U7 systems
         self.cache_manager = get_cache_manager()
         self.deterministic_processor = get_deterministic_processor()
@@ -189,6 +217,10 @@ class EnsembleManager:
             enable_profiling=True,
             log_level="INFO"
         )
+        
+        # Determinism and reproducibility system
+        self.run_context: Optional[RunContext] = None
+        self.enable_determinism = True
         
         # Initialize enhanced structured logging with run context
         self.structured_logger = create_enhanced_logger("ensemble_manager", run_id=self.run_id)
@@ -709,6 +741,92 @@ class EnsembleManager:
             self.structured_logger.warning(f"Dialect processing error: {e}")
             return None
     
+    def _evaluate_separation_quality_gates(self, separation_results: List[SourceSeparationResult]) -> Tuple[bool, str]:
+        """
+        Evaluate separation quality gates to determine if separated stems should be used
+        
+        Args:
+            separation_results: List of source separation results with QA metrics
+            
+        Returns:
+            Tuple of (gates_passed: bool, fallback_reason: str)
+        """
+        try:
+            if not separation_results:
+                return False, "no_separation_results"
+            
+            # Collect QA metrics from all separation results
+            all_snr_values = []
+            all_leakage_values = []
+            all_artifact_values = []
+            total_overlap_duration = 0
+            
+            for sep_result in separation_results:
+                total_overlap_duration += sep_result.overlap_frame.duration
+                
+                for stem in sep_result.separated_stems:
+                    if stem.quality_metrics:
+                        all_snr_values.append(stem.quality_metrics.snr_db)
+                        all_leakage_values.append(stem.quality_metrics.leakage_rate)
+                        all_artifact_values.append(stem.quality_metrics.artifact_score)
+            
+            if not all_snr_values:
+                return False, "no_qa_metrics_available"
+            
+            # Get configuration from Hydra config
+            config = hydra.core.global_hydra.GlobalHydra.instance().hydra.cfg
+            if not config:
+                # Fallback to default thresholds
+                min_stem_snr_db = 12.0
+                max_stem_leakage = 0.12
+                min_overlap_percent = 8.0
+            else:
+                min_stem_snr_db = config.get('separation', {}).get('min_stem_snr_db', 12.0)
+                max_stem_leakage = config.get('separation', {}).get('max_stem_leakage', 0.12)
+                min_overlap_percent = config.get('separation', {}).get('min_overlap_percent', 8.0)
+            
+            # Compute aggregate metrics
+            avg_snr_db = sum(all_snr_values) / len(all_snr_values)
+            median_leakage_rate = sorted(all_leakage_values)[len(all_leakage_values) // 2]
+            avg_artifact_score = sum(all_artifact_values) / len(all_artifact_values)
+            
+            # Compute overlap ratio (estimated from total duration)
+            # This is an approximation - in practice you'd get this from audio analysis
+            overlap_ratio_percent = (total_overlap_duration / 60.0) * 100  # Rough estimate
+            
+            # Gate 1: Average SNR check
+            if avg_snr_db < min_stem_snr_db:
+                return False, f"avg_snr_too_low_{avg_snr_db:.1f}_below_{min_stem_snr_db}"
+            
+            # Gate 2: Median leakage rate check
+            if median_leakage_rate > max_stem_leakage:
+                return False, f"median_leakage_too_high_{median_leakage_rate:.3f}_above_{max_stem_leakage}"
+            
+            # Gate 3: Overlap ratio check
+            if overlap_ratio_percent < min_overlap_percent:
+                return False, f"overlap_ratio_too_low_{overlap_ratio_percent:.1f}_below_{min_overlap_percent}"
+            
+            # Gate 4: Artifact score check
+            if avg_artifact_score > 0.5:
+                return False, f"avg_artifacts_too_high_{avg_artifact_score:.3f}_above_0.5"
+            
+            # All gates passed
+            self.structured_logger.info("Separation quality gates passed",
+                                       context={
+                                           'avg_snr_db': avg_snr_db,
+                                           'median_leakage_rate': median_leakage_rate,
+                                           'avg_artifact_score': avg_artifact_score,
+                                           'overlap_ratio_percent': overlap_ratio_percent,
+                                           'num_separation_results': len(separation_results),
+                                           'total_stems': len(all_snr_values)
+                                       })
+            
+            return True, "quality_gates_passed"
+            
+        except Exception as e:
+            self.structured_logger.error(f"Failed to evaluate separation quality gates: {e}")
+            return False, f"gate_evaluation_error_{str(e)}"
+
     def _apply_source_separation_patches(self, 
                                        original_segments: List[Dict[str, Any]], 
                                        separation_results: List[SourceSeparationResult]) -> List[Dict[str, Any]]:
@@ -983,6 +1101,48 @@ class EnsembleManager:
             self.structured_logger.info("U7: Generated deterministic run_id", 
                                       context={'run_id': self.run_id, 'config_hash': str(hash(str(processing_config)))})
             
+            # Initialize manifest integrity system
+            if self.enable_manifest_tracking:
+                try:
+                    session_id = f"session_{int(time.time())}"
+                    self.manifest_manager = create_manifest_manager(
+                        session_dir=self.work_dir,
+                        session_id=session_id,
+                        project_id=self.project_id,
+                        run_id=self.run_id
+                    )
+                    
+                    # Capture model versions for reproducibility
+                    model_versions = {
+                        'asr': {
+                            'openai_whisper': 'whisper-1',
+                            'faster_whisper': getattr(self.asr_engine, 'model_version', 'unknown')
+                        },
+                        'diarization': {
+                            'pyannote': getattr(self.diarization_engine, 'model_version', 'pyannote/speaker-diarization-3.1')
+                        },
+                        'punctuation': {
+                            'preset': self.punctuation_preset if self.enable_post_fusion_punctuation else 'disabled'
+                        },
+                        'source_separation': {
+                            'demucs': getattr(self.source_separation_engine, 'model_name', 'htdemucs_6s') if self.enable_source_separation else 'disabled'
+                        }
+                    }
+                    
+                    # Set input media and configuration
+                    self.manifest_manager.set_input_media(video_path, processing_config, model_versions)
+                    
+                    self.structured_logger.info("Manifest integrity system initialized", 
+                                              context={
+                                                  'manifest_path': str(self.manifest_manager.manifest_path),
+                                                  'session_id': session_id,
+                                                  'run_id': self.run_id
+                                              })
+                except Exception as e:
+                    self.structured_logger.warning(f"Failed to initialize manifest system: {e}")
+                    self.manifest_manager = None
+                    self.enable_manifest_tracking = False
+            
             # Check if complete result is cached
             if self.enable_caching:
                 cached_result = self.cache_manager.get("complete_ensemble_processing", video_path, processing_config)
@@ -1035,6 +1195,24 @@ class EnsembleManager:
                 if self.enable_versioning and self.dvc_manager:
                     audio_artifacts = self.dvc_manager.track_audio_artifacts(raw_audio_path, clean_audio_path, self.run_id)
                     self.intermediate_artifacts.update(audio_artifacts)
+                
+                # Track audio artifacts in manifest
+                if self.manifest_manager:
+                    try:
+                        # Track clean audio as ASR-ready WAV
+                        self.manifest_manager.add_artifact(
+                            artifact_type="asr_wav",
+                            file_path=clean_audio_path,
+                            producing_component="AudioProcessor.extract_audio_from_video",
+                            input_artifacts=[],  # Depends on input media
+                            metadata={
+                                "source": "video_extraction",
+                                "processing_stage": "audio_extraction",
+                                "audio_duration_seconds": self.audio_processor.get_audio_duration(clean_audio_path)
+                            }
+                        )
+                    except Exception as e:
+                        self.structured_logger.warning(f"Failed to track audio artifact in manifest: {e}")
                 
                 audio_extraction_time = time.time() - stage_start_time
                 self.structured_logger.stage_complete("audio_extraction", "Audio extraction completed", 
@@ -1119,6 +1297,41 @@ class EnsembleManager:
                 diarization_artifacts = self.dvc_manager.track_diarization_artifacts(diarization_variants, self.run_id)
                 self.intermediate_artifacts.update(diarization_artifacts)
             
+            # Track diarization results in manifest
+            if self.manifest_manager:
+                try:
+                    # Save diarization results to JSON file and track in manifest
+                    diarization_results_path = os.path.join(self.work_dir, "diarization_results.json")
+                    with open(diarization_results_path, 'w') as f:
+                        json.dump({
+                            'variants': diarization_variants,
+                            'metadata': {
+                                'audio_duration': audio_duration,
+                                'estimated_noise': estimated_noise,
+                                'chunked_processing_enabled': enable_chunked_processing,
+                                'variants_count': len(diarization_variants)
+                            }
+                        }, f, indent=2)
+                    
+                    # Get clean audio artifact SHA256 as input dependency
+                    clean_audio_artifacts = self.manifest_manager.get_artifacts_by_type("asr_wav")
+                    input_artifacts = [a.sha256 for a in clean_audio_artifacts] if clean_audio_artifacts else []
+                    
+                    self.manifest_manager.add_artifact(
+                        artifact_type="diarization_json",
+                        file_path=diarization_results_path,
+                        producing_component="DiarizationEngine.create_diarization_variants",
+                        input_artifacts=input_artifacts,
+                        metadata={
+                            "processing_stage": "diarization",
+                            "variants_count": len(diarization_variants),
+                            "chunked_processing": enable_chunked_processing,
+                            "voting_fusion_enabled": True
+                        }
+                    )
+                except Exception as e:
+                    self.structured_logger.warning(f"Failed to track diarization results in manifest: {e}")
+            
             diarization_time = time.time() - stage_start_time
             self.structured_logger.stage_complete("diarization", "Diarization variants created", 
                                                 duration=diarization_time,
@@ -1159,6 +1372,20 @@ class EnsembleManager:
                                 variant_segments,
                                 asr_providers=self.source_separation_providers
                             )
+                            
+                            # Step 1.5: Quality Gating - Evaluate stem quality and decide routing
+                            if separation_results:
+                                gates_passed, fallback_reason = self._evaluate_separation_quality_gates(separation_results)
+                                
+                                if not gates_passed:
+                                    self.structured_logger.warning(f"Separation quality gates failed: {fallback_reason}",
+                                                                 context={
+                                                                     'variant_idx': variant_idx,
+                                                                     'num_separation_results': len(separation_results),
+                                                                     'fallback_reason': fallback_reason
+                                                                 })
+                                    # Route to single-channel fallback path - clear separation results
+                                    separation_results = []
                             
                             total_overlap_frames += len(separation_results)
                             
@@ -1530,10 +1757,26 @@ class EnsembleManager:
                     
                     session_term_candidates = mining_results.candidates
                     
-                    # Export session candidates for debugging/analysis
+                    # Export session candidates for debugging/analysis using atomic I/O
                     if session_term_candidates:
-                        session_candidates_path = f"/tmp/{session_id}_term_candidates.json"
-                        self.term_mining_engine.export_session_candidates(mining_results, session_candidates_path)
+                        try:
+                            # Use atomic I/O for session candidates export
+                            atomic_io = get_atomic_io_manager()
+                            temp_subdir = get_run_temp_subdir(self.run_id, TempDirectoryScope.ARTIFACTS)
+                            session_candidates_path = temp_subdir / f"{session_id}_term_candidates.json"
+                            
+                            # Export candidates atomically
+                            with atomic_write(session_candidates_path) as f:
+                                import json
+                                json.dump(mining_results, f, indent=2, ensure_ascii=False)
+                            
+                            self.structured_logger.debug(f"Exported session candidates atomically: {session_candidates_path}")
+                            
+                        except Exception as e:
+                            # Fallback to legacy method if atomic I/O fails
+                            self.structured_logger.warning(f"Atomic export failed, using fallback: {e}")
+                            session_candidates_path = f"/tmp/{session_id}_term_candidates.json"
+                            self.term_mining_engine.export_session_candidates(mining_results, session_candidates_path)
                     
                     mining_time = time.time() - stage_start_time
                     self.structured_logger.stage_complete("term_mining", "Term mining completed",
@@ -1765,7 +2008,95 @@ class EnsembleManager:
             
             # Step 7: Output Generation (90-100%)
             if progress_callback:
-                progress_callback("G", 92, "Generating final outputs...")
+                progress_callback("G", 90, "Generating final outputs...")
+            
+            # Step 7.4: Post-Fusion Boundary Realignment (90-92%)
+            if self.enable_post_fusion_realigner:
+                if progress_callback:
+                    progress_callback("G0", 90, "Applying post-fusion boundary realignment...")
+                
+                stage_start_time = time.time()
+                self.structured_logger.stage_start("post_fusion_realignment", "Applying boundary realignment to reduce micro boundary drift")
+                
+                try:
+                    # Initialize realigner if not already done
+                    if self.post_fusion_realigner is None:
+                        self.post_fusion_realigner = create_post_fusion_realigner()
+                    
+                    # Convert winner transcript to realigner format
+                    winner_words = convert_transcript_to_realigner_format(winner)
+                    
+                    # Get VAD energy curve from overlap detector if available
+                    energy_frames = []
+                    if hasattr(self, 'unified_overlap_detector') and self.unified_overlap_detector.last_detection_result:
+                        energy_frames = [
+                            {
+                                'timestamp': frame.timestamp,
+                                'energy_level': frame.energy_level,
+                                'is_voiced': frame.is_voiced,
+                                'is_boundary_candidate': frame.is_boundary_candidate,
+                                'metadata': frame.metadata
+                            }
+                            for frame in self.unified_overlap_detector.last_detection_result.vad_energy_curve
+                        ]
+                    
+                    # Apply boundary realignment
+                    realignment_result = self.post_fusion_realigner.realign_boundaries(
+                        words=winner_words,
+                        energy_frames=energy_frames,
+                        audio_duration=audio_duration
+                    )
+                    
+                    # Update winner with realigned boundaries if successful
+                    if realignment_result.realignment_applied:
+                        winner = convert_realigner_result_to_transcript_format(realignment_result, winner)
+                        
+                        self.structured_logger.info(
+                            f"Post-fusion realignment applied successfully",
+                            context={
+                                'boundary_shifts_applied': len(realignment_result.boundary_shifts),
+                                'mean_shift_ms': realignment_result.mean_shift_ms,
+                                'max_shift_ms': realignment_result.max_shift_ms,
+                                'energy_alignment_score': realignment_result.energy_alignment_score,
+                                'processing_time': realignment_result.processing_time
+                            }
+                        )
+                    else:
+                        self.structured_logger.info(
+                            f"Post-fusion realignment skipped",
+                            context={
+                                'fallback_reason': realignment_result.fallback_reason,
+                                'processing_time': realignment_result.processing_time
+                            }
+                        )
+                    
+                    # Add realignment metrics to processing metadata
+                    processing_metadata['post_fusion_realignment'] = {
+                        'realignment_applied': realignment_result.realignment_applied,
+                        'boundary_shifts_count': len(realignment_result.boundary_shifts),
+                        'mean_shift_ms': realignment_result.mean_shift_ms,
+                        'max_shift_ms': realignment_result.max_shift_ms,
+                        'energy_alignment_score': realignment_result.energy_alignment_score,
+                        'processing_time': realignment_result.processing_time,
+                        'fallback_reason': realignment_result.fallback_reason
+                    }
+                    
+                    realignment_time = time.time() - stage_start_time
+                    self.structured_logger.stage_complete("post_fusion_realignment", "Post-fusion realignment completed",
+                                                        duration=realignment_time,
+                                                        metrics={
+                                                            'realignment_applied': realignment_result.realignment_applied,
+                                                            'boundary_shifts': len(realignment_result.boundary_shifts),
+                                                            'mean_shift_ms': realignment_result.mean_shift_ms,
+                                                            'energy_alignment_score': realignment_result.energy_alignment_score
+                                                        })
+                    
+                except Exception as e:
+                    realignment_time = time.time() - stage_start_time
+                    self.structured_logger.error(f"Post-fusion realignment failed: {e}")
+                    self.structured_logger.stage_complete("post_fusion_realignment", "Post-fusion realignment failed",
+                                                        duration=realignment_time, error=str(e))
+                    # Continue with original winner on error
             
             # Step 7.5: Text Normalization Processing (92-95%)
             if self.enable_text_normalization and self.text_normalizer:
@@ -2112,7 +2443,30 @@ class EnsembleManager:
                 self.structured_logger.info("U7: Complete processing result cached for future reuse")
             
             # CRITICAL FIX: Persist outputs to files for download
-            self._persist_output_files(results)
+            output_paths = self._persist_output_files(results)
+            
+            # Track final outputs in manifest
+            if self.manifest_manager:
+                self._track_final_outputs_in_manifest(output_paths, results)
+                
+                # Mark processing as completed
+                self.manifest_manager.mark_completed()
+                
+                # Validate manifest integrity
+                validation_passed, validation_errors = self.manifest_manager.validate(recompute_hashes=True)
+                if validation_passed:
+                    self.structured_logger.info("✅ Manifest validation PASSED - All artifacts verified", 
+                                              context={
+                                                  'total_artifacts': self.manifest_manager._manifest.total_artifacts,
+                                                  'total_bytes': self.manifest_manager._manifest.total_bytes,
+                                                  'manifest_sha256': self.manifest_manager._manifest.manifest_sha256
+                                              })
+                else:
+                    self.structured_logger.error("❌ Manifest validation FAILED", 
+                                                context={
+                                                    'validation_errors': validation_errors,
+                                                    'error_count': len(validation_errors)
+                                                })
             
             return results
             
@@ -2292,8 +2646,8 @@ class EnsembleManager:
             print(f"Warning: Could not analyze audio silence: {e}")
             return False
     
-    def _persist_output_files(self, results: Dict[str, Any]) -> None:
-        """Persist transcript outputs to artifacts directory for download"""
+    def _persist_output_files(self, results: Dict[str, Any]) -> Dict[str, str]:
+        """Persist transcript outputs to artifacts directory using atomic I/O operations"""
         try:
             import os
             from pathlib import Path
@@ -2302,68 +2656,149 @@ class EnsembleManager:
             reports_dir = Path("artifacts/reports")
             if self.run_id is None:
                 self.structured_logger.warning("No run_id available for output persistence")
-                return
+                return {}
             run_dir = reports_dir / self.run_id
             run_dir.mkdir(parents=True, exist_ok=True)
             
-            # Write transcript files
-            files_written = []
+            # Write transcript files using atomic operations
+            files_written = {}
             
-            # JSON transcript
-            if 'winner_transcript' in results:
-                json_path = run_dir / "transcript.json"
-                with open(json_path, 'w', encoding='utf-8') as f:
-                    import json
-                    json.dump(results['winner_transcript'], f, indent=2, ensure_ascii=False)
-                files_written.append(str(json_path))
+            try:
+                # Get cache key from run context for collision prevention
+                run_context = get_global_run_context()
+                cache_key = run_context.config_snapshot_id if run_context else None
+                
+                # JSON transcript - atomic write
+                if 'winner_transcript' in results:
+                    json_path = run_dir / "transcript.json"
+                    with atomic_write(json_path, cache_key=cache_key) as f:
+                        import json
+                        json.dump(results['winner_transcript'], f, indent=2, ensure_ascii=False)
+                    files_written['fused_transcript_json'] = str(json_path)
+                    self.structured_logger.debug(f"Atomically wrote JSON transcript: {json_path}")
+                
+                # TXT transcript - atomic write  
+                if 'winner_transcript_txt' in results:
+                    txt_path = run_dir / "transcript.txt"
+                    with atomic_write(txt_path, cache_key=cache_key) as f:
+                        f.write(results['winner_transcript_txt'])
+                    files_written['transcript_txt'] = str(txt_path)
+                    self.structured_logger.debug(f"Atomically wrote TXT transcript: {txt_path}")
+                
+                # VTT captions - atomic write
+                if 'captions_vtt' in results:
+                    vtt_path = run_dir / "captions.vtt"
+                    with atomic_write(vtt_path, cache_key=cache_key) as f:
+                        f.write(results['captions_vtt'])
+                    files_written['vtt'] = str(vtt_path)
+                    self.structured_logger.debug(f"Atomically wrote VTT captions: {vtt_path}")
+                
+                # SRT captions - atomic write
+                if 'captions_srt' in results:
+                    srt_path = run_dir / "captions.srt"
+                    with atomic_write(srt_path, cache_key=cache_key) as f:
+                        f.write(results['captions_srt'])
+                    files_written['srt'] = str(srt_path)
+                    self.structured_logger.debug(f"Atomically wrote SRT captions: {srt_path}")
+                
+                # ASS captions - atomic write
+                if 'captions_ass' in results:
+                    ass_path = run_dir / "captions.ass"
+                    with atomic_write(ass_path, cache_key=cache_key) as f:
+                        f.write(results['captions_ass'])
+                    files_written['captions_ass'] = str(ass_path)
+                    self.structured_logger.debug(f"Atomically wrote ASS captions: {ass_path}")
+                
+                # Ensemble audit - atomic write
+                if 'ensemble_audit' in results:
+                    audit_path = run_dir / "ensemble_audit.json"
+                    with atomic_write(audit_path, cache_key=cache_key) as f:
+                        import json
+                        json.dump(results['ensemble_audit'], f, indent=2, ensure_ascii=False)
+                    files_written['ensemble_audit_json'] = str(audit_path)
+                    self.structured_logger.debug(f"Atomically wrote ensemble audit: {audit_path}")
+                
+                self.structured_logger.info(f"Successfully persisted {len(files_written)} output files atomically")
+                
+            except Exception as atomic_error:
+                # Fallback to legacy method if atomic I/O fails
+                self.structured_logger.warning(f"Atomic file persistence failed, using fallback: {atomic_error}")
+                
+                # Legacy fallback operations
+                if 'winner_transcript' in results and 'fused_transcript_json' not in files_written:
+                    json_path = run_dir / "transcript.json"
+                    with open(json_path, 'w', encoding='utf-8') as f:
+                        import json
+                        json.dump(results['winner_transcript'], f, indent=2, ensure_ascii=False)
+                    files_written['fused_transcript_json'] = str(json_path)
+                
+                if 'winner_transcript_txt' in results and 'transcript_txt' not in files_written:
+                    txt_path = run_dir / "transcript.txt"
+                    with open(txt_path, 'w', encoding='utf-8') as f:
+                        f.write(results['winner_transcript_txt'])
+                    files_written['transcript_txt'] = str(txt_path)
+                
+                # Add other fallback writes as needed...
+                self.structured_logger.warning("Used legacy file writing as fallback")
             
-            # TXT transcript  
-            if 'winner_transcript_txt' in results:
-                txt_path = run_dir / "transcript.txt"
-                with open(txt_path, 'w', encoding='utf-8') as f:
-                    f.write(results['winner_transcript_txt'])
-                files_written.append(str(txt_path))
-            
-            # VTT captions
-            if 'captions_vtt' in results:
-                vtt_path = run_dir / "captions.vtt"
-                with open(vtt_path, 'w', encoding='utf-8') as f:
-                    f.write(results['captions_vtt'])
-                files_written.append(str(vtt_path))
-            
-            # SRT captions
-            if 'captions_srt' in results:
-                srt_path = run_dir / "captions.srt"
-                with open(srt_path, 'w', encoding='utf-8') as f:
-                    f.write(results['captions_srt'])
-                files_written.append(str(srt_path))
-            
-            # ASS captions
-            if 'captions_ass' in results:
-                ass_path = run_dir / "captions.ass"
-                with open(ass_path, 'w', encoding='utf-8') as f:
-                    f.write(results['captions_ass'])
-                files_written.append(str(ass_path))
-            
-            # Ensemble audit report
-            if 'ensemble_audit' in results:
-                audit_path = run_dir / "ensemble_audit.json"
-                with open(audit_path, 'w', encoding='utf-8') as f:
-                    import json
-                    json.dump(results['ensemble_audit'], f, indent=2)
-                files_written.append(str(audit_path))
-            
-            # Add file paths to results for UI display
-            results['output_files'] = {
-                'directory': str(run_dir),
-                'files': files_written,
-                'run_id': self.run_id
-            }
-            
-            print(f"✅ Persisted {len(files_written)} output files to {run_dir}")
-            self.structured_logger.info("Output files persisted", 
-                                      context={'files_written': len(files_written), 'directory': str(run_dir)})
-            
+            return files_written
+        
         except Exception as e:
-            print(f"⚠️ Warning: Could not persist output files: {e}")
-            self.structured_logger.warning(f"Failed to persist output files: {e}")
+            self.structured_logger.error(f"Failed to persist output files: {e}")
+            return {}
+    
+    def _track_final_outputs_in_manifest(self, output_paths: Dict[str, str], results: Dict[str, Any]):
+        """Track final output files in manifest system"""
+        if not self.manifest_manager:
+            return
+        
+        try:
+            # Get diarization artifacts as inputs for final outputs
+            diarization_artifacts = self.manifest_manager.get_artifacts_by_type("diarization_json")
+            input_artifacts = [a.sha256 for a in diarization_artifacts] if diarization_artifacts else []
+            
+            # Track all final output files
+            for artifact_type, file_path in output_paths.items():
+                try:
+                    producing_component = {
+                        'fused_transcript_json': 'ConsensusModule.process_consensus',
+                        'transcript_txt': 'TranscriptFormatter.create_txt_transcript', 
+                        'vtt': 'TranscriptFormatter.create_vtt_captions',
+                        'srt': 'TranscriptFormatter.create_srt_captions',
+                        'captions_ass': 'TranscriptFormatter.create_ass_captions',
+                        'ensemble_audit_json': 'EnsembleManager._create_ensemble_audit'
+                    }.get(artifact_type, 'EnsembleManager._persist_output_files')
+                    
+                    metadata = {
+                        "processing_stage": "final_output",
+                        "output_type": artifact_type
+                    }
+                    
+                    # Add specific metadata for different artifact types
+                    if artifact_type == 'fused_transcript_json' and 'winner_transcript' in results:
+                        winner = results['winner_transcript']
+                        metadata.update({
+                            "segment_count": len(winner.get('segments', [])),
+                            "speaker_count": len(winner.get('speaker_map', {})),
+                            "total_duration": winner.get('metadata', {}).get('total_duration', 0.0)
+                        })
+                    elif artifact_type == 'ensemble_audit_json' and 'ensemble_audit' in results:
+                        audit = results['ensemble_audit']
+                        metadata.update({
+                            "total_candidates": audit.get('summary', {}).get('total_candidates', 0),
+                            "winner_score": audit.get('summary', {}).get('winner_score', 0.0)
+                        })
+                    
+                    self.manifest_manager.add_artifact(
+                        artifact_type=artifact_type,
+                        file_path=file_path,
+                        producing_component=producing_component,
+                        input_artifacts=input_artifacts,
+                        metadata=metadata
+                    )
+                    
+                except Exception as e:
+                    self.structured_logger.warning(f"Failed to track {artifact_type} in manifest: {e}")
+                    
+        except Exception as e:
+            self.structured_logger.error(f"Failed to track final outputs in manifest: {e}")

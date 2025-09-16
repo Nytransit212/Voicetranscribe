@@ -875,6 +875,190 @@ class AdaptiveBiasingEngine:
             return 'technical'
         
         return 'general'
+    
+    # === VERIFIER INTEGRATION METHODS ===
+    
+    def get_project_glossary_entries(self, 
+                                   project_id: str,
+                                   max_entries: int = 50,
+                                   min_confidence: float = 0.5) -> List[Dict[str, Any]]:
+        """
+        Get auto-glossary entries for verifier integration
+        
+        Args:
+            project_id: Project identifier
+            max_entries: Maximum number of entries to return
+            min_confidence: Minimum confidence threshold
+            
+        Returns:
+            List of glossary entries formatted for verifier
+        """
+        try:
+            # Get top terms from term store
+            top_terms = self.term_store.get_top_terms(
+                project_id=project_id,
+                limit=max_entries,
+                min_confidence=min_confidence,
+                min_session_count=1
+            )
+            
+            # Convert to verifier format
+            glossary_entries = []
+            for term_data in top_terms:
+                entry = {
+                    'canonical_form': term_data['token'],
+                    'variants': set(term_data.get('variants', [])),
+                    'weight': term_data['weight'],
+                    'confidence_score': term_data['confidence'],
+                    'session_count': term_data.get('session_count', 1),
+                    'term_type': self._classify_term_type(term_data['token']),
+                    'metadata': {
+                        'supporting_engines': term_data.get('supporting_engines', []),
+                        'first_seen': term_data.get('first_seen_timestamp'),
+                        'last_seen': term_data.get('last_seen_timestamp')
+                    }
+                }
+                glossary_entries.append(entry)
+            
+            self.logger.debug("Retrieved glossary entries for verifier", 
+                            context={
+                                'project_id': project_id,
+                                'entries_count': len(glossary_entries),
+                                'max_entries': max_entries,
+                                'min_confidence': min_confidence
+                            })
+            
+            return glossary_entries
+            
+        except Exception as e:
+            self.logger.error("Failed to get glossary entries for verifier", 
+                            context={
+                                'project_id': project_id,
+                                'error': str(e)
+                            })
+            return []
+    
+    def get_cached_session_bias_terms(self, 
+                                    project_id: str,
+                                    session_id: str) -> Optional[List[BiasedTerm]]:
+        """
+        Get cached session bias terms for verifier integration
+        
+        Args:
+            project_id: Project identifier
+            session_id: Session identifier
+            
+        Returns:
+            List of BiasedTerm objects or None if not cached
+        """
+        cache_key = f"{project_id}_{session_id}_*"  # Wildcard for any bias strength
+        
+        # Look for any cached entry for this session
+        for key, (bias_list, cache_time) in self._session_bias_cache.items():
+            if key.startswith(f"{project_id}_{session_id}_"):
+                # Check if cache is still valid (5 minute cache)
+                if time.time() - cache_time < 300:
+                    return bias_list.biased_terms
+        
+        return None
+    
+    def lookup_glossary_weight(self, 
+                             text: str,
+                             project_id: str,
+                             session_id: str = None) -> float:
+        """
+        Lookup glossary weight for a specific text
+        
+        Args:
+            text: Text to lookup
+            project_id: Project identifier
+            session_id: Optional session identifier for cache lookup
+            
+        Returns:
+            Weight value (0.0 if not found in glossary)
+        """
+        # Try session cache first if available
+        if session_id:
+            cached_terms = self.get_cached_session_bias_terms(project_id, session_id)
+            if cached_terms:
+                for term in cached_terms:
+                    if text == term.canonical_form or text in term.variants:
+                        return term.bias_weight
+        
+        # Fall back to direct term store lookup
+        try:
+            term_base = self.term_store.load_project_term_base(project_id)
+            
+            # Check canonical forms
+            for canonical_form, term_entry in term_base.terms.items():
+                if text == canonical_form or text in term_entry.variants:
+                    # Calculate effective weight based on confidence and session count
+                    effective_weight = (term_entry.confidence_mean * 
+                                      min(1.0, term_entry.session_count / 5.0))
+                    return effective_weight
+                    
+        except Exception as e:
+            self.logger.warning("Failed to lookup glossary weight", 
+                              context={
+                                  'text': text,
+                                  'project_id': project_id,
+                                  'error': str(e)
+                              })
+        
+        return 0.0
+    
+    def update_glossary_from_verifier_feedback(self, 
+                                             project_id: str,
+                                             session_id: str,
+                                             verification_results: List[Dict[str, Any]]):
+        """
+        Update glossary based on verifier feedback (blocked variants, approved changes)
+        
+        Args:
+            project_id: Project identifier
+            session_id: Session identifier
+            verification_results: List of verification result dictionaries
+        """
+        blocked_variants = []
+        approved_variants = []
+        
+        for result in verification_results:
+            if result.get('is_verified'):
+                approved_variants.append({
+                    'text': result['verified_text'],
+                    'source': result['verification_source'],
+                    'score': result.get('score', 0.0)
+                })
+            
+            if result.get('blocked_variants'):
+                for variant in result['blocked_variants']:
+                    blocked_variants.append({
+                        'text': variant,
+                        'reason': 'verifier_blocked',
+                        'original_context': result.get('verification_metadata', {})
+                    })
+        
+        # Log feedback for potential glossary improvements
+        if blocked_variants:
+            self.logger.info("Verifier blocked variants feedback", 
+                           context={
+                               'project_id': project_id,
+                               'session_id': session_id,
+                               'blocked_count': len(blocked_variants),
+                               'top_blocked': [v['text'] for v in blocked_variants[:10]]
+                           })
+        
+        if approved_variants:
+            self.logger.info("Verifier approved variants feedback", 
+                           context={
+                               'project_id': project_id,
+                               'session_id': session_id,
+                               'approved_count': len(approved_variants),
+                               'top_approved': [v['text'] for v in approved_variants[:10]]
+                           })
+        
+        # This could be extended to automatically update the term store
+        # based on verifier feedback patterns
 
 def create_adaptive_biasing_engine(term_store: ProjectTermStore = None, **config) -> AdaptiveBiasingEngine:
     """Factory function to create adaptive biasing engine"""
