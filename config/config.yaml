@@ -117,6 +117,271 @@ reliability:
       failure_threshold: 2      # System processes should fail fast
       recovery_timeout: 30
 
+# Resource-Aware Scheduler with RTF Budgets and Auto-Downgrade Rules
+scheduler:
+  enabled: true                      # Enable resource-aware scheduling
+  global_timeout_minutes: 30.0       # Maximum total processing time
+  downgrade_strategy: "balanced"     # conservative, balanced, aggressive
+  enable_predictive_scheduling: true # Enable audio complexity prediction
+  enable_resource_monitoring: true   # Enable system resource monitoring
+  memory_limit_mb: 8192              # Memory limit for triggering downgrades (8GB)
+  cpu_limit_percent: 90              # CPU limit for triggering downgrades
+  
+  # RTF (Real-Time Factor) Budgets for Processing Stages
+  # RTF = processing_time / audio_duration
+  rtf_budgets:
+    audio_extraction:
+      maximum_rtf: 0.5              # Maximum RTF before mandatory downgrade
+      target_rtf: 0.2               # Target RTF for optimal quality
+      minimum_rtf: 0.1              # Minimum RTF for basic functionality
+      timeout_minutes: 2.0          # Hard timeout in minutes
+    
+    audio_preprocessing:
+      maximum_rtf: 1.0
+      target_rtf: 0.3
+      minimum_rtf: 0.1
+      timeout_minutes: 2.0
+    
+    diarization:
+      maximum_rtf: 4.0              # Multi-variant diarization
+      target_rtf: 2.0               # Balanced approach
+      minimum_rtf: 1.5              # Single variant
+      timeout_minutes: 8.0
+    
+    source_separation:
+      maximum_rtf: 8.0              # Heavy model processing
+      target_rtf: 4.0               # Balanced processing
+      minimum_rtf: 2.0              # Light model processing
+      timeout_minutes: 10.0
+    
+    overlap_processing:
+      maximum_rtf: 6.0              # Full overlap pipeline
+      target_rtf: 3.0               # Standard processing
+      minimum_rtf: 1.0              # Basic overlap handling
+      timeout_minutes: 8.0
+    
+    speaker_tracking:
+      maximum_rtf: 2.0              # Advanced ECAPA-TDNN tracking
+      target_rtf: 1.0               # Standard tracking
+      minimum_rtf: 0.5              # Basic tracking
+      timeout_minutes: 3.0
+    
+    asr_ensemble:
+      maximum_rtf: 6.0              # Full ensemble (5 variants per diarization)
+      target_rtf: 4.0               # Reduced ensemble
+      minimum_rtf: 1.0              # Single ASR engine
+      timeout_minutes: 12.0
+    
+    term_mining:
+      maximum_rtf: 0.8              # Full auto-glossary mining
+      target_rtf: 0.4               # Standard mining
+      minimum_rtf: 0.1              # Basic term extraction
+      timeout_minutes: 2.0
+    
+    dialect_processing:
+      maximum_rtf: 1.0              # Multi-dialect analysis
+      target_rtf: 0.5               # Standard dialect handling
+      minimum_rtf: 0.2              # Basic dialect support
+      timeout_minutes: 2.0
+    
+    confidence_scoring:
+      maximum_rtf: 0.5              # Full DALRO scoring
+      target_rtf: 0.3               # Standard scoring
+      minimum_rtf: 0.1              # Basic scoring
+      timeout_minutes: 2.0
+    
+    consensus:
+      maximum_rtf: 0.3              # Multi-dimensional consensus
+      target_rtf: 0.1               # Standard consensus
+      minimum_rtf: 0.05             # Basic selection
+      timeout_minutes: 1.0
+    
+    worklist_reprocessing:
+      maximum_rtf: 2.0              # Selective reprocessing
+      target_rtf: 1.0               # Standard worklist
+      minimum_rtf: 0.3              # Basic improvement
+      timeout_minutes: 3.0
+    
+    boundary_realignment:
+      maximum_rtf: 0.4              # Full realignment
+      target_rtf: 0.2               # Standard realignment
+      minimum_rtf: 0.1              # Basic alignment
+      timeout_minutes: 1.0
+    
+    text_normalization:
+      maximum_rtf: 0.2              # Executive profile
+      target_rtf: 0.1               # Readable profile
+      minimum_rtf: 0.05             # Light profile
+      timeout_minutes: 1.0
+    
+    output_generation:
+      maximum_rtf: 0.1              # Multiple output formats
+      target_rtf: 0.05              # Standard outputs
+      minimum_rtf: 0.02             # Basic output
+      timeout_minutes: 1.0
+  
+  # Auto-Downgrade Rules for Each Stage
+  downgrade_rules:
+    # Source Separation: Heavy → Light → Skip
+    source_separation:
+      - trigger_rtf_threshold: 6.0
+        trigger_memory_mb_threshold: 6144    # 6GB memory threshold
+        downgrade_action: "switch_to_light_model"
+        fallback_quality_level: "fast"
+        skip_stage: false
+        condition: null
+      
+      - trigger_rtf_threshold: 4.0
+        trigger_memory_mb_threshold: null
+        downgrade_action: "skip_separation"
+        fallback_quality_level: "minimal"
+        skip_stage: true
+        condition: "complexity_score > 2.0"
+    
+    # Diarization: Multi-variant → Single variant → Basic clustering
+    diarization:
+      - trigger_rtf_threshold: 3.0
+        trigger_cpu_percent_threshold: 85
+        downgrade_action: "reduce_variants"
+        fallback_quality_level: "fast"
+        skip_stage: false
+        condition: null
+      
+      - trigger_rtf_threshold: 2.0
+        trigger_memory_mb_threshold: null
+        downgrade_action: "basic_clustering_only"
+        fallback_quality_level: "minimal"
+        skip_stage: false
+        condition: null
+    
+    # ASR: Ensemble → Reduced variants → Single engine
+    asr_ensemble:
+      - trigger_rtf_threshold: 4.0
+        trigger_memory_mb_threshold: null
+        downgrade_action: "reduce_asr_variants"
+        fallback_quality_level: "balanced"
+        skip_stage: false
+        condition: null
+      
+      - trigger_rtf_threshold: 2.0
+        trigger_cpu_percent_threshold: 90
+        downgrade_action: "single_asr_engine"
+        fallback_quality_level: "fast"
+        skip_stage: false
+        condition: null
+    
+    # Text Normalization: Executive → Readable → Light → Verbatim
+    text_normalization:
+      - trigger_rtf_threshold: 0.15
+        trigger_memory_mb_threshold: null
+        downgrade_action: "lighter_normalization"
+        fallback_quality_level: "fast"
+        skip_stage: false
+        condition: null
+      
+      - trigger_rtf_threshold: 0.1
+        trigger_memory_mb_threshold: null
+        downgrade_action: "minimal_normalization"
+        fallback_quality_level: "minimal"
+        skip_stage: false
+        condition: null
+  
+  # Quality Level Definitions
+  quality_levels:
+    maximum:
+      description: "Highest quality, longest processing time"
+      rtf_multiplier: 1.0           # Use maximum RTF budgets
+      
+    high:
+      description: "High quality, moderate processing time"
+      rtf_multiplier: 0.75          # Use 75% of maximum RTF budgets
+      
+    balanced:
+      description: "Balance quality vs speed"
+      rtf_multiplier: 0.6           # Use 60% of maximum RTF budgets
+      
+    fast:
+      description: "Fast processing, good quality"
+      rtf_multiplier: 0.4           # Use 40% of maximum RTF budgets
+      
+    minimal:
+      description: "Minimal processing, basic quality"
+      rtf_multiplier: 0.25          # Use 25% of maximum RTF budgets
+  
+  # Audio Complexity Estimation
+  complexity_estimation:
+    enable_audio_analysis: true     # Perform lightweight audio analysis
+    analysis_duration_seconds: 30   # Analyze first 30 seconds for complexity
+    cache_estimates: true           # Cache complexity estimates
+    cache_ttl_seconds: 3600         # Cache time-to-live (1 hour)
+    
+    # Complexity factors
+    duration_weight: 0.3            # Weight for audio duration
+    speaker_weight: 0.25            # Weight for number of speakers
+    noise_weight: 0.2               # Weight for noise level
+    overlap_weight: 0.15            # Weight for speech overlap
+    dialect_weight: 0.1             # Weight for dialect complexity
+  
+  # Resource Monitoring
+  resource_monitoring:
+    enable_background_monitoring: true  # Enable background resource monitoring
+    monitoring_interval_seconds: 1.0   # Monitor resources every second
+    snapshot_retention_count: 300      # Keep last 5 minutes of snapshots
+    enable_predictive_alerts: true     # Enable predictive resource alerts
+    
+    # Alert thresholds
+    memory_warning_percent: 75      # Warn when memory usage > 75%
+    memory_critical_percent: 85     # Critical when memory usage > 85%
+    cpu_warning_percent: 80         # Warn when CPU usage > 80%
+    cpu_critical_percent: 90        # Critical when CPU usage > 90%
+    
+    # Load average thresholds (for systems that support it)
+    load_average_warning_multiplier: 1.5   # Warn when load > 1.5x CPU cores
+    load_average_critical_multiplier: 2.0  # Critical when load > 2.0x CPU cores
+  
+  # Performance Telemetry
+  telemetry:
+    enable_performance_tracking: true   # Enable detailed performance tracking
+    enable_stage_profiling: true       # Enable per-stage profiling
+    enable_recommendation_engine: true # Enable optimization recommendations
+    
+    # Telemetry data retention
+    session_history_retention_days: 7  # Keep session data for 7 days
+    aggregate_metrics_retention_days: 30 # Keep aggregate metrics for 30 days
+    
+    # Reporting
+    enable_performance_reports: true   # Generate performance reports
+    report_generation_interval_hours: 24 # Generate reports every 24 hours
+    enable_trend_analysis: true        # Enable performance trend analysis
+  
+  # Integration Settings
+  integration:
+    ensemble_manager_integration: true # Integrate with EnsembleManager
+    capability_manager_integration: true # Integrate with CapabilityManager
+    observability_integration: true   # Integrate with observability system
+    cache_integration: true           # Integrate with caching system
+    
+    # Stage hook configuration
+    enable_stage_hooks: true          # Enable stage lifecycle hooks
+    enable_progress_callbacks: true   # Enable progress callback integration
+    enable_preemptive_downgrades: true # Enable preemptive downgrade decisions
+  
+  # Advanced Settings
+  advanced:
+    enable_adaptive_budgets: false    # Adaptive RTF budgets based on performance
+    learning_rate: 0.1                # Learning rate for adaptive systems
+    enable_statistical_modeling: false # Statistical models for performance prediction
+    
+    # Emergency settings
+    enable_emergency_bypass: false    # Emergency bypass for critical processing
+    emergency_quality_level: "minimal" # Quality level for emergency bypass
+    emergency_timeout_multiplier: 2.0 # Multiply timeouts in emergency mode
+    
+    # Debug settings
+    enable_debug_logging: false       # Enable detailed debug logging
+    enable_stage_profiling: false     # Enable detailed stage profiling
+    export_profiling_data: false     # Export profiling data for analysis
+
 # API Configuration
 api:
   openai:

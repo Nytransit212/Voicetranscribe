@@ -63,6 +63,15 @@ from core.post_fusion_realigner import (
     convert_realigner_result_to_transcript_format,
     RealignerConfig
 )
+from utils.resource_scheduler import (
+    ResourceScheduler,
+    get_resource_scheduler,
+    initialize_resource_scheduler,
+    ProcessingStage,
+    QualityLevel,
+    DowngradeStrategy,
+    with_resource_scheduling
+)
 
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
@@ -183,6 +192,28 @@ class EnsembleManager:
         self.worklist_manager = get_worklist_manager()
         self.selective_asr_processor = get_selective_asr_processor()
         self.asr_scheduler = get_asr_scheduler()
+        
+        # Initialize resource scheduler with configurable settings
+        self.enable_resource_scheduling = True  # Can be configured via config
+        if self.enable_resource_scheduling:
+            # Initialize resource scheduler with intelligent defaults
+            self.resource_scheduler = get_resource_scheduler()
+            if not hasattr(self.resource_scheduler, 'session_start_time') or self.resource_scheduler.session_start_time == 0:
+                # Configure scheduler based on complexity and user preferences
+                downgrade_strategy = DowngradeStrategy.BALANCED  # Default to balanced approach
+                global_timeout = 30.0  # 30 minutes default timeout
+                
+                self.resource_scheduler = initialize_resource_scheduler(
+                    global_timeout_minutes=global_timeout,
+                    downgrade_strategy=downgrade_strategy,
+                    enable_predictive_scheduling=True,
+                    enable_resource_monitoring=True
+                )
+            self.structured_logger.info("Resource scheduler initialized for intelligent budget management",
+                                      context={'downgrade_strategy': 'balanced', 'global_timeout': 30.0})
+        else:
+            self.resource_scheduler = None
+            self.structured_logger.info("Resource scheduling disabled")
         
         # U7 configuration
         self.enable_caching = True
@@ -1076,6 +1107,47 @@ class EnsembleManager:
         self.structured_logger.stage_start("pipeline", "Starting ensemble transcription pipeline", 
                                          context={'video_path': video_path, 'expected_speakers': self.expected_speakers, 'noise_level': self.noise_level})
         
+        # Initialize resource scheduler session for intelligent budget management
+        scheduler_session_started = False
+        complexity_estimate = None
+        if self.enable_resource_scheduling and self.resource_scheduler:
+            try:
+                # Get audio duration for complexity estimation (quick check)
+                initial_audio_duration = 0.0
+                if video_path.lower().endswith('.wav'):
+                    # For WAV files, estimate duration quickly
+                    import librosa
+                    initial_audio_duration = librosa.get_duration(path=video_path)
+                else:
+                    # For video files, we'll update this after extraction
+                    initial_audio_duration = 300.0  # Default estimate: 5 minutes
+                
+                # Start scheduler session with initial complexity estimate
+                complexity_estimate = self.resource_scheduler.start_session(
+                    audio_duration=initial_audio_duration,
+                    audio_path=video_path,
+                    expected_speakers=self.expected_speakers,
+                    noise_level=self.noise_level,
+                    target_language=self.target_language
+                )
+                scheduler_session_started = True
+                
+                self.structured_logger.info("🎯 Resource scheduler session started with intelligent budget management",
+                                          context={
+                                              'complexity_score': complexity_estimate.complexity_score,
+                                              'recommended_quality': complexity_estimate.recommended_quality_level.value,
+                                              'initial_duration_estimate': initial_audio_duration,
+                                              'global_timeout_minutes': self.resource_scheduler.global_timeout_minutes
+                                          })
+                
+                # Update progress callback if available
+                if progress_callback:
+                    progress_callback("SCHED", 2, f"Resource scheduling active (Quality: {complexity_estimate.recommended_quality_level.value})")
+                    
+            except Exception as e:
+                self.structured_logger.warning(f"Failed to start resource scheduler session: {e}")
+                scheduler_session_started = False
+        
         try:
             # U7 Step 0: Generate deterministic run_id based on input hash and configuration
             processing_config = {
@@ -1181,14 +1253,26 @@ class EnsembleManager:
                     self.input_artifacts['input_video'] = input_artifact
                     self.structured_logger.info("Input video tracked", context={'tracked_path': tracked_input_path})
                 
-                # Step 1: Audio Extraction (0-10%)
+                # Step 1: Audio Extraction (0-10%) with Resource Scheduling
                 if progress_callback:
                     progress_callback("A", 5, "Extracting audio from video...")
+                
+                # Start resource monitoring for audio extraction stage
+                stage_usage = None
+                if scheduler_session_started:
+                    stage_usage = self.resource_scheduler.start_stage(
+                        ProcessingStage.AUDIO_EXTRACTION,
+                        metadata={'input_path': video_path, 'processing_type': 'video_extraction'}
+                    )
                 
                 stage_start_time = time.time()
                 self.structured_logger.stage_start("audio_extraction", "Extracting and cleaning audio from video")
                 
                 raw_audio_path, clean_audio_path = self.audio_processor.extract_audio_from_video(video_path)
+                
+                # End resource monitoring for audio extraction
+                if stage_usage and scheduler_session_started:
+                    self.resource_scheduler.end_stage(ProcessingStage.AUDIO_EXTRACTION, success=True)
                 self.temp_audio_files.extend([raw_audio_path, clean_audio_path])
                 
                 # Track audio artifacts (versioning)
@@ -1269,9 +1353,21 @@ class EnsembleManager:
                 if progress_callback:
                     progress_callback("WARN", 15, "Audio appears mostly silent - transcription results may be minimal")
             
-            # Step 3: Diarization Variants (15-35%)
+            # Step 3: Diarization Variants (15-35%) with Resource Scheduling
             if progress_callback:
                 progress_callback("C", 20, "Creating 5 diarization variants with voting fusion...")
+            
+            # Start resource monitoring for diarization stage
+            diarization_usage = None
+            if scheduler_session_started:
+                diarization_usage = self.resource_scheduler.start_stage(
+                    ProcessingStage.DIARIZATION,
+                    metadata={
+                        'audio_duration': audio_duration,
+                        'estimated_noise': estimated_noise,
+                        'expected_speakers': self.expected_speakers
+                    }
+                )
             
             stage_start_time = time.time()
             self.structured_logger.stage_start("diarization", "Creating diarization variants with voting fusion",
@@ -1281,15 +1377,44 @@ class EnsembleManager:
             enable_chunked_processing = (self.enable_speaker_mapping and 
                                        audio_duration > self.chunked_processing_threshold)
             
+            # Check resource scheduler for potential downgrades
+            original_variants_count = 5  # Default
+            use_voting_fusion = True
+            downgrade_applied = False
+            
+            if scheduler_session_started and diarization_usage:
+                # Check if we should apply preemptive downgrades
+                if diarization_usage.quality_level == QualityLevel.FAST:
+                    original_variants_count = 3  # Reduce variants
+                    downgrade_applied = True
+                    if progress_callback:
+                        progress_callback("C", 20, "⚡ Fast mode: Creating 3 diarization variants...")
+                elif diarization_usage.quality_level == QualityLevel.MINIMAL:
+                    original_variants_count = 1  # Single variant only
+                    use_voting_fusion = False
+                    downgrade_applied = True
+                    if progress_callback:
+                        progress_callback("C", 20, "⚡ Minimal mode: Creating single diarization variant...")
+            
             if enable_chunked_processing:
                 self.structured_logger.info(f"🧩 Enabling chunked processing with speaker mapping for {audio_duration/60:.1f}min audio")
                 if progress_callback:
                     progress_callback("C", 22, f"Processing {audio_duration/60:.1f}min audio in chunks with speaker mapping...")
             
+            if downgrade_applied:
+                self.structured_logger.info(f"Resource scheduler downgrade applied to diarization",
+                                          context={
+                                              'original_variants': 5,
+                                              'reduced_variants': original_variants_count,
+                                              'voting_fusion_enabled': use_voting_fusion,
+                                              'quality_level': diarization_usage.quality_level.value
+                                          })
+            
             diarization_variants = self.diarization_engine.create_diarization_variants(
                 clean_audio_path, 
-                use_voting_fusion=True,
-                enable_chunked_processing=enable_chunked_processing
+                use_voting_fusion=use_voting_fusion,
+                enable_chunked_processing=enable_chunked_processing,
+                max_variants=original_variants_count  # Limit variants if downgrade applied
             )
             
             # Track diarization artifacts (versioning)
@@ -1333,6 +1458,19 @@ class EnsembleManager:
                     self.structured_logger.warning(f"Failed to track diarization results in manifest: {e}")
             
             diarization_time = time.time() - stage_start_time
+            
+            # End resource monitoring for diarization stage
+            if diarization_usage and scheduler_session_started:
+                usage_result = self.resource_scheduler.end_stage(ProcessingStage.DIARIZATION, success=True)
+                
+                # Check if budget was exceeded and apply reactive downgrades if needed
+                if usage_result.budget_exceeded:
+                    self.structured_logger.warning("Diarization exceeded RTF budget - future stages may be downgraded",
+                                                  context={
+                                                      'actual_rtf': usage_result.actual_rtf,
+                                                      'target_rtf': self.resource_scheduler.rtf_budgets[ProcessingStage.DIARIZATION].target_rtf
+                                                  })
+            
             self.structured_logger.stage_complete("diarization", "Diarization variants created", 
                                                 duration=diarization_time,
                                                 metrics={'variants_created': len(diarization_variants)})
@@ -1686,15 +1824,41 @@ class EnsembleManager:
                 if progress_callback:
                     progress_callback("C2", 40, f"Legacy source separation complete - {source_separation_patches_applied} overlap intervals replaced")
             
-            # Step 4: ASR Ensemble (40-75%)
+            # Step 4: ASR Ensemble (40-75%) with Resource Scheduling
             if progress_callback:
                 progress_callback("D", 40, "Running expanded ASR ensemble (5 passes per diarization)...")
+            
+            # Start resource monitoring for ASR ensemble stage
+            asr_usage = None
+            if scheduler_session_started:
+                asr_usage = self.resource_scheduler.start_stage(
+                    ProcessingStage.ASR_ENSEMBLE,
+                    metadata={
+                        'diarization_variants': len(diarization_variants),
+                        'target_language': self.target_language,
+                        'audio_duration': audio_duration
+                    }
+                )
+                
+                # Apply resource-aware downgrade decisions
+                if asr_usage.quality_level == QualityLevel.FAST:
+                    if progress_callback:
+                        progress_callback("D", 40, "⚡ Fast mode: Running reduced ASR ensemble (3 passes per diarization)...")
+                elif asr_usage.quality_level == QualityLevel.MINIMAL:
+                    if progress_callback:
+                        progress_callback("D", 40, "⚡ Minimal mode: Running single ASR engine...")
             
             stage_start_time = time.time()
             self.structured_logger.stage_start("asr_ensemble", "Running ASR ensemble across all diarization variants",
                                              context={'diarization_variants': len(diarization_variants), 'target_language': self.target_language})
             
-            candidates = self.asr_engine.run_asr_ensemble(clean_audio_path, diarization_variants, target_language=self.target_language)
+            # Run ASR ensemble with potential resource-aware adjustments
+            candidates = self.asr_engine.run_asr_ensemble(
+                clean_audio_path, 
+                diarization_variants, 
+                target_language=self.target_language,
+                quality_level=asr_usage.quality_level.value if asr_usage else None
+            )
             
             # Log overlap processing integration results
             if source_separation_patches_applied > 0:
@@ -1724,6 +1888,20 @@ class EnsembleManager:
                 self.intermediate_artifacts.update(asr_artifacts)
             
             asr_time = time.time() - stage_start_time
+            
+            # End resource monitoring for ASR ensemble stage
+            if asr_usage and scheduler_session_started:
+                asr_result = self.resource_scheduler.end_stage(ProcessingStage.ASR_ENSEMBLE, success=True)
+                
+                # Check for budget exceedance and potential future downgrades
+                if asr_result.budget_exceeded:
+                    self.structured_logger.warning("ASR ensemble exceeded RTF budget - downstream stages may be downgraded",
+                                                  context={
+                                                      'actual_rtf': asr_result.actual_rtf,
+                                                      'target_rtf': self.resource_scheduler.rtf_budgets[ProcessingStage.ASR_ENSEMBLE].target_rtf,
+                                                      'candidates_generated': len(candidates)
+                                                  })
+            
             self.structured_logger.stage_complete("asr_ensemble", "ASR ensemble processing completed", 
                                                 duration=asr_time,
                                                 metrics={'total_candidates': len(candidates), 'variants_processed': len(diarization_variants)})
@@ -2468,9 +2646,54 @@ class EnsembleManager:
                                                     'error_count': len(validation_errors)
                                                 })
             
+            # Resource Scheduler Session Completion and Performance Reporting
+            if scheduler_session_started and self.resource_scheduler:
+                try:
+                    # Complete resource scheduler session with comprehensive reporting
+                    session_summary = self.resource_scheduler.stop_session()
+                    
+                    # Log comprehensive performance summary
+                    self.structured_logger.info("🎯 Resource Scheduler Performance Summary",
+                                              context={
+                                                  'session_rtf': session_summary['session_rtf'],
+                                                  'performance_grade': session_summary['performance_grade'], 
+                                                  'downgrades_applied': session_summary['downgrades_applied'],
+                                                  'budget_violations': session_summary['budget_violations'],
+                                                  'recommendations': session_summary['recommendations'],
+                                                  'complexity_score': session_summary.get('complexity_estimate', {}).get('complexity_score', 0)
+                                              })
+                    
+                    # Add resource scheduler metrics to results for user visibility
+                    results['resource_scheduler_summary'] = {
+                        'session_rtf': session_summary['session_rtf'],
+                        'performance_grade': session_summary['performance_grade'],
+                        'quality_preserved': session_summary['downgrades_applied'] < 3,
+                        'budget_compliant': session_summary['budget_violations'] == 0,
+                        'stage_metrics': session_summary.get('stage_metrics', {}),
+                        'optimization_recommendations': session_summary.get('recommendations', []),
+                        'complexity_assessment': session_summary.get('complexity_estimate', {})
+                    }
+                    
+                    # Update progress with final scheduler status
+                    if progress_callback:
+                        grade_emoji = {"A": "🥇", "B": "🥈", "C": "🥉", "D": "📊", "F": "⚠️"}.get(session_summary['performance_grade'], "📊")
+                        progress_callback("FINAL", 100, f"{grade_emoji} Processing complete (Performance: {session_summary['performance_grade']}, RTF: {session_summary['session_rtf']:.2f}x)")
+                    
+                except Exception as e:
+                    self.structured_logger.warning(f"Failed to complete resource scheduler session: {e}")
+            
             return results
             
         except Exception as e:
+            # End resource scheduler session on error
+            if scheduler_session_started and self.resource_scheduler:
+                try:
+                    error_summary = self.resource_scheduler.stop_session()
+                    self.structured_logger.error("Resource scheduler session ended due to processing error",
+                                               context={'partial_results': error_summary})
+                except:
+                    pass  # Avoid masking the original error
+            
             raise Exception(f"Ensemble processing failed: {str(e)}")
         
         finally:
