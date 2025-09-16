@@ -83,6 +83,14 @@ from utils.disagreement_redecode import (
     RedecodeConfig,
     create_disagreement_redecode_engine
 )
+from utils.metrics_alerts import (
+    get_metrics_collector,
+    initialize_metrics_system,
+    track_processing_stage,
+    record_quality_metrics,
+    record_business_event,
+    track_performance
+)
 
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
@@ -263,6 +271,22 @@ class EnsembleManager:
             enable_profiling=True,
             log_level="INFO"
         )
+        
+        # Initialize comprehensive metrics system
+        metrics_config = {
+            'enabled': True,
+            'aggregation_window_seconds': 300,
+            'enable_background_processing': True,
+            'background_processing_interval': 60,
+            'alerting': {
+                'enabled': True,
+                'alert_destinations': {
+                    'console': {'enabled': True},
+                    'file_logging': {'enabled': True, 'path': 'logs/alerts'}
+                }
+            }
+        }
+        self.metrics_collector = initialize_metrics_system(metrics_config, session_id=str(uuid.uuid4())[:8])
         
         # Determinism and reproducibility system
         self.run_context: Optional[RunContext] = None
@@ -1190,11 +1214,16 @@ class EnsembleManager:
             Complete processing results with winner transcript and metadata
         """
         start_time = time.time()
+        pipeline_session_id = str(uuid.uuid4())[:8]
+        
+        # Record business event for file processing start
+        record_business_event('file_processing_start', 'ensemble_manager', 
+                             file_path=video_path, session_id=pipeline_session_id)
         
         # Create temporary working directory  
         self.work_dir = tempfile.mkdtemp(prefix='ensemble_transcription_')
         
-        # Log pipeline start
+        # Log pipeline start and start metrics tracking
         self.structured_logger.stage_start("pipeline", "Starting ensemble transcription pipeline", 
                                          context={'video_path': video_path, 'expected_speakers': self.expected_speakers, 'noise_level': self.noise_level})
         
@@ -1356,43 +1385,46 @@ class EnsembleManager:
                         metadata={'input_path': video_path, 'processing_type': 'video_extraction'}
                     )
                 
-                stage_start_time = time.time()
-                self.structured_logger.stage_start("audio_extraction", "Extracting and cleaning audio from video")
-                
-                raw_audio_path, clean_audio_path = self.audio_processor.extract_audio_from_video(video_path)
-                
-                # End resource monitoring for audio extraction
-                if stage_usage and scheduler_session_started:
-                    self.resource_scheduler.end_stage(ProcessingStage.AUDIO_EXTRACTION, success=True)
-                self.temp_audio_files.extend([raw_audio_path, clean_audio_path])
-                
-                # Track audio artifacts (versioning)
-                if self.enable_versioning and self.dvc_manager:
-                    audio_artifacts = self.dvc_manager.track_audio_artifacts(raw_audio_path, clean_audio_path, self.run_id)
-                    self.intermediate_artifacts.update(audio_artifacts)
-                
-                # Track audio artifacts in manifest
-                if self.manifest_manager:
-                    try:
-                        # Track clean audio as ASR-ready WAV
-                        self.manifest_manager.add_artifact(
-                            artifact_type="asr_wav",
-                            file_path=clean_audio_path,
-                            producing_component="AudioProcessor.extract_audio_from_video",
-                            input_artifacts=[],  # Depends on input media
-                            metadata={
-                                "source": "video_extraction",
-                                "processing_stage": "audio_extraction",
-                                "audio_duration_seconds": self.audio_processor.get_audio_duration(clean_audio_path)
-                            }
-                        )
-                    except Exception as e:
-                        self.structured_logger.warning(f"Failed to track audio artifact in manifest: {e}")
-                
-                audio_extraction_time = time.time() - stage_start_time
-                self.structured_logger.stage_complete("audio_extraction", "Audio extraction completed", 
-                                                    duration=audio_extraction_time,
-                                                    context={'raw_audio_path': raw_audio_path, 'clean_audio_path': clean_audio_path})
+                # Start comprehensive metrics tracking for audio extraction
+                with track_processing_stage("audio_extraction", "ensemble_manager", 
+                                          audio_duration=0) as metrics_tracker:
+                    stage_start_time = time.time()
+                    self.structured_logger.stage_start("audio_extraction", "Extracting and cleaning audio from video")
+                    
+                    raw_audio_path, clean_audio_path = self.audio_processor.extract_audio_from_video(video_path)
+                    
+                    # End resource monitoring for audio extraction
+                    if stage_usage and scheduler_session_started:
+                        self.resource_scheduler.end_stage(ProcessingStage.AUDIO_EXTRACTION, success=True)
+                    self.temp_audio_files.extend([raw_audio_path, clean_audio_path])
+                    
+                    # Track audio artifacts (versioning)
+                    if self.enable_versioning and self.dvc_manager:
+                        audio_artifacts = self.dvc_manager.track_audio_artifacts(raw_audio_path, clean_audio_path, self.run_id)
+                        self.intermediate_artifacts.update(audio_artifacts)
+                    
+                    # Track audio artifacts in manifest
+                    if self.manifest_manager:
+                        try:
+                            # Track clean audio as ASR-ready WAV
+                            self.manifest_manager.add_artifact(
+                                artifact_type="asr_wav",
+                                file_path=clean_audio_path,
+                                producing_component="AudioProcessor.extract_audio_from_video",
+                                input_artifacts=[],  # Depends on input media
+                                metadata={
+                                    "source": "video_extraction",
+                                    "processing_stage": "audio_extraction",
+                                    "audio_duration_seconds": self.audio_processor.get_audio_duration(clean_audio_path)
+                                }
+                            )
+                        except Exception as e:
+                            self.structured_logger.warning(f"Failed to track audio artifact in manifest: {e}")
+                    
+                    audio_extraction_time = time.time() - stage_start_time
+                    self.structured_logger.stage_complete("audio_extraction", "Audio extraction completed", 
+                                                        duration=audio_extraction_time,
+                                                        context={'raw_audio_path': raw_audio_path, 'clean_audio_path': clean_audio_path})
             
             # VALIDATION: Log audio file details for AssemblyAI integration
             audio_size = os.path.getsize(clean_audio_path)

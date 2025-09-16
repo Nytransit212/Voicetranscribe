@@ -654,3 +654,171 @@ evaluation_gates:
     bootstrap_confidence_intervals: true  # Use bootstrapping for confidence intervals
     outlier_detection_enabled: true       # Detect and handle statistical outliers
     outlier_threshold_std_devs: 2.5       # Standard deviations for outlier detection
+
+# Comprehensive Metrics and Alerting System Configuration
+metrics:
+  enabled: true                     # Enable comprehensive metrics collection
+  collection_interval_seconds: 30   # Metric collection interval
+  aggregation_window_seconds: 300   # 5-minute aggregation window
+  enable_background_processing: true # Enable background metric processing
+  background_processing_interval: 60 # Background processing interval (seconds)
+  
+  # Structured Logging Configuration
+  structured_logging:
+    enabled: true                   # Enable JSON-formatted structured logging
+    log_level: "INFO"               # Minimum log level for metrics
+    include_context: true           # Include contextual information
+    include_correlation_ids: true   # Include correlation IDs for request tracking
+    log_file_path: "logs/metrics"   # Path for metrics log files
+    log_rotation: "1 day"          # Log rotation interval
+    log_retention: "30 days"       # Log retention period
+    compression: "gz"              # Log compression format
+  
+  # Alert Configuration
+  alerting:
+    enabled: true                   # Enable threshold-based alerting
+    
+    # Alert destinations
+    alert_destinations:
+      console:
+        enabled: true               # Console output for development
+      file_logging:
+        enabled: true               # File-based alert logging
+        path: "logs/alerts"         # Alert log directory
+      webhook:
+        enabled: false              # Webhook notifications (disabled by default)
+        url: null                   # Webhook URL
+      email:
+        enabled: false              # Email notifications (disabled by default)
+        smtp_host: null             # SMTP configuration
+        recipients: []              # Email recipients list
+    
+    # Alert thresholds by category
+    thresholds:
+      # Performance metrics
+      performance:
+        processing_time_per_minute:
+          warning: 90.0             # 1.5x expected processing time
+          critical: 120.0           # 2x expected processing time
+        rtf_ratio:
+          warning: 1.5              # Real-time factor warning threshold
+          critical: 2.0             # Real-time factor critical threshold
+        memory_usage_peak_mb:
+          warning: 6144             # 6GB memory warning
+          critical: 8192            # 8GB memory critical
+        cache_hit_rate:
+          warning: 60.0             # Below 60% cache hits
+          info: 80.0                # Above 80% cache hits (positive alert)
+      
+      # Quality metrics  
+      quality:
+        word_error_rate:
+          warning: 3.0              # 3% WER warning threshold
+          critical: 5.0             # 5% WER critical threshold
+        diarization_error_rate:
+          warning: 8.0              # 8% DER warning threshold
+          critical: 15.0            # 15% DER critical threshold
+        entity_accuracy:
+          warning: 85.0             # Below 85% entity accuracy
+          info: 95.0                # Above 95% entity accuracy (positive)
+        confidence_score_avg:
+          warning: 0.7              # Below 70% average confidence
+          info: 0.9                 # Above 90% average confidence (positive)
+        boundary_error_rate:
+          warning: 0.05             # 5% boundary error rate
+          critical: 0.10            # 10% boundary error rate
+      
+      # System health metrics
+      system_health:
+        error_rate:
+          warning: 5.0              # 5% error rate warning
+          critical: 10.0            # 10% error rate critical
+        timeout_count:
+          warning: 5                # 5 timeouts per session
+          critical: 10              # 10 timeouts per session
+        fallback_activation_rate:
+          warning: 20.0             # 20% fallback activation rate
+          critical: 40.0            # 40% fallback activation rate  
+        resource_utilization_cpu:
+          warning: 80.0             # 80% CPU utilization
+          critical: 95.0            # 95% CPU utilization
+      
+      # Business metrics
+      business:
+        success_rate:
+          warning: 90.0             # Below 90% success rate
+          critical: 85.0            # Below 85% success rate
+        files_processed_per_hour:
+          info: 10                  # Good throughput indicator
+        user_satisfaction_proxy:
+          warning: 7.0              # Below 7/10 satisfaction proxy
+          info: 8.5                 # Above 8.5/10 satisfaction proxy
+  
+  # Metric definitions and retention
+  metric_definitions:
+    retention_days: 30              # Default metric retention period
+    export_interval_hours: 24       # Metric export interval
+    enable_trend_analysis: true     # Enable trend analysis
+    trend_analysis_window_days: 7   # Trend analysis lookback window
+    
+    # Metric categories with specific settings
+    categories:
+      performance:
+        collection_priority: "high" # High priority for performance metrics
+        sampling_rate: 1.0          # Collect 100% of performance metrics
+      quality:
+        collection_priority: "high" # High priority for quality metrics
+        sampling_rate: 1.0          # Collect 100% of quality metrics
+      system_health:
+        collection_priority: "medium" # Medium priority for system health
+        sampling_rate: 0.8          # Collect 80% of system health metrics
+      business:
+        collection_priority: "low"  # Lower priority for business metrics
+        sampling_rate: 0.5          # Collect 50% of business metrics (sample)
+  
+  # Real-time monitoring
+  real_time_monitoring:
+    enabled: true                   # Enable real-time monitoring
+    update_interval_seconds: 5      # Real-time update interval
+    dashboard_integration: true     # Enable dashboard integration
+    anomaly_detection: true         # Enable anomaly detection
+    anomaly_sensitivity: 0.1        # Anomaly detection sensitivity (10%)
+    statistical_window_size: 100    # Statistical analysis window size
+  
+  # CI/CD integration
+  ci_integration:
+    enabled: true                   # Enable CI integration features
+    ci_mode_detection: true         # Auto-detect CI environment
+    export_ci_reports: true         # Export CI-specific reports
+    fail_builds_on_violations: true # Fail CI builds on threshold violations
+    
+    # CI-specific quality gates
+    ci_quality_gates:
+      word_error_rate:
+        max: 5.0                    # Maximum WER for CI passes
+      diarization_error_rate:
+        max: 15.0                   # Maximum DER for CI passes
+      error_rate:
+        max: 10.0                   # Maximum error rate for CI passes
+      success_rate:
+        min: 85.0                   # Minimum success rate for CI passes
+      processing_time_per_minute:
+        max: 120.0                  # Maximum processing time for CI passes
+    
+    # Regression detection
+    regression_detection:
+      enabled: true                 # Enable performance regression detection
+      baseline_comparison_days: 7   # Compare against last 7 days baseline
+      regression_threshold_percent: 20.0 # 20% performance regression threshold
+      metrics_to_monitor:           # Metrics to monitor for regressions
+        - "word_error_rate"
+        - "processing_time_per_minute"
+        - "success_rate"
+        - "confidence_score_avg"
+    
+    # Test integration
+    test_integration:
+      enabled: true                 # Enable test framework integration
+      collect_test_metrics: true    # Collect metrics during tests
+      generate_test_reports: true   # Generate test-specific reports
+      test_quality_gates: true     # Apply quality gates to tests
