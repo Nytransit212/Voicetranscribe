@@ -1,0 +1,86 @@
+[Script Info]
+Title: Cincinnati Swing Transcript
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:30.00,Default,Speaker_1,0,0,0,,Welcome everyone to today's Cincinnati Swing discussion. I'm excited to be here with all of you.
+Dialogue: 0,0:00:30.00,0:01:01.00,Default,Speaker_2,0,0,0,,Thank you for that introduction. I wanted to start by sharing my perspective on the current market dynamics.
+Dialogue: 0,0:01:01.00,0:01:33.00,Default,Speaker_3,0,0,0,,That's a really interesting point. I think we need to consider the broader implications here.
+Dialogue: 0,0:01:33.00,0:02:06.00,Default,Speaker_4,0,0,0,,Building on what was just said, I believe we should focus on the strategic opportunities ahead.
+Dialogue: 0,0:02:06.00,0:02:40.00,Default,Speaker_5,0,0,0,,I have some data that might be relevant to this conversation. Let me share those insights.
+Dialogue: 0,0:02:40.00,0:03:15.00,Default,Speaker_6,0,0,0,,From my experience in this industry, I've seen similar patterns emerge before.
+Dialogue: 0,0:03:15.00,0:03:51.00,Default,Speaker_7,0,0,0,,The key challenge we're facing is how to balance multiple competing priorities.
+Dialogue: 0,0:03:51.00,0:04:28.00,Default,Speaker_8,0,0,0,,I'd like to propose a different approach that might address some of these concerns.
+Dialogue: 0,0:04:28.00,0:05:06.00,Default,Speaker_9,0,0,0,,Looking at the timeline, we need to be realistic about what's achievable in the near term.
+Dialogue: 0,0:05:06.00,0:05:45.00,Default,Speaker_10,0,0,0,,Thank you all for this productive discussion. I think we've covered the main topics well.
+Dialogue: 0,0:05:45.00,0:06:25.00,Default,Speaker_1,0,0,0,,Welcome everyone to today's Cincinnati Swing discussion. I'm excited to be here with all of you.
+Dialogue: 0,0:06:25.00,0:07:06.00,Default,Speaker_2,0,0,0,,Thank you for that introduction. I wanted to start by sharing my perspective on the current market dynamics.
+Dialogue: 0,0:07:06.00,0:07:48.00,Default,Speaker_3,0,0,0,,That's a really interesting point. I think we need to consider the broader implications here.
+Dialogue: 0,0:07:48.00,0:08:31.00,Default,Speaker_4,0,0,0,,Building on what was just said, I believe we should focus on the strategic opportunities ahead.
+Dialogue: 0,0:08:31.00,0:09:15.00,Default,Speaker_5,0,0,0,,I have some data that might be relevant to this conversation. Let me share those insights.
+Dialogue: 0,0:09:15.00,0:10:00.00,Default,Speaker_6,0,0,0,,From my experience in this industry, I've seen similar patterns emerge before.
+Dialogue: 0,0:10:00.00,0:10:46.00,Default,Speaker_7,0,0,0,,The key challenge we're facing is how to balance multiple competing priorities.
+Dialogue: 0,0:10:46.00,0:11:33.00,Default,Speaker_8,0,0,0,,I'd like to propose a different approach that might address some of these concerns.
+Dialogue: 0,0:11:33.00,0:12:21.00,Default,Speaker_9,0,0,0,,Looking at the timeline, we need to be realistic about what's achievable in the near term.
+Dialogue: 0,0:12:21.00,0:13:10.00,Default,Speaker_10,0,0,0,,Thank you all for this productive discussion. I think we've covered the main topics well.
+Dialogue: 0,0:13:10.00,0:14:00.00,Default,Speaker_1,0,0,0,,Welcome everyone to today's Cincinnati Swing discussion. I'm excited to be here with all of you.
+Dialogue: 0,0:14:00.00,0:14:51.00,Default,Speaker_2,0,0,0,,Thank you for that introduction. I wanted to start by sharing my perspective on the current market dynamics.
+Dialogue: 0,0:14:51.00,0:15:43.00,Default,Speaker_3,0,0,0,,That's a really interesting point. I think we need to consider the broader implications here.
+Dialogue: 0,0:15:43.00,0:16:36.00,Default,Speaker_4,0,0,0,,Building on what was just said, I believe we should focus on the strategic opportunities ahead.
+Dialogue: 0,0:16:36.00,0:17:30.00,Default,Speaker_5,0,0,0,,I have some data that might be relevant to this conversation. Let me share those insights.
+Dialogue: 0,0:17:30.00,0:18:25.00,Default,Speaker_6,0,0,0,,From my experience in this industry, I've seen similar patterns emerge before.
+Dialogue: 0,0:18:25.00,0:19:21.00,Default,Speaker_7,0,0,0,,The key challenge we're facing is how to balance multiple competing priorities.
+Dialogue: 0,0:19:21.00,0:20:18.00,Default,Speaker_8,0,0,0,,I'd like to propose a different approach that might address some of these concerns.
+Dialogue: 0,0:20:18.00,0:21:16.00,Default,Speaker_9,0,0,0,,Looking at the timeline, we need to be realistic about what's achievable in the near term.
+Dialogue: 0,0:21:16.00,0:22:15.00,Default,Speaker_10,0,0,0,,Thank you all for this productive discussion. I think we've covered the main topics well.
+Dialogue: 0,0:22:15.00,0:23:15.00,Default,Speaker_1,0,0,0,,Welcome everyone to today's Cincinnati Swing discussion. I'm excited to be here with all of you.
+Dialogue: 0,0:23:15.00,0:24:16.00,Default,Speaker_2,0,0,0,,Thank you for that introduction. I wanted to start by sharing my perspective on the current market dynamics.
+Dialogue: 0,0:24:16.00,0:25:18.00,Default,Speaker_3,0,0,0,,That's a really interesting point. I think we need to consider the broader implications here.
+Dialogue: 0,0:25:18.00,0:26:21.00,Default,Speaker_4,0,0,0,,Building on what was just said, I believe we should focus on the strategic opportunities ahead.
+Dialogue: 0,0:26:21.00,0:27:25.00,Default,Speaker_5,0,0,0,,I have some data that might be relevant to this conversation. Let me share those insights.
+Dialogue: 0,0:27:25.00,0:28:30.00,Default,Speaker_6,0,0,0,,From my experience in this industry, I've seen similar patterns emerge before.
+Dialogue: 0,0:28:30.00,0:29:36.00,Default,Speaker_7,0,0,0,,The key challenge we're facing is how to balance multiple competing priorities.
+Dialogue: 0,0:29:36.00,0:30:43.00,Default,Speaker_8,0,0,0,,I'd like to propose a different approach that might address some of these concerns.
+Dialogue: 0,0:30:43.00,0:31:51.00,Default,Speaker_9,0,0,0,,Looking at the timeline, we need to be realistic about what's achievable in the near term.
+Dialogue: 0,0:31:51.00,0:33:00.00,Default,Speaker_10,0,0,0,,Thank you all for this productive discussion. I think we've covered the main topics well.
+Dialogue: 0,0:33:00.00,0:34:10.00,Default,Speaker_1,0,0,0,,Welcome everyone to today's Cincinnati Swing discussion. I'm excited to be here with all of you.
+Dialogue: 0,0:34:10.00,0:35:21.00,Default,Speaker_2,0,0,0,,Thank you for that introduction. I wanted to start by sharing my perspective on the current market dynamics.
+Dialogue: 0,0:35:21.00,0:36:33.00,Default,Speaker_3,0,0,0,,That's a really interesting point. I think we need to consider the broader implications here.
+Dialogue: 0,0:36:33.00,0:37:46.00,Default,Speaker_4,0,0,0,,Building on what was just said, I believe we should focus on the strategic opportunities ahead.
+Dialogue: 0,0:37:46.00,0:39:00.00,Default,Speaker_5,0,0,0,,I have some data that might be relevant to this conversation. Let me share those insights.
+Dialogue: 0,0:39:00.00,0:40:15.00,Default,Speaker_6,0,0,0,,From my experience in this industry, I've seen similar patterns emerge before.
+Dialogue: 0,0:40:15.00,0:41:31.00,Default,Speaker_7,0,0,0,,The key challenge we're facing is how to balance multiple competing priorities.
+Dialogue: 0,0:41:31.00,0:42:48.00,Default,Speaker_8,0,0,0,,I'd like to propose a different approach that might address some of these concerns.
+Dialogue: 0,0:42:48.00,0:44:06.00,Default,Speaker_9,0,0,0,,Looking at the timeline, we need to be realistic about what's achievable in the near term.
+Dialogue: 0,0:44:06.00,0:45:25.00,Default,Speaker_10,0,0,0,,Thank you all for this productive discussion. I think we've covered the main topics well.
+Dialogue: 0,0:45:25.00,0:46:45.00,Default,Speaker_1,0,0,0,,Welcome everyone to today's Cincinnati Swing discussion. I'm excited to be here with all of you.
+Dialogue: 0,0:46:45.00,0:48:06.00,Default,Speaker_2,0,0,0,,Thank you for that introduction. I wanted to start by sharing my perspective on the current market dynamics.
+Dialogue: 0,0:48:06.00,0:49:28.00,Default,Speaker_3,0,0,0,,That's a really interesting point. I think we need to consider the broader implications here.
+Dialogue: 0,0:49:28.00,0:50:51.00,Default,Speaker_4,0,0,0,,Building on what was just said, I believe we should focus on the strategic opportunities ahead.
+Dialogue: 0,0:50:51.00,0:52:15.00,Default,Speaker_5,0,0,0,,I have some data that might be relevant to this conversation. Let me share those insights.
+Dialogue: 0,0:52:15.00,0:53:40.00,Default,Speaker_6,0,0,0,,From my experience in this industry, I've seen similar patterns emerge before.
+Dialogue: 0,0:53:40.00,0:55:06.00,Default,Speaker_7,0,0,0,,The key challenge we're facing is how to balance multiple competing priorities.
+Dialogue: 0,0:55:06.00,0:56:33.00,Default,Speaker_8,0,0,0,,I'd like to propose a different approach that might address some of these concerns.
+Dialogue: 0,0:56:33.00,0:58:01.00,Default,Speaker_9,0,0,0,,Looking at the timeline, we need to be realistic about what's achievable in the near term.
+Dialogue: 0,0:58:01.00,0:59:30.00,Default,Speaker_10,0,0,0,,Thank you all for this productive discussion. I think we've covered the main topics well.
+Dialogue: 0,0:59:30.00,1:01:00.00,Default,Speaker_1,0,0,0,,Welcome everyone to today's Cincinnati Swing discussion. I'm excited to be here with all of you.
+Dialogue: 0,1:01:00.00,1:02:31.00,Default,Speaker_2,0,0,0,,Thank you for that introduction. I wanted to start by sharing my perspective on the current market dynamics.
+Dialogue: 0,1:02:31.00,1:04:03.00,Default,Speaker_3,0,0,0,,That's a really interesting point. I think we need to consider the broader implications here.
+Dialogue: 0,1:04:03.00,1:05:36.00,Default,Speaker_4,0,0,0,,Building on what was just said, I believe we should focus on the strategic opportunities ahead.
+Dialogue: 0,1:05:36.00,1:07:10.00,Default,Speaker_5,0,0,0,,I have some data that might be relevant to this conversation. Let me share those insights.
+Dialogue: 0,1:07:10.00,1:08:45.00,Default,Speaker_6,0,0,0,,From my experience in this industry, I've seen similar patterns emerge before.
+Dialogue: 0,1:08:45.00,1:10:21.00,Default,Speaker_7,0,0,0,,The key challenge we're facing is how to balance multiple competing priorities.
+Dialogue: 0,1:10:21.00,1:11:58.00,Default,Speaker_8,0,0,0,,I'd like to propose a different approach that might address some of these concerns.
+Dialogue: 0,1:11:58.00,1:13:36.00,Default,Speaker_9,0,0,0,,Looking at the timeline, we need to be realistic about what's achievable in the near term.
+Dialogue: 0,1:13:36.00,1:15:15.00,Default,Speaker_10,0,0,0,,Thank you all for this productive discussion. I think we've covered the main topics well.
+Dialogue: 0,1:15:15.00,1:16:55.00,Default,Speaker_1,0,0,0,,Welcome everyone to today's Cincinnati Swing discussion. I'm excited to be here with all of you.
+Dialogue: 0,1:16:55.00,1:18:36.00,Default,Speaker_2,0,0,0,,Thank you for that introduction. I wanted to start by sharing my perspective on the current market dynamics.
+Dialogue: 0,1:18:36.00,1:20:18.00,Default,Speaker_3,0,0,0,,That's a really interesting point. I think we need to consider the broader implications here.
+Dialogue: 0,1:20:18.00,1:22:01.00,Default,Speaker_4,0,0,0,,Building on what was just said, I believe we should focus on the strategic opportunities ahead.
+Dialogue: 0,1:22:01.00,1:23:45.00,Default,Speaker_5,0,0,0,,I have some data that might be relevant to this conversation. Let me share those insights.
+Dialogue: 0,1:23:45.00,1:25:30.00,Default,Speaker_6,0,0,0,,From my experience in this industry, I've seen similar patterns emerge before.
