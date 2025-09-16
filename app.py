@@ -69,6 +69,18 @@ def main():
             'calibration': ['registry_based', 'raw_scores']
         }
     
+    # Initialize post-fusion punctuation settings
+    if 'punctuation_enabled' not in st.session_state:
+        st.session_state.punctuation_enabled = True
+    if 'punctuation_preset' not in st.session_state:
+        st.session_state.punctuation_preset = 'meeting_light'
+    if 'disfluency_level' not in st.session_state:
+        st.session_state.disfluency_level = 'light'
+    if 'meeting_vocabulary_enabled' not in st.session_state:
+        st.session_state.meeting_vocabulary_enabled = True
+    if 'capitalization_enabled' not in st.session_state:
+        st.session_state.capitalization_enabled = True
+    
     # U7 Upgrade: Initialize U7 system settings
     if 'u7_enable_caching' not in st.session_state:
         st.session_state.u7_enable_caching = True
@@ -246,6 +258,88 @@ def main():
             'raw_scores': 'Pass through raw scores with simple clipping'
         }
         st.info(cal_descriptions[selected_calibration])
+    
+    # Post-Fusion Punctuation Configuration
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("✍️ Post-Fusion Punctuation Configuration", expanded=False):
+        st.markdown("**Configure punctuation and disfluency normalization:**")
+        
+        # Enable punctuation processing
+        punctuation_enabled = st.checkbox(
+            "Enable Post-Fusion Punctuation",
+            value=st.session_state.punctuation_enabled,
+            help="Apply punctuation and capitalization after fusion consensus"
+        )
+        st.session_state.punctuation_enabled = punctuation_enabled
+        
+        if punctuation_enabled:
+            # Punctuation preset selection
+            punctuation_presets = {
+                'meeting_light': '🤝 Meeting Light (Default)',
+                'meeting_moderate': '🤝 Meeting Moderate', 
+                'meeting_aggressive': '🤝 Meeting Aggressive',
+                'general_light': '📝 General Purpose Light'
+            }
+            
+            selected_preset = st.selectbox(
+                "Punctuation Preset",
+                options=list(punctuation_presets.keys()),
+                format_func=lambda x: punctuation_presets[x],
+                index=list(punctuation_presets.keys()).index(st.session_state.punctuation_preset),
+                help="Choose punctuation configuration optimized for different contexts"
+            )
+            st.session_state.punctuation_preset = selected_preset
+            
+            # Disfluency normalization level
+            disfluency_levels = {
+                'light': '🌿 Light - Remove excessive fillers only',
+                'moderate': '⚖️ Moderate - More aggressive cleaning', 
+                'aggressive': '💪 Aggressive - Maximum polish'
+            }
+            
+            selected_disfluency = st.selectbox(
+                "Disfluency Normalization Level",
+                options=list(disfluency_levels.keys()),
+                format_func=lambda x: disfluency_levels[x],
+                index=list(disfluency_levels.keys()).index(st.session_state.disfluency_level),
+                help="Choose how aggressively to remove fillers and false starts"
+            )
+            st.session_state.disfluency_level = selected_disfluency
+            
+            # Meeting vocabulary handling
+            meeting_vocab_enabled = st.checkbox(
+                "Enable Meeting Vocabulary",
+                value=st.session_state.meeting_vocabulary_enabled,
+                help="Use meeting-specific vocabulary for better punctuation context"
+            )
+            st.session_state.meeting_vocabulary_enabled = meeting_vocab_enabled
+            
+            # Capitalization  
+            capitalization_enabled = st.checkbox(
+                "Enable Smart Capitalization",
+                value=st.session_state.capitalization_enabled,
+                help="Apply intelligent capitalization for proper nouns and sentence boundaries"
+            )
+            st.session_state.capitalization_enabled = capitalization_enabled
+            
+            # Show preset description
+            preset_descriptions = {
+                'meeting_light': 'Light punctuation with minimal disfluency removal. Preserves natural speech patterns while improving readability.',
+                'meeting_moderate': 'Balanced punctuation with moderate disfluency cleaning. Good for most business meetings.',
+                'meeting_aggressive': 'Maximum punctuation polish with aggressive disfluency removal. Creates highly polished transcripts.',
+                'general_light': 'Basic punctuation for general content without meeting-specific optimizations.'
+            }
+            st.info(f"**{punctuation_presets[selected_preset].split(' ', 1)[1]}**: {preset_descriptions[selected_preset]}")
+            
+            # Disfluency level descriptions
+            disfluency_descriptions = {
+                'light': 'Removes 3+ consecutive fillers (um um um), obvious false starts, and multiple pause markers.',
+                'moderate': 'Removes 2+ consecutive fillers, word repetitions, and context-dependent single fillers.',
+                'aggressive': 'Removes all fillers, discourse markers (basically, actually), and partial words for maximum polish.'
+            }
+            st.info(f"**Normalization**: {disfluency_descriptions[selected_disfluency]}")
+        else:
+            st.info("💡 Enable punctuation processing to improve transcript readability and accuracy")
     
     # A/B Testing Configuration
     st.sidebar.markdown("---")
@@ -518,6 +612,21 @@ def process_video_from_local_path(video_file_path, expected_speakers, noise_leve
             calibration_method=st.session_state.calibration_method,
             domain="meeting"  # Default domain for UI uploads
         )
+        
+        # Configure post-fusion punctuation settings
+        if hasattr(ensemble_manager, 'enable_post_fusion_punctuation'):
+            ensemble_manager.enable_post_fusion_punctuation = st.session_state.punctuation_enabled
+            if st.session_state.punctuation_enabled:
+                ensemble_manager.punctuation_preset = st.session_state.punctuation_preset
+                
+                # Apply custom configuration if needed
+                if ensemble_manager.punctuation_engine:
+                    custom_config = {
+                        'disfluency_level': st.session_state.disfluency_level,
+                        'enable_meeting_vocabulary': st.session_state.meeting_vocabulary_enabled,
+                        'enable_capitalization': st.session_state.capitalization_enabled
+                    }
+                    ensemble_manager.punctuation_engine.update_configuration(custom_config)
         
         # U7 Upgrade: Configure U7 settings from session state
         ensemble_manager.enable_caching = st.session_state.u7_enable_caching

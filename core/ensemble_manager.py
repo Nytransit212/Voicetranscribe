@@ -26,6 +26,7 @@ from utils.segment_worklist import get_worklist_manager, SegmentWorklistManager
 from utils.selective_asr import get_selective_asr_processor, SelectiveASRProcessor
 from utils.advanced_asr_scheduler import get_asr_scheduler, AdvancedASRScheduler
 from core.source_separation_engine import SourceSeparationEngine, SourceSeparationResult
+from core.post_fusion_punctuation_engine import PostFusionPunctuationEngine, create_punctuation_engine_from_preset
 
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
@@ -41,6 +42,11 @@ class EnsembleManager:
         
         # Enhanced speaker mapping configuration with ECAPA-TDNN and backtracking
         self.enable_speaker_mapping = enable_speaker_mapping
+        
+        # Post-fusion punctuation configuration
+        self.enable_post_fusion_punctuation = True
+        self.punctuation_preset = "meeting_light"  # Default preset for meeting contexts
+        self.punctuation_engine = None  # Will be initialized when needed
         self.speaker_mapping_config = speaker_mapping_config or {
             # Core parameters
             'similarity_threshold': 0.7,
@@ -145,6 +151,16 @@ class EnsembleManager:
             self.structured_logger.warning(f"Failed to initialize source separation engine: {e}")
             self.source_separation_engine = None
             self.enable_source_separation = False
+        
+        # Initialize post-fusion punctuation engine if enabled
+        if self.enable_post_fusion_punctuation:
+            try:
+                self.punctuation_engine = create_punctuation_engine_from_preset(self.punctuation_preset)
+                self.structured_logger.info(f"Post-fusion punctuation engine initialized with preset: {self.punctuation_preset}")
+            except Exception as e:
+                self.structured_logger.warning(f"Failed to initialize punctuation engine: {e}")
+                self.enable_post_fusion_punctuation = False
+                self.punctuation_engine = None
         
         # Initialize consensus module
         try:
@@ -802,7 +818,72 @@ class EnsembleManager:
             if progress_callback:
                 progress_callback("G", 92, "Generating final outputs...")
             
-            # Format outputs
+            # Step 7.5: Post-Fusion Punctuation Processing (92-95%)
+            if self.enable_post_fusion_punctuation and self.punctuation_engine:
+                if progress_callback:
+                    progress_callback("G1", 92, "Applying punctuation and disfluency normalization...")
+                
+                stage_start_time = time.time()
+                self.structured_logger.stage_start("post_fusion_punctuation", "Applying post-fusion punctuation and disfluency normalization")
+                
+                try:
+                    # Extract segments from winner for punctuation processing
+                    winner_segments = winner.get('segments', [])
+                    
+                    # Apply post-fusion punctuation
+                    punctuation_result = self.punctuation_engine.process_fused_segments(winner_segments)
+                    
+                    # Update winner with punctuated segments
+                    punctuated_segments = []
+                    for punctuated_seg in punctuation_result.segments:
+                        segment_dict = {
+                            'start': punctuated_seg.start_time,
+                            'end': punctuated_seg.end_time,
+                            'speaker': punctuated_seg.speaker_id or 'Unknown',
+                            'text': punctuated_seg.punctuated_text,
+                            'original_text': punctuated_seg.original_text,
+                            'punctuation_confidence': punctuated_seg.punctuation_confidence,
+                            'disfluency_normalization_applied': punctuated_seg.disfluency_normalization is not None,
+                            'processing_metadata': punctuated_seg.processing_metadata
+                        }
+                        punctuated_segments.append(segment_dict)
+                    
+                    # Update winner candidate with punctuated segments
+                    winner['segments'] = punctuated_segments
+                    winner['punctuation_metadata'] = {
+                        'overall_confidence': punctuation_result.overall_confidence,
+                        'punctuation_metrics': punctuation_result.punctuation_metrics,
+                        'disfluency_metrics': punctuation_result.disfluency_metrics,
+                        'processing_time': punctuation_result.processing_time,
+                        'model_info': punctuation_result.model_info,
+                        'normalization_level': punctuation_result.normalization_level
+                    }
+                    
+                    punctuation_time = time.time() - stage_start_time
+                    self.structured_logger.stage_complete("post_fusion_punctuation", "Post-fusion punctuation completed successfully",
+                                                        duration=punctuation_time,
+                                                        metrics={
+                                                            'segments_processed': len(punctuated_segments),
+                                                            'overall_confidence': punctuation_result.overall_confidence,
+                                                            'punctuation_changes': punctuation_result.punctuation_metrics.get('segments_changed', 0),
+                                                            'disfluency_normalizations': punctuation_result.disfluency_metrics.get('segments_normalized', 0)
+                                                        })
+                    
+                    if progress_callback:
+                        progress_callback("G1", 94, f"Punctuation applied - {len(punctuated_segments)} segments processed")
+                        
+                except Exception as e:
+                    self.structured_logger.error(f"Post-fusion punctuation failed: {e}")
+                    # Continue with original segments on error
+                    punctuation_time = time.time() - stage_start_time
+                    self.structured_logger.stage_complete("post_fusion_punctuation", "Post-fusion punctuation failed, using original segments",
+                                                        duration=punctuation_time,
+                                                        context={'error': str(e)})
+            
+            # Format outputs (now using potentially punctuated segments)
+            if progress_callback:
+                progress_callback("G2", 95, "Generating final transcript formats...")
+            
             winner_transcript_json = self._create_master_transcript(winner)
             winner_transcript_txt = self.transcript_formatter.create_txt_transcript(winner_transcript_json)
             

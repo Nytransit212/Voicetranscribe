@@ -26,6 +26,9 @@ class TranscriptFormatter:
         speaker_map = master_transcript.get('speaker_map', {})
         metadata = master_transcript.get('metadata', {})
         
+        # Check if post-fusion punctuation was applied
+        punctuation_metadata = master_transcript.get('punctuation_metadata', {})
+        
         # Build header
         lines = []
         lines.append("=" * 60)
@@ -59,6 +62,28 @@ class TranscriptFormatter:
             lines.append(f"  • Overlap Handling: {confidence_summary.get('O_overlap', 0):.3f}")
             lines.append("")
         
+        # Add punctuation summary if available
+        if punctuation_metadata:
+            lines.append("PUNCTUATION PROCESSING:")
+            lines.append(f"  • Punctuation Confidence: {punctuation_metadata.get('overall_confidence', 0):.3f}")
+            lines.append(f"  • Normalization Level: {punctuation_metadata.get('normalization_level', 'N/A')}")
+            
+            punctuation_metrics = punctuation_metadata.get('punctuation_metrics', {})
+            disfluency_metrics = punctuation_metadata.get('disfluency_metrics', {})
+            
+            if punctuation_metrics:
+                lines.append(f"  • Segments Changed: {punctuation_metrics.get('segments_changed', 0)}")
+            if disfluency_metrics:
+                lines.append(f"  • Disfluency Normalized: {disfluency_metrics.get('segments_normalized', 0)}")
+            
+            model_info = punctuation_metadata.get('model_info', {})
+            if model_info.get('model_available') == 'True':
+                lines.append(f"  • Model: Transformer-based ({model_info.get('punctuation_model', 'Unknown')})")
+            else:
+                lines.append("  • Model: Rule-based (fallback)")
+            
+            lines.append("")
+        
         lines.append("TRANSCRIPT:")
         lines.append("-" * 60)
         lines.append("")
@@ -79,7 +104,30 @@ class TranscriptFormatter:
                     lines.append("")  # Add blank line between speakers
                 current_speaker = speaker
             
-            lines.append(f"[{timestamp}] {speaker}: {text}")
+            # Check if segment has punctuation metadata for enhanced display
+            if segment.get('punctuation_confidence') is not None:
+                # Use punctuated text if confidence is high enough
+                punct_confidence = segment.get('punctuation_confidence', 0)
+                if punct_confidence > 0.5:  # Confidence threshold
+                    # Show if disfluency normalization was applied
+                    normalization_note = ""
+                    if segment.get('disfluency_normalization_applied', False):
+                        normalization_note = " [normalized]"
+                    
+                    lines.append(f"[{timestamp}] {speaker}: {text}{normalization_note}")
+                    
+                    # Optionally show original text if significantly different
+                    original_text = segment.get('original_text', '')
+                    if original_text and original_text.strip() != text.strip() and len(original_text) > 10:
+                        text_diff = len(original_text) - len(text)
+                        if abs(text_diff) > 5:  # Significant change threshold
+                            lines.append(f"    [Original: {original_text.strip()[:100]}...]" if len(original_text) > 100 else f"    [Original: {original_text.strip()}]")
+                else:
+                    # Use original text if punctuation confidence is low
+                    lines.append(f"[{timestamp}] {speaker}: {text}")
+            else:
+                # Standard display for segments without punctuation processing
+                lines.append(f"[{timestamp}] {speaker}: {text}")
         
         # Add footer
         lines.append("")
@@ -90,6 +138,9 @@ class TranscriptFormatter:
         lines.append("  [HH:MM:SS] - Timestamp")
         lines.append("  Speaker: - Speaker identification")
         lines.append("  Confidence scores range from 0.000 to 1.000")
+        if punctuation_metadata:
+            lines.append("  [normalized] - Disfluency normalization applied")
+            lines.append("  [Original: ...] - Original text before punctuation/normalization")
         lines.append("")
         
         return '\n'.join(lines)
