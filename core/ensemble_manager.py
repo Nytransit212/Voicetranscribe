@@ -607,6 +607,9 @@ class EnsembleManager:
                 self.cache_manager.set("complete_ensemble_processing", results, video_path, processing_config)
                 self.structured_logger.info("U7: Complete processing result cached for future reuse")
             
+            # CRITICAL FIX: Persist outputs to files for download
+            self._persist_output_files(results)
+            
             return results
             
         except Exception as e:
@@ -784,3 +787,76 @@ class EnsembleManager:
         except Exception as e:
             print(f"Warning: Could not analyze audio silence: {e}")
             return False
+    
+    def _persist_output_files(self, results: Dict[str, Any]) -> None:
+        """Persist transcript outputs to artifacts directory for download"""
+        try:
+            import os
+            from pathlib import Path
+            
+            # Create artifacts/reports directory
+            reports_dir = Path("artifacts/reports")
+            run_dir = reports_dir / self.run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Write transcript files
+            files_written = []
+            
+            # JSON transcript
+            if 'winner_transcript' in results:
+                json_path = run_dir / "transcript.json"
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    import json
+                    json.dump(results['winner_transcript'], f, indent=2, ensure_ascii=False)
+                files_written.append(str(json_path))
+            
+            # TXT transcript  
+            if 'winner_transcript_txt' in results:
+                txt_path = run_dir / "transcript.txt"
+                with open(txt_path, 'w', encoding='utf-8') as f:
+                    f.write(results['winner_transcript_txt'])
+                files_written.append(str(txt_path))
+            
+            # VTT captions
+            if 'captions_vtt' in results:
+                vtt_path = run_dir / "captions.vtt"
+                with open(vtt_path, 'w', encoding='utf-8') as f:
+                    f.write(results['captions_vtt'])
+                files_written.append(str(vtt_path))
+            
+            # SRT captions
+            if 'captions_srt' in results:
+                srt_path = run_dir / "captions.srt"
+                with open(srt_path, 'w', encoding='utf-8') as f:
+                    f.write(results['captions_srt'])
+                files_written.append(str(srt_path))
+            
+            # ASS captions
+            if 'captions_ass' in results:
+                ass_path = run_dir / "captions.ass"
+                with open(ass_path, 'w', encoding='utf-8') as f:
+                    f.write(results['captions_ass'])
+                files_written.append(str(ass_path))
+            
+            # Ensemble audit report
+            if 'ensemble_audit' in results:
+                audit_path = run_dir / "ensemble_audit.json"
+                with open(audit_path, 'w', encoding='utf-8') as f:
+                    import json
+                    json.dump(results['ensemble_audit'], f, indent=2)
+                files_written.append(str(audit_path))
+            
+            # Add file paths to results for UI display
+            results['output_files'] = {
+                'directory': str(run_dir),
+                'files': files_written,
+                'run_id': self.run_id
+            }
+            
+            print(f"✅ Persisted {len(files_written)} output files to {run_dir}")
+            self.structured_logger.info("Output files persisted", 
+                                      context={'files_written': len(files_written), 'directory': str(run_dir)})
+            
+        except Exception as e:
+            print(f"⚠️ Warning: Could not persist output files: {e}")
+            self.structured_logger.warning(f"Failed to persist output files: {e}")
