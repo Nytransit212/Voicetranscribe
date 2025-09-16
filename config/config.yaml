@@ -38,7 +38,41 @@ files:
 # Processing Settings  
 processing:
   enable_parallel_processing: true
-  chunk_size_seconds: 30  # For large files
+  chunk_size_seconds: 30  # For large files (legacy setting - see chunking section)
+
+# Elastic Chunking Configuration - Intelligent chunk sizing based on speech characteristics
+chunking:
+  enabled: true                        # Enable elastic chunking system
+  min_chunk_seconds: 15.0              # Minimum chunk size (seconds)
+  max_chunk_seconds: 60.0              # Maximum chunk size (seconds)  
+  target_chunk_seconds: 30.0           # Default target chunk size (seconds)
+  overlap_threshold: 0.3               # Overlap density threshold for size decisions
+  
+  # Speech analysis parameters
+  vad_frame_length_ms: 25.0            # VAD frame length (milliseconds)
+  vad_hop_length_ms: 10.0              # VAD hop length (milliseconds)
+  energy_smoothing_window: 5           # Energy smoothing window size
+  voice_activity_threshold: 0.015      # Voice activity detection threshold
+  silence_threshold_db: -40.0          # Silence detection threshold (dB)
+  
+  # Boundary detection parameters
+  pause_min_duration: 0.3              # Minimum pause for boundary consideration (seconds)
+  pause_max_duration: 2.0              # Maximum pause to consider (seconds)
+  speaker_turn_weight: 1.5             # Weight bonus for speaker turn boundaries
+  energy_valley_weight: 1.2            # Weight for energy valley boundaries  
+  word_boundary_preference: 0.8        # Preference for word boundaries
+  
+  # Adaptive logic parameters
+  high_overlap_threshold: 0.4          # Threshold for high overlap density
+  low_overlap_threshold: 0.15          # Threshold for low overlap density
+  complexity_analysis_window: 10.0     # Window for complexity analysis (seconds)
+  boundary_search_window: 5.0          # Search window around target boundary (seconds)
+  
+  # Performance and caching
+  enable_parallel_analysis: true       # Enable parallel speech analysis
+  cache_audio_analysis: true           # Cache audio analysis results
+  max_analysis_workers: 3              # Maximum workers for parallel analysis
+  chunk_overlap_seconds: 1.0           # Overlap between chunks for continuity (seconds)
 
 # Reliability Configuration - Centralized timeout, concurrency, and circuit breaker settings
 reliability:

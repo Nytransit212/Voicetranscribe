@@ -72,6 +72,12 @@ from utils.resource_scheduler import (
     DowngradeStrategy,
     with_resource_scheduling
 )
+from utils.elastic_chunker import (
+    ElasticChunker,
+    ChunkingConfig,
+    create_elastic_chunker,
+    get_elastic_chunker
+)
 
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
@@ -121,6 +127,10 @@ class EnsembleManager:
             'consecutive_drift_threshold': 2
         }
         self.chunked_processing_threshold = chunked_processing_threshold  # Seconds (15 minutes default)
+        
+        # Elastic chunking configuration and initialization
+        self.enable_elastic_chunking = True  # Enable intelligent chunking by default
+        self.elastic_chunker = None  # Will be initialized when needed
         
         # Dialect handling configuration
         self.enable_dialect_handling = enable_dialect_handling
@@ -598,6 +608,63 @@ class EnsembleManager:
         # Working directory for temporary files
         self.work_dir: Optional[str] = None
         self.temp_audio_files: List[str] = []  # Track temp audio files for cleanup
+    
+    def _initialize_elastic_chunker(self) -> None:
+        """
+        Initialize elastic chunker with configuration from Hydra config
+        """
+        if self.elastic_chunker is not None:
+            return  # Already initialized
+            
+        try:
+            # Get chunking configuration from Hydra
+            config = hydra.core.global_hydra.GlobalHydra.instance().hydra.cfg
+            chunking_config = {}
+            
+            if config and 'chunking' in config:
+                chunking_params = config.chunking
+                chunking_config = {
+                    'enabled': chunking_params.get('enabled', True),
+                    'min_chunk_seconds': chunking_params.get('min_chunk_seconds', 15.0),
+                    'max_chunk_seconds': chunking_params.get('max_chunk_seconds', 60.0),
+                    'target_chunk_seconds': chunking_params.get('target_chunk_seconds', 30.0),
+                    'overlap_threshold': chunking_params.get('overlap_threshold', 0.3),
+                    'vad_frame_length_ms': chunking_params.get('vad_frame_length_ms', 25.0),
+                    'vad_hop_length_ms': chunking_params.get('vad_hop_length_ms', 10.0),
+                    'energy_smoothing_window': chunking_params.get('energy_smoothing_window', 5),
+                    'voice_activity_threshold': chunking_params.get('voice_activity_threshold', 0.015),
+                    'silence_threshold_db': chunking_params.get('silence_threshold_db', -40.0),
+                    'pause_min_duration': chunking_params.get('pause_min_duration', 0.3),
+                    'pause_max_duration': chunking_params.get('pause_max_duration', 2.0),
+                    'speaker_turn_weight': chunking_params.get('speaker_turn_weight', 1.5),
+                    'energy_valley_weight': chunking_params.get('energy_valley_weight', 1.2),
+                    'word_boundary_preference': chunking_params.get('word_boundary_preference', 0.8),
+                    'high_overlap_threshold': chunking_params.get('high_overlap_threshold', 0.4),
+                    'low_overlap_threshold': chunking_params.get('low_overlap_threshold', 0.15),
+                    'complexity_analysis_window': chunking_params.get('complexity_analysis_window', 10.0),
+                    'boundary_search_window': chunking_params.get('boundary_search_window', 5.0),
+                    'enable_parallel_analysis': chunking_params.get('enable_parallel_analysis', True),
+                    'cache_audio_analysis': chunking_params.get('cache_audio_analysis', True),
+                    'max_analysis_workers': chunking_params.get('max_analysis_workers', 3),
+                    'chunk_overlap_seconds': chunking_params.get('chunk_overlap_seconds', 1.0)
+                }
+                
+                # Update instance setting from config
+                self.enable_elastic_chunking = chunking_config.get('enabled', True)
+                
+            # Create the elastic chunker
+            self.elastic_chunker = create_elastic_chunker(chunking_config)
+            
+            self.structured_logger.info("Elastic chunker initialized", 
+                                      context={
+                                          'enabled': self.enable_elastic_chunking,
+                                          'config': chunking_config
+                                      })
+            
+        except Exception as e:
+            self.structured_logger.warning(f"Failed to initialize elastic chunker: {e}")
+            self.elastic_chunker = None
+            self.enable_elastic_chunking = False
         
         # Artifact tracking for run manifest
         self.input_artifacts: Dict[str, Any] = {}
@@ -1373,9 +1440,45 @@ class EnsembleManager:
             self.structured_logger.stage_start("diarization", "Creating diarization variants with voting fusion",
                                              context={'audio_duration': audio_duration, 'estimated_noise': estimated_noise})
             
-            # Determine if chunked processing with speaker mapping should be used
-            enable_chunked_processing = (self.enable_speaker_mapping and 
-                                       audio_duration > self.chunked_processing_threshold)
+            # Determine if chunked processing should be used (enhanced with elastic chunking)
+            enable_chunked_processing = False
+            elastic_chunking_result = None
+            
+            if self.enable_speaker_mapping and audio_duration > self.chunked_processing_threshold:
+                # Initialize elastic chunker if needed
+                self._initialize_elastic_chunker()
+                
+                if self.enable_elastic_chunking and self.elastic_chunker:
+                    # Use elastic chunking analysis to determine if chunking is beneficial
+                    try:
+                        # Perform preliminary analysis to determine chunking strategy
+                        elastic_chunking_result = self.elastic_chunker.chunk_audio(clean_audio_path)
+                        
+                        # Enable chunked processing if elastic chunker recommends it
+                        enable_chunked_processing = (elastic_chunking_result.total_chunks > 1 and 
+                                                   elastic_chunking_result.quality_metrics.get('overall_quality_score', 0) > 0.3)
+                        
+                        if enable_chunked_processing:
+                            self.structured_logger.info(f"🧩 Elastic chunking analysis recommends chunked processing", 
+                                                      context={
+                                                          'total_chunks': elastic_chunking_result.total_chunks,
+                                                          'average_chunk_size': elastic_chunking_result.average_chunk_size,
+                                                          'quality_score': elastic_chunking_result.quality_metrics.get('overall_quality_score', 0),
+                                                          'boundary_types': elastic_chunking_result.quality_metrics.get('boundary_type_distribution', {})
+                                                      })
+                        else:
+                            self.structured_logger.info("🔄 Elastic chunking analysis suggests keeping audio as single unit",
+                                                      context={
+                                                          'reason': 'low_benefit_analysis',
+                                                          'quality_score': elastic_chunking_result.quality_metrics.get('overall_quality_score', 0)
+                                                      })
+                    except Exception as e:
+                        self.structured_logger.warning(f"Elastic chunking analysis failed, falling back to threshold-based chunking: {e}")
+                        # Fallback to original threshold-based logic
+                        enable_chunked_processing = True
+                else:
+                    # Fallback to original threshold-based logic if elastic chunker disabled
+                    enable_chunked_processing = True
             
             # Check resource scheduler for potential downgrades
             original_variants_count = 5  # Default
@@ -1410,11 +1513,25 @@ class EnsembleManager:
                                               'quality_level': diarization_usage.quality_level.value
                                           })
             
+            # Prepare chunk boundaries for diarization engine if elastic chunking was used
+            chunk_boundaries = None
+            if enable_chunked_processing and elastic_chunking_result:
+                # Convert elastic chunk boundaries to the format expected by diarization engine
+                chunk_boundaries = [boundary.timestamp for boundary in elastic_chunking_result.boundaries]
+                
+                self.structured_logger.info("🧩 Passing elastic chunk boundaries to diarization engine", 
+                                          context={
+                                              'chunk_count': len(chunk_boundaries),
+                                              'boundaries': chunk_boundaries[:5],  # Log first 5 boundaries
+                                              'boundary_types': [b.boundary_type for b in elastic_chunking_result.boundaries[:5]]
+                                          })
+            
             diarization_variants = self.diarization_engine.create_diarization_variants(
                 clean_audio_path, 
                 use_voting_fusion=use_voting_fusion,
                 enable_chunked_processing=enable_chunked_processing,
-                max_variants=original_variants_count  # Limit variants if downgrade applied
+                max_variants=original_variants_count,  # Limit variants if downgrade applied
+                chunk_boundaries=chunk_boundaries  # Pass elastic chunk boundaries if available
             )
             
             # Track diarization artifacts (versioning)
