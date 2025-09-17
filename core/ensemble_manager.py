@@ -1746,35 +1746,332 @@ class EnsembleManager:
                 else:
                     raise Exception("Audio extraction marked complete but no marker found")
             
-            # For demonstration, return results after audio extraction
-            # In a full implementation, you would continue with all stages:
-            # - Diarization (20-35%)
-            # - Overlap Processing (35-40%)  
-            # - ASR Processing (40-75%)
-            # - Consensus (75-90%)
-            # - Output Generation (90-100%)
+            # Get clean audio path for subsequent stages
+            clean_audio_path = stage_results.get('audio_extraction', {}).get('clean_audio_path')
+            raw_audio_path = stage_results.get('audio_extraction', {}).get('raw_audio_path')
             
+            if not clean_audio_path:
+                raise Exception("Audio extraction failed - no clean audio path available")
+            
+            # Stage 2: Diarization (20-35%)
+            if ResumeProcessingStage.DIARIZATION not in completed_stages:
+                if progress_callback:
+                    progress_callback("B", 20, "Creating diarization variants...")
+                
+                stage_start_time = time.time()
+                
+                # Run diarization variants creation
+                audio_duration = self._get_audio_duration(clean_audio_path)
+                diarization_variants = self.diarization_engine.create_diarization_variants(
+                    clean_audio_path, 
+                    use_voting_fusion=True,
+                    enable_chunked_processing=audio_duration > self.chunked_processing_threshold
+                )
+                
+                stage_duration = time.time() - stage_start_time
+                
+                # Mark stage complete
+                if self.stage_completion_manager:
+                    try:
+                        model_versions = self._get_current_model_versions()
+                        input_artifacts = [self._compute_file_sha256(clean_audio_path)]
+                        stage_outputs = [
+                            {'type': 'diarization_variants', 'count': len(diarization_variants), 'sha256': hashlib.sha256(json.dumps(diarization_variants, sort_keys=True).encode()).hexdigest()}
+                        ]
+                        
+                        self.stage_completion_manager.mark_stage_complete(
+                            stage=ResumeProcessingStage.DIARIZATION,
+                            run_id=run_id,
+                            session_id=session_id,
+                            project_id=project_id,
+                            inputs_sha256=input_artifacts,
+                            config_snapshot=processing_config,
+                            model_versions=model_versions,
+                            stage_outputs=stage_outputs,
+                            stage_metadata={'variants_created': len(diarization_variants), 'audio_duration': audio_duration},
+                            processing_duration=stage_duration
+                        )
+                    except Exception as e:
+                        self._safe_log("warning", f"Failed to mark diarization stage complete: {e}")
+                
+                stage_results['diarization'] = {
+                    'diarization_variants': diarization_variants,
+                    'audio_duration': audio_duration
+                }
+                
+                if progress_callback:
+                    progress_callback("B", 35, f"Diarization complete - {len(diarization_variants)} variants created")
+            else:
+                # Load from previous completion
+                marker = self.stage_completion_manager.get_stage_completion_marker(run_id, ResumeProcessingStage.DIARIZATION)
+                if marker:
+                    # For now, regenerate diarization variants (could cache in future)
+                    audio_duration = marker.stage_metadata.get('audio_duration', 0.0)
+                    diarization_variants = self.diarization_engine.create_diarization_variants(
+                        clean_audio_path, 
+                        use_voting_fusion=True,
+                        enable_chunked_processing=audio_duration > self.chunked_processing_threshold
+                    )
+                    stage_results['diarization'] = {
+                        'diarization_variants': diarization_variants,
+                        'audio_duration': audio_duration
+                    }
+                    if progress_callback:
+                        progress_callback("B", 35, "✓ Diarization already completed - resuming...")
+                else:
+                    raise Exception("Diarization marked complete but no marker found")
+            
+            # Skip overlap processing for simplicity in basic implementation
+            stage_results['overlap_processing'] = {
+                'overlap_processing_applied': False,
+                'source_separation_patches': 0
+            }
+            
+            # Stage 3: ASR Processing (40-75%)
+            if ResumeProcessingStage.ASR_PROCESSING not in completed_stages:
+                if progress_callback:
+                    progress_callback("C", 40, "Running ASR ensemble processing...")
+                
+                stage_start_time = time.time()
+                
+                # Run ASR ensemble
+                diarization_variants = stage_results['diarization']['diarization_variants']
+                candidates = self.asr_engine.run_asr_ensemble(
+                    clean_audio_path, 
+                    diarization_variants, 
+                    target_language=self.target_language
+                )
+                
+                stage_duration = time.time() - stage_start_time
+                
+                # Mark stage complete
+                if self.stage_completion_manager:
+                    try:
+                        model_versions = self._get_current_model_versions()
+                        input_artifacts = [self._compute_file_sha256(clean_audio_path)] + [hashlib.sha256(json.dumps(dv, sort_keys=True).encode()).hexdigest() for dv in diarization_variants]
+                        stage_outputs = [
+                            {'type': 'asr_candidates', 'count': len(candidates), 'sha256': hashlib.sha256(json.dumps(candidates, sort_keys=True).encode()).hexdigest()}
+                        ]
+                        
+                        self.stage_completion_manager.mark_stage_complete(
+                            stage=ResumeProcessingStage.ASR_PROCESSING,
+                            run_id=run_id,
+                            session_id=session_id,
+                            project_id=project_id,
+                            inputs_sha256=input_artifacts,
+                            config_snapshot=processing_config,
+                            model_versions=model_versions,
+                            stage_outputs=stage_outputs,
+                            stage_metadata={'candidates_created': len(candidates), 'target_language': self.target_language},
+                            processing_duration=stage_duration
+                        )
+                    except Exception as e:
+                        self._safe_log("warning", f"Failed to mark ASR processing stage complete: {e}")
+                
+                stage_results['asr_processing'] = {
+                    'candidates': candidates
+                }
+                
+                if progress_callback:
+                    progress_callback("C", 75, f"ASR ensemble complete - {len(candidates)} candidates generated")
+            else:
+                # Load from previous completion
+                marker = self.stage_completion_manager.get_stage_completion_marker(run_id, ResumeProcessingStage.ASR_PROCESSING)
+                if marker:
+                    # For now, regenerate candidates (could cache in future)
+                    diarization_variants = stage_results['diarization']['diarization_variants']
+                    candidates = self.asr_engine.run_asr_ensemble(
+                        clean_audio_path, 
+                        diarization_variants, 
+                        target_language=self.target_language
+                    )
+                    stage_results['asr_processing'] = {
+                        'candidates': candidates
+                    }
+                    if progress_callback:
+                        progress_callback("C", 75, "✓ ASR processing already completed - resuming...")
+                else:
+                    raise Exception("ASR processing marked complete but no marker found")
+            
+            # Stage 4: Consensus (75-90%)
+            if ResumeProcessingStage.CONSENSUS not in completed_stages:
+                if progress_callback:
+                    progress_callback("D", 75, "Processing consensus and selecting winner...")
+                
+                stage_start_time = time.time()
+                
+                # Score candidates and run consensus
+                candidates = stage_results['asr_processing']['candidates']
+                scored_candidates = self.confidence_scorer.score_all_candidates(candidates)
+                
+                # Run consensus processing
+                consensus_result = self.consensus_module.process_consensus(
+                    candidates=scored_candidates,
+                    strategy=self.consensus_strategy
+                )
+                winner = consensus_result.winner_candidate
+                
+                stage_duration = time.time() - stage_start_time
+                
+                # Mark stage complete
+                if self.stage_completion_manager:
+                    try:
+                        model_versions = self._get_current_model_versions()
+                        input_artifacts = [hashlib.sha256(json.dumps(candidates, sort_keys=True).encode()).hexdigest()]
+                        stage_outputs = [
+                            {'type': 'winner_transcript', 'sha256': hashlib.sha256(json.dumps(winner, sort_keys=True).encode()).hexdigest()},
+                            {'type': 'consensus_result', 'sha256': hashlib.sha256(json.dumps(consensus_result.__dict__, sort_keys=True).encode()).hexdigest()}
+                        ]
+                        
+                        self.stage_completion_manager.mark_stage_complete(
+                            stage=ResumeProcessingStage.CONSENSUS,
+                            run_id=run_id,
+                            session_id=session_id,
+                            project_id=project_id,
+                            inputs_sha256=input_artifacts,
+                            config_snapshot=processing_config,
+                            model_versions=model_versions,
+                            stage_outputs=stage_outputs,
+                            stage_metadata={'consensus_strategy': self.consensus_strategy, 'winner_score': winner.get('confidence_scores', {}).get('final_score', 0.0)},
+                            processing_duration=stage_duration
+                        )
+                    except Exception as e:
+                        self._safe_log("warning", f"Failed to mark consensus stage complete: {e}")
+                
+                stage_results['consensus'] = {
+                    'winner': winner,
+                    'consensus_result': consensus_result,
+                    'scored_candidates': scored_candidates
+                }
+                
+                if progress_callback:
+                    progress_callback("D", 90, "Consensus processing complete - winner selected")
+            else:
+                # Load from previous completion
+                marker = self.stage_completion_manager.get_stage_completion_marker(run_id, ResumeProcessingStage.CONSENSUS)
+                if marker:
+                    # For now, regenerate consensus (could cache in future)
+                    candidates = stage_results['asr_processing']['candidates']
+                    scored_candidates = self.confidence_scorer.score_all_candidates(candidates)
+                    consensus_result = self.consensus_module.process_consensus(
+                        candidates=scored_candidates,
+                        strategy=self.consensus_strategy
+                    )
+                    winner = consensus_result.winner_candidate
+                    
+                    stage_results['consensus'] = {
+                        'winner': winner,
+                        'consensus_result': consensus_result,
+                        'scored_candidates': scored_candidates
+                    }
+                    if progress_callback:
+                        progress_callback("D", 90, "✓ Consensus already completed - resuming...")
+                else:
+                    raise Exception("Consensus marked complete but no marker found")
+            
+            # Stage 5: Output Generation (90-100%)
+            if ResumeProcessingStage.OUTPUT_GENERATION not in completed_stages:
+                if progress_callback:
+                    progress_callback("E", 90, "Generating final outputs...")
+                
+                stage_start_time = time.time()
+                
+                # Format final transcript
+                winner = stage_results['consensus']['winner']
+                audio_duration = stage_results['diarization']['audio_duration']
+                
+                # Generate text transcript
+                winner_transcript_txt = self._format_winner_transcript(winner)
+                
+                # Create final processing metadata
+                processing_metadata = {
+                    'total_duration': audio_duration,
+                    'processing_time': time.time() - start_time,
+                    'resumed_from_stages': list(resume_data['completed_stages']) if resume_data['can_resume'] else [],
+                    'run_id': run_id,
+                    'consensus_strategy': self.consensus_strategy,
+                    'winner_confidence': winner.get('confidence_scores', {}).get('final_score', 0.0)
+                }
+                
+                stage_duration = time.time() - stage_start_time
+                
+                # Mark stage complete
+                if self.stage_completion_manager:
+                    try:
+                        model_versions = self._get_current_model_versions()
+                        input_artifacts = [hashlib.sha256(json.dumps(winner, sort_keys=True).encode()).hexdigest()]
+                        stage_outputs = [
+                            {'type': 'final_transcript', 'sha256': hashlib.sha256(winner_transcript_txt.encode()).hexdigest()},
+                            {'type': 'processing_metadata', 'sha256': hashlib.sha256(json.dumps(processing_metadata, sort_keys=True).encode()).hexdigest()}
+                        ]
+                        
+                        self.stage_completion_manager.mark_stage_complete(
+                            stage=ResumeProcessingStage.OUTPUT_GENERATION,
+                            run_id=run_id,
+                            session_id=session_id,
+                            project_id=project_id,
+                            inputs_sha256=input_artifacts,
+                            config_snapshot=processing_config,
+                            model_versions=model_versions,
+                            stage_outputs=stage_outputs,
+                            stage_metadata={'output_length': len(winner_transcript_txt), 'final_confidence': processing_metadata['winner_confidence']},
+                            processing_duration=stage_duration
+                        )
+                    except Exception as e:
+                        self._safe_log("warning", f"Failed to mark output generation stage complete: {e}")
+                
+                stage_results['output_generation'] = {
+                    'winner_transcript_txt': winner_transcript_txt,
+                    'processing_metadata': processing_metadata
+                }
+                
+                if progress_callback:
+                    progress_callback("E", 100, "Output generation complete - processing finished")
+            else:
+                # Load from previous completion
+                marker = self.stage_completion_manager.get_stage_completion_marker(run_id, ResumeProcessingStage.OUTPUT_GENERATION)
+                if marker:
+                    winner = stage_results['consensus']['winner']
+                    audio_duration = stage_results['diarization']['audio_duration']
+                    
+                    winner_transcript_txt = self._format_winner_transcript(winner)
+                    processing_metadata = {
+                        'total_duration': audio_duration,
+                        'processing_time': time.time() - start_time,
+                        'resumed_from_stages': list(resume_data['completed_stages']) if resume_data['can_resume'] else [],
+                        'run_id': run_id,
+                        'consensus_strategy': self.consensus_strategy,
+                        'winner_confidence': winner.get('confidence_scores', {}).get('final_score', 0.0)
+                    }
+                    
+                    stage_results['output_generation'] = {
+                        'winner_transcript_txt': winner_transcript_txt,
+                        'processing_metadata': processing_metadata
+                    }
+                    if progress_callback:
+                        progress_callback("E", 100, "✓ Output generation already completed - processing finished")
+                else:
+                    raise Exception("Output generation marked complete but no marker found")
+            
+            # Return final results
             processing_time = time.time() - start_time
+            winner = stage_results['consensus']['winner']
+            winner_transcript_txt = stage_results['output_generation']['winner_transcript_txt']
             
             return {
-                'winner_transcript': {
-                    'segments': [],
-                    'metadata': {
-                        'total_duration': stage_results.get('audio_extraction', {}).get('audio_duration', 0.0),
-                        'processing_time': processing_time,
-                        'resumed_from_stage': resume_data['completed_stages'] if resume_data['can_resume'] else None
-                    },
-                    'speaker_map': {}
-                },
-                'winner_transcript_txt': "Crash-safe processing completed (audio extraction stage)",
+                'winner_transcript': winner,
+                'winner_transcript_txt': winner_transcript_txt,
                 'processing_time': processing_time,
                 'ensemble_audit': {
-                    'summary': {'total_candidates': 0, 'winner_score': 0.0}
+                    'summary': {
+                        'total_candidates': len(stage_results.get('asr_processing', {}).get('candidates', [])),
+                        'winner_score': winner.get('confidence_scores', {}).get('final_score', 0.0)
+                    }
                 },
                 'resume_metadata': {
                     'run_id': run_id,
-                    'stages_completed': ['audio_extraction'],
-                    'can_resume_from': 'audio_extraction'
+                    'stages_completed': ['audio_extraction', 'diarization', 'asr_processing', 'consensus', 'output_generation'],
+                    'processing_complete': True
                 }
             }
             
@@ -1809,6 +2106,51 @@ class EnsembleManager:
                 return 0.0
         except Exception:
             return 0.0
+    
+    def _format_winner_transcript(self, winner: Dict[str, Any]) -> str:
+        """Format winner transcript for text output"""
+        try:
+            segments = winner.get('segments', [])
+            if not segments:
+                return "No transcript available"
+            
+            # Format segments with speaker labels
+            formatted_lines = []
+            for segment in segments:
+                speaker = segment.get('speaker', 'Unknown')
+                text = segment.get('text', '').strip()
+                if text:
+                    formatted_lines.append(f"{speaker}: {text}")
+            
+            return '\n\n'.join(formatted_lines) if formatted_lines else "No transcript content"
+            
+        except Exception as e:
+            self._safe_log("warning", f"Failed to format winner transcript: {e}")
+            return "Transcript formatting failed"
+    
+    def _get_current_model_versions(self) -> Dict[str, str]:
+        """Get current model versions for stage completion tracking"""
+        try:
+            versions = {
+                'ensemble_manager_version': '1.0.0',
+                'consensus_strategy': getattr(self, 'consensus_strategy', 'best_single_candidate'),
+                'calibration_method': getattr(self, 'calibration_method', 'registry_based')
+            }
+            
+            # Add ASR engine versions
+            if hasattr(self, 'asr_engine') and self.asr_engine:
+                versions['asr_model'] = getattr(self.asr_engine, 'model', 'whisper-1')
+            
+            # Add diarization engine versions
+            if hasattr(self, 'diarization_engine') and self.diarization_engine:
+                versions['diarization_enabled'] = True
+                versions['expected_speakers'] = getattr(self, 'expected_speakers', 5)
+            
+            return versions
+            
+        except Exception as e:
+            self._safe_log("warning", f"Failed to get model versions: {e}")
+            return {'error': str(e)}
     
     def _prepare_candidates_for_term_mining(self, candidates: List[Dict[str, Any]], diarization_variants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -2581,6 +2923,21 @@ class EnsembleManager:
             cached_result = self._check_processing_cache(video_path, processing_config)
             if cached_result is not None:
                 return cached_result
+            
+            # CRITICAL: Set up stage completion manager with manifest context
+            if self.stage_completion_manager and hasattr(self, 'manifest_manager') and self.manifest_manager:
+                try:
+                    run_context = get_global_run_context()
+                    if run_context:
+                        self.stage_completion_manager.set_manifest_manager(
+                            session_dir=getattr(self, 'work_dir', '/tmp'),
+                            session_id=run_context.session_id,
+                            project_id=getattr(self, 'project_id', 'default_project'),
+                            run_id=run_context.run_id
+                        )
+                        self._safe_log("info", "Stage completion manager linked with manifest system")
+                except Exception as e:
+                    self._safe_log("warning", f"Failed to link stage completion manager with manifest: {e}")
             
             # CRASH-SAFE RESUME: Check for incomplete runs and validate resume conditions
             resume_data = self._check_resume_conditions(video_path, processing_config)

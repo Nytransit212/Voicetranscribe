@@ -195,8 +195,10 @@ def initialize_session_state():
             st.session_state.incomplete_runs = incomplete_runs
             st.session_state.incomplete_runs_detected = True
         except Exception as e:
+            st.error(f"⚠️ **Resume Detection Failed**: Could not check for incomplete runs: {str(e)}")
             st.session_state.incomplete_runs = []
             st.session_state.incomplete_runs_detected = True
+            st.info("Resuming from previous runs is disabled due to detection failure.")
     
     # Auto-repair any session state issues
     repairs = SessionStateValidator.auto_repair_session_state()
@@ -441,6 +443,8 @@ def render_processing_screen():
                     st.markdown(f"""
                     **Error:** {str(e)}
                     
+                    **Crash-Safe Resume Status:** Disabled due to initialization failure.
+                    
                     **Possible causes:**
                     - Missing required dependencies
                     - Insufficient system resources
@@ -498,7 +502,10 @@ def render_processing_screen():
                 st.rerun()
                 
         except Exception as e:
-            st.session_state.processing_error = str(e)
+            error_msg = f"Processing failed: {str(e)}"
+            if "stage_completion" in str(e).lower() or "resume" in str(e).lower():
+                error_msg += "\n\n**Crash-Safe Resume Impact:** Resume functionality may be affected."
+            st.session_state.processing_error = error_msg
             SessionStateValidator.safe_navigate_to_screen('error')
             st.rerun()
 
@@ -660,7 +667,10 @@ def process_file_upload():
             return True
         return False
     except Exception as e:
-        st.session_state.processing_error = f"File upload failed: {str(e)}"
+        error_msg = f"File upload failed: {str(e)}"
+        if "resume" in str(e).lower() or "manifest" in str(e).lower():
+            error_msg += "\n\nThis may affect crash-safe resume functionality."
+        st.session_state.processing_error = error_msg
         return False
 
 def perform_transcription():
@@ -711,7 +721,11 @@ def perform_transcription():
         return True
         
     except Exception as e:
-        st.session_state.processing_error = f"Transcription failed: {str(e)}"
+        error_msg = f"Transcription failed: {str(e)}"
+        if "stage" in str(e).lower() or "resume" in str(e).lower():
+            error_msg += "\n\n**Resume Status:** Stage completion may be incomplete. Check logs for details."
+        st.session_state.processing_error = error_msg
+        st.error(f"⚠️ **Transcription Error**: {error_msg}")
         return False
 
 def create_mock_results(video_path):
