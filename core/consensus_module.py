@@ -7,6 +7,7 @@ into a final result. Supports both "best single candidate" and "fused consensus"
 
 import numpy as np
 import json
+import time
 from typing import Dict, Any, List, Optional, Tuple, Union, Set
 from collections import defaultdict, Counter
 from dataclasses import dataclass
@@ -18,12 +19,36 @@ from utils.deterministic_parallel import StableTieBreaker
 from core.alignment_fusion import AlignmentAwareFusionEngine, AlignmentFusionResult
 
 @dataclass
+class ProviderParticipation:
+    """Tracks provider participation in consensus"""
+    provider_name: str
+    model_name: str
+    decode_mode: str
+    confidence_score: float
+    processing_time: float
+    success: bool
+    failure_reason: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+@dataclass
+class QuorumStatus:
+    """Status of quorum requirements"""
+    minimum_required: int
+    participants_count: int
+    quorum_met: bool
+    missing_providers: List[str]
+    failed_providers: List[ProviderParticipation]
+    participating_providers: List[ProviderParticipation]
+
+@dataclass
 class ConsensusResult:
-    """Result from consensus processing"""
+    """Result from consensus processing with comprehensive provider tracking"""
     winner_candidate: Dict[str, Any]
     consensus_method: str
     consensus_confidence: float
     consensus_metadata: Dict[str, Any]
+    quorum_status: QuorumStatus
+    provider_participation: List[ProviderParticipation]
     alternative_candidates: Optional[List[Dict[str, Any]]] = None
     fused_segments: Optional[List[Dict[str, Any]]] = None
 
@@ -36,7 +61,7 @@ class ConsensusStrategy(ABC):
         pass
     
     @abstractmethod
-    def select_consensus(self, candidates: List[Dict[str, Any]]) -> ConsensusResult:
+    def select_consensus(self, candidates: List[Dict[str, Any]], quorum_status: Optional[QuorumStatus] = None, provider_participation: Optional[List[ProviderParticipation]] = None) -> ConsensusResult:
         """Select consensus result from candidates"""
         pass
     
@@ -59,10 +84,24 @@ class BestSingleCandidateStrategy(ConsensusStrategy):
     def name(self) -> str:
         return "best_single_candidate"
     
-    def select_consensus(self, candidates: List[Dict[str, Any]]) -> ConsensusResult:
+    def select_consensus(self, candidates: List[Dict[str, Any]], quorum_status: Optional[QuorumStatus] = None, provider_participation: Optional[List[ProviderParticipation]] = None) -> ConsensusResult:
         """Select best single candidate using current scoring logic"""
         if not candidates:
             raise ValueError("No candidates provided for winner selection")
+        
+        # Create default quorum status if not provided (for backward compatibility)
+        if quorum_status is None:
+            quorum_status = QuorumStatus(
+                minimum_required=1,
+                participants_count=len(candidates),
+                quorum_met=True,
+                missing_providers=[],
+                failed_providers=[],
+                participating_providers=[]
+            )
+        
+        if provider_participation is None:
+            provider_participation = []
         
         # Sort by final score (descending) - current system logic
         sorted_candidates = sorted(
@@ -94,6 +133,8 @@ class BestSingleCandidateStrategy(ConsensusStrategy):
                 'winner_score': final_score,
                 'score_gap': (final_score - sorted_candidates[1]['confidence_scores']['final_score']) if len(sorted_candidates) > 1 else 0.0
             },
+            quorum_status=quorum_status,
+            provider_participation=provider_participation,
             alternative_candidates=sorted_candidates[1:6]  # Top 5 alternatives
         )
     
@@ -128,10 +169,19 @@ class WeightedVotingStrategy(ConsensusStrategy):
     def name(self) -> str:
         return "weighted_voting"
     
-    def select_consensus(self, candidates: List[Dict[str, Any]]) -> ConsensusResult:
+    def select_consensus(self, candidates: List[Dict[str, Any]], quorum_status: Optional[QuorumStatus] = None, provider_participation: Optional[List[ProviderParticipation]] = None) -> ConsensusResult:
         """Select consensus using weighted voting of top candidates"""
         if not candidates:
             raise ValueError("No candidates provided for consensus")
+        
+        # Default values for backward compatibility
+        if quorum_status is None:
+            quorum_status = QuorumStatus(
+                minimum_required=1, participants_count=len(candidates), quorum_met=True,
+                missing_providers=[], failed_providers=[], participating_providers=[]
+            )
+        if provider_participation is None:
+            provider_participation = []
         
         # Filter candidates above confidence threshold
         viable_candidates = [c for c in candidates 
@@ -176,6 +226,8 @@ class WeightedVotingStrategy(ConsensusStrategy):
                 'weights': weights,
                 'fusion_applied': True
             },
+            quorum_status=quorum_status,
+            provider_participation=provider_participation,
             alternative_candidates=top_candidates[1:],
             fused_segments=fused_segments
         )
@@ -198,10 +250,19 @@ class MultiDimensionalConsensusStrategy(ConsensusStrategy):
     def name(self) -> str:
         return "multidimensional_consensus"
     
-    def select_consensus(self, candidates: List[Dict[str, Any]]) -> ConsensusResult:
+    def select_consensus(self, candidates: List[Dict[str, Any]], quorum_status: Optional[QuorumStatus] = None, provider_participation: Optional[List[ProviderParticipation]] = None) -> ConsensusResult:
         """Select consensus based on dimensional agreement patterns"""
         if not candidates:
             raise ValueError("No candidates provided for consensus")
+        
+        # Default values for backward compatibility
+        if quorum_status is None:
+            quorum_status = QuorumStatus(
+                minimum_required=1, participants_count=len(candidates), quorum_met=True,
+                missing_providers=[], failed_providers=[], participating_providers=[]
+            )
+        if provider_participation is None:
+            provider_participation = []
         
         # Analyze dimensional performance patterns
         dimension_leaders = self._find_dimensional_leaders(candidates)
@@ -233,6 +294,8 @@ class MultiDimensionalConsensusStrategy(ConsensusStrategy):
                 'dimensional_analysis': True,
                 'dimension_weights': self.dimension_weights
             },
+            quorum_status=quorum_status,
+            provider_participation=provider_participation,
             alternative_candidates=alternatives
         )
     
@@ -281,10 +344,19 @@ class ConfidenceBasedStrategy(ConsensusStrategy):
     def name(self) -> str:
         return "confidence_based"
     
-    def select_consensus(self, candidates: List[Dict[str, Any]]) -> ConsensusResult:
+    def select_consensus(self, candidates: List[Dict[str, Any]], quorum_status: Optional[QuorumStatus] = None, provider_participation: Optional[List[ProviderParticipation]] = None) -> ConsensusResult:
         """Select consensus based on confidence distribution patterns"""
         if not candidates:
             raise ValueError("No candidates provided for consensus")
+        
+        # Default values for backward compatibility
+        if quorum_status is None:
+            quorum_status = QuorumStatus(
+                minimum_required=1, participants_count=len(candidates), quorum_met=True,
+                missing_providers=[], failed_providers=[], participating_providers=[]
+            )
+        if provider_participation is None:
+            provider_participation = []
         
         # Analyze confidence score distribution
         final_scores = [c['confidence_scores']['final_score'] for c in candidates]
@@ -322,6 +394,8 @@ class ConfidenceBasedStrategy(ConsensusStrategy):
                 'confidence_spread': confidence_spread,
                 'stability_analysis': True
             },
+            quorum_status=quorum_status,
+            provider_participation=provider_participation,
             alternative_candidates=sorted(candidates, 
                                         key=lambda x: x['confidence_scores']['final_score'], 
                                         reverse=True)[1:6]
@@ -381,18 +455,29 @@ class AlignmentAwareFusionStrategy(ConsensusStrategy):
     def name(self) -> str:
         return "alignment_aware_fusion"
     
-    def select_consensus(self, candidates: List[Dict[str, Any]]) -> ConsensusResult:
+    def select_consensus(self, candidates: List[Dict[str, Any]], quorum_status: Optional[QuorumStatus] = None, provider_participation: Optional[List[ProviderParticipation]] = None) -> ConsensusResult:
         """
         Select consensus using alignment-aware fusion with confusion sets
         
         Args:
             candidates: List of scored candidate transcripts
+            quorum_status: Quorum validation status
+            provider_participation: Provider participation metadata
             
         Returns:
             ConsensusResult with fused transcript and alignment metadata
         """
         if not candidates:
             raise ValueError("No candidates provided for alignment-aware fusion")
+        
+        # Default values for backward compatibility
+        if quorum_status is None:
+            quorum_status = QuorumStatus(
+                minimum_required=1, participants_count=len(candidates), quorum_met=True,
+                missing_providers=[], failed_providers=[], participating_providers=[]
+            )
+        if provider_participation is None:
+            provider_participation = []
         
         self.logger.info(f"Starting alignment-aware fusion of {len(candidates)} candidates", 
                         context={'candidates_count': len(candidates)})
@@ -426,13 +511,15 @@ class AlignmentAwareFusionStrategy(ConsensusStrategy):
                                 'word_alignments': len(fusion_result.word_alignments),
                                 'confusion_sets': len(fusion_result.confusion_sets),
                                 'fusion_effectiveness': fusion_result.alignment_metrics.fusion_effectiveness
-                            })
+            })
             
             return ConsensusResult(
                 winner_candidate=winner_candidate,
                 consensus_method=self.name(),
                 consensus_confidence=consensus_confidence,
                 consensus_metadata=consensus_metadata,
+                quorum_status=quorum_status,
+                provider_participation=provider_participation,
                 alternative_candidates=self._get_alternative_candidates(candidates),
                 fused_segments=fusion_result.fused_segments
             )
@@ -528,13 +615,43 @@ class AlignmentAwareFusionStrategy(ConsensusStrategy):
                 'fallback_reason': 'alignment_fusion_failed',
                 'original_strategy': self.name()
             },
+            quorum_status=QuorumStatus(
+                minimum_required=1,
+                participants_count=len(candidates),
+                quorum_met=True,
+                missing_providers=[],
+                failed_providers=[],
+                participating_providers=[]
+            ),
+            provider_participation=[],
             alternative_candidates=self._get_alternative_candidates(candidates)
         )
 
+class QuorumValidationError(Exception):
+    """Raised when quorum requirements are not met"""
+    def __init__(self, message: str, quorum_status: QuorumStatus):
+        self.quorum_status = quorum_status
+        super().__init__(message)
+
 class ConsensusModule:
-    """Main consensus processing module"""
+    """Production-ready consensus processing module with quorum gating and provider tracking"""
     
-    def __init__(self, default_strategy: str = "best_single_candidate"):
+    def __init__(self, 
+                 default_strategy: str = "best_single_candidate",
+                 minimum_candidates: int = 3,
+                 enable_quorum_gating: bool = True,
+                 fallback_strategy: str = "best_single_candidate",
+                 require_provider_diversity: bool = True):
+        """
+        Initialize consensus module with production reliability features
+        
+        Args:
+            default_strategy: Default consensus strategy to use
+            minimum_candidates: Minimum number of candidates required for quorum
+            enable_quorum_gating: Whether to enforce quorum requirements
+            fallback_strategy: Strategy to use when primary strategy fails
+            require_provider_diversity: Require candidates from different providers
+        """
         self.strategies = {
             "best_single_candidate": BestSingleCandidateStrategy(),
             "weighted_voting": WeightedVotingStrategy(),
@@ -543,31 +660,132 @@ class ConsensusModule:
             "alignment_aware_fusion": AlignmentAwareFusionStrategy()
         }
         self.default_strategy = default_strategy
+        self.minimum_candidates = minimum_candidates
+        self.enable_quorum_gating = enable_quorum_gating
+        self.fallback_strategy = fallback_strategy
+        self.require_provider_diversity = require_provider_diversity
         self.logger = create_enhanced_logger("consensus_module")
+        
+        # Production reliability tracking
+        self.provider_failure_counts = defaultdict(int)
+        self.consensus_metrics = {
+            'total_consensus_attempts': 0,
+            'quorum_failures': 0,
+            'provider_failures': defaultdict(int),
+            'strategy_failures': defaultdict(int),
+            'fallback_usage': 0
+        }
     
     def get_available_strategies(self) -> List[str]:
         """Get list of available consensus strategies"""
         return list(self.strategies.keys())
     
+    def _extract_provider_participation(self, candidates: List[Dict[str, Any]]) -> List[ProviderParticipation]:
+        """Extract provider participation metadata from candidates"""
+        participation = []
+        
+        for candidate in candidates:
+            try:
+                # Extract provider info from ASR data
+                asr_data = candidate.get('asr_data', {})
+                provider_name = asr_data.get('provider', 'unknown')
+                model_name = asr_data.get('model_name', 'unknown')
+                decode_mode = asr_data.get('decode_mode', 'unknown')
+                processing_time = asr_data.get('processing_time', 0.0)
+                
+                # Get confidence score
+                confidence_scores = candidate.get('confidence_scores', {})
+                confidence_score = confidence_scores.get('final_score', 0.0)
+                
+                participation.append(ProviderParticipation(
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    decode_mode=str(decode_mode),
+                    confidence_score=confidence_score,
+                    processing_time=processing_time,
+                    success=True,
+                    metadata=asr_data.get('metadata', {})
+                ))
+                
+            except Exception as e:
+                self.logger.warning(f"Failed to extract provider metadata from candidate: {e}")
+                participation.append(ProviderParticipation(
+                    provider_name='unknown',
+                    model_name='unknown',
+                    decode_mode='unknown',
+                    confidence_score=0.0,
+                    processing_time=0.0,
+                    success=False,
+                    failure_reason=str(e)
+                ))
+        
+        return participation
+    
+    def _validate_quorum(self, candidates: List[Dict[str, Any]]) -> QuorumStatus:
+        """Validate that quorum requirements are met"""
+        participation = self._extract_provider_participation(candidates)
+        
+        participating_providers = [p for p in participation if p.success]
+        failed_providers = [p for p in participation if not p.success]
+        
+        # Check provider diversity if required
+        unique_providers = set(p.provider_name for p in participating_providers)
+        
+        quorum_met = len(participating_providers) >= self.minimum_candidates
+        
+        if self.require_provider_diversity:
+            quorum_met = quorum_met and len(unique_providers) >= min(2, self.minimum_candidates)
+        
+        missing_count = max(0, self.minimum_candidates - len(participating_providers))
+        missing_providers = [f'provider_{i}' for i in range(missing_count)]
+        
+        return QuorumStatus(
+            minimum_required=self.minimum_candidates,
+            participants_count=len(participating_providers),
+            quorum_met=quorum_met,
+            missing_providers=missing_providers,
+            failed_providers=failed_providers,
+            participating_providers=participating_providers
+        )
+    
     def process_consensus(self, 
                          candidates: List[Dict[str, Any]], 
                          strategy: Optional[str] = None,
                          strategy_params: Optional[Dict[str, Any]] = None,
-                         session_bias_list = None) -> ConsensusResult:
+                         session_bias_list = None,
+                         force_consensus: bool = False) -> ConsensusResult:
         """
-        Process consensus using specified strategy
+        Process consensus using specified strategy with production reliability features
         
         Args:
             candidates: List of scored candidate transcripts
             strategy: Strategy name to use (defaults to instance default)
             strategy_params: Optional parameters for strategy
             session_bias_list: Optional session bias list for adaptive biasing
+            force_consensus: Skip quorum validation (emergency use only)
             
         Returns:
-            ConsensusResult with winner and metadata
+            ConsensusResult with winner and comprehensive metadata
+            
+        Raises:
+            QuorumValidationError: When quorum requirements are not met
         """
+        # Update metrics
+        self.consensus_metrics['total_consensus_attempts'] += 1
+        
         if not candidates:
             raise ValueError("No candidates provided for consensus processing")
+        
+        # Validate quorum requirements
+        quorum_status = self._validate_quorum(candidates)
+        
+        if self.enable_quorum_gating and not force_consensus and not quorum_status.quorum_met:
+            self.consensus_metrics['quorum_failures'] += 1
+            self.logger.error(f"Quorum not met: {quorum_status.participants_count}/{quorum_status.minimum_required} candidates")
+            raise QuorumValidationError(
+                f"Insufficient candidates for consensus: {quorum_status.participants_count}/{quorum_status.minimum_required}",
+                quorum_status
+            )
         
         strategy_name = strategy or self.default_strategy
         
@@ -581,7 +799,12 @@ class ConsensusModule:
             self._apply_strategy_params(consensus_strategy, strategy_params)
         
         self.logger.info(f"Processing consensus with strategy: {strategy_name}", 
-                        context={'candidates_count': len(candidates), 'strategy': strategy_name})
+                        context={
+                            'candidates_count': len(candidates), 
+                            'strategy': strategy_name,
+                            'quorum_status': quorum_status.quorum_met,
+                            'participating_providers': len(quorum_status.participating_providers)
+                        })
         
         try:
             # Apply adaptive biasing if available
@@ -590,23 +813,44 @@ class ConsensusModule:
                 self.logger.info("Applied session bias list to consensus strategy",
                                context={'bias_terms': session_bias_list.total_bias_terms if session_bias_list else 0})
             
-            result = consensus_strategy.select_consensus(candidates)
+            # Get enhanced result from strategy with metadata
+            enhanced_result = consensus_strategy.select_consensus(
+                candidates, 
+                quorum_status=quorum_status, 
+                provider_participation=quorum_status.participating_providers + quorum_status.failed_providers
+            )
+            
+            # Enhance metadata with production tracking
+            enhanced_result.consensus_metadata.update({
+                'quorum_validation_enabled': self.enable_quorum_gating,
+                'provider_diversity_required': self.require_provider_diversity,
+                'strategy_used': strategy_name,
+                'processing_timestamp': time.time()
+            })
             
             self.logger.info(f"Consensus processing completed successfully", 
-                           context={'strategy': strategy_name, 
-                                   'consensus_confidence': result.consensus_confidence})
+                           context={
+                               'strategy': strategy_name, 
+                               'consensus_confidence': enhanced_result.consensus_confidence,
+                               'providers_used': len(quorum_status.participating_providers)
+                           })
             
-            return result
+            return enhanced_result
             
         except Exception as e:
+            self.consensus_metrics['strategy_failures'][strategy_name] += 1
             self.logger.error(f"Consensus processing failed: {e}", 
                             strategy=strategy_name, error=str(e))
             
             # Fallback to best single candidate if strategy fails
-            if strategy_name != "best_single_candidate":
-                self.logger.warning("Falling back to best_single_candidate strategy")
-                fallback_strategy = self.strategies["best_single_candidate"]
-                return fallback_strategy.select_consensus(candidates)
+            if strategy_name != self.fallback_strategy:
+                self.consensus_metrics['fallback_usage'] += 1
+                self.logger.warning(f"Falling back to {self.fallback_strategy} strategy")
+                return self.process_consensus(
+                    candidates, 
+                    strategy=self.fallback_strategy, 
+                    force_consensus=True  # Skip quorum on fallback
+                )
             else:
                 raise
     
@@ -643,3 +887,41 @@ class ConsensusModule:
                     self.logger.warning(f"Strategy {strategy_name} failed during comparison: {e}")
         
         return results
+    
+    def get_consensus_metrics(self) -> Dict[str, Any]:
+        """Get production reliability metrics for monitoring"""
+        return {
+            'consensus_metrics': dict(self.consensus_metrics),
+            'provider_failure_rates': dict(self.provider_failure_counts),
+            'configuration': {
+                'minimum_candidates': self.minimum_candidates,
+                'enable_quorum_gating': self.enable_quorum_gating,
+                'require_provider_diversity': self.require_provider_diversity,
+                'default_strategy': self.default_strategy,
+                'fallback_strategy': self.fallback_strategy
+            }
+        }
+    
+    def reset_metrics(self) -> None:
+        """Reset metrics for new session"""
+        self.consensus_metrics = {
+            'total_consensus_attempts': 0,
+            'quorum_failures': 0,
+            'provider_failures': defaultdict(int),
+            'strategy_failures': defaultdict(int),
+            'fallback_usage': 0
+        }
+        self.provider_failure_counts = defaultdict(int)
+    
+    def update_configuration(self, **kwargs) -> None:
+        """Update consensus module configuration at runtime"""
+        if 'minimum_candidates' in kwargs:
+            self.minimum_candidates = max(1, int(kwargs['minimum_candidates']))
+        if 'enable_quorum_gating' in kwargs:
+            self.enable_quorum_gating = bool(kwargs['enable_quorum_gating'])
+        if 'require_provider_diversity' in kwargs:
+            self.require_provider_diversity = bool(kwargs['require_provider_diversity'])
+        if 'fallback_strategy' in kwargs and kwargs['fallback_strategy'] in self.strategies:
+            self.fallback_strategy = kwargs['fallback_strategy']
+        
+        self.logger.info("Updated consensus configuration", context=kwargs)
