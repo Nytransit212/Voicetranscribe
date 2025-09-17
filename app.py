@@ -97,7 +97,7 @@ st.markdown("""
 def initialize_session_state():
     """Initialize session state with simple defaults"""
     defaults = {
-        'current_screen': 'landing',  # landing, processing, results, error
+        'current_screen': 'landing',  # landing, processing, results, hotspot_review, error
         'uploaded_file': None,
         'file_url': '',
         'processing_stage': 0,
@@ -300,6 +300,22 @@ def render_results_screen():
         <p style="color: #666;">File: {results['file_name']} • Duration: {results['duration']} • Speakers: {len(results['speakers'])}</p>
     </div>
     """, unsafe_allow_html=True)
+    
+    # Hotspot Review option
+    st.markdown("### 🎯 Quality Improvement")
+    st.markdown("**Quick 5-minute review to significantly improve accuracy:**")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("🎯 Review Hard Spots (5 min)", type="primary"):
+            st.session_state.current_screen = 'hotspot_review'
+            st.rerun()
+    
+    with col2:
+        st.markdown("*Fix the toughest parts, we improve the rest automatically*")
+    
+    st.markdown("---")
     
     # Transcript display
     st.markdown("### 📝 Transcript:")
@@ -594,8 +610,15 @@ def main():
         render_processing_screen()
     elif screen == 'results':
         render_results_screen()
+    elif screen == 'hotspot_review':
+        render_hotspot_review_screen()
     elif screen == 'error':
         render_error_screen()
+
+def render_hotspot_review_screen():
+    """Render the hotspot review screen"""
+    from pages.hotspot_review import render_hotspot_review
+    render_hotspot_review()
 
 if __name__ == "__main__":
     main()
