@@ -1,0 +1,121 @@
+{
+  "test_id": "clear_speech_multispeaker",
+  "audio_file": "test_short_video.mov",
+  "audio_duration": 30.0,
+  "created": "2025-09-13",
+  "annotated_by": "gold_standard_team",
+  "verification_status": "verified",
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 3.5,
+      "speaker": "Speaker_A",
+      "text": "Welcome everyone to today's meeting. Let's start with the project updates.",
+      "confidence": 1.0,
+      "quality_notes": "Clear speech, no background noise"
+    },
+    {
+      "start": 3.8,
+      "end": 7.2,
+      "speaker": "Speaker_B", 
+      "text": "Thanks for organizing this. I have some updates on the development progress.",
+      "confidence": 1.0,
+      "quality_notes": "Slightly different accent but very clear"
+    },
+    {
+      "start": 7.5,
+      "end": 12.1,
+      "speaker": "Speaker_A",
+      "text": "Perfect. Let's go through each component systematically to track our progress.",
+      "confidence": 1.0,
+      "quality_notes": "Natural flow, good audio quality"
+    },
+    {
+      "start": 12.4,
+      "end": 16.8,
+      "speaker": "Speaker_C",
+      "text": "I can provide updates on the backend infrastructure we've been working on.",
+      "confidence": 0.95,
+      "quality_notes": "Slightly quieter but clear speech"
+    },
+    {
+      "start": 17.0,
+      "end": 21.5,
+      "speaker": "Speaker_B",
+      "text": "And I'll cover the frontend components and user interface improvements.",
+      "confidence": 1.0,
+      "quality_notes": "Clear delivery, good separation from previous speaker"
+    },
+    {
+      "start": 21.8,
+      "end": 26.2,
+      "speaker": "Speaker_A",
+      "text": "Excellent. This should give us a comprehensive overview of where we stand.",
+      "confidence": 1.0,
+      "quality_notes": "Concluding statement, consistent quality"
+    },
+    {
+      "start": 26.5,
+      "end": 30.0,
+      "speaker": "Speaker_C",
+      "text": "Sounds good. I'm ready to start whenever you are.",
+      "confidence": 0.98,
+      "quality_notes": "Natural ending, good clarity"
+    }
+  ],
+  "speaker_metadata": {
+    "Speaker_A": {
+      "role": "meeting_facilitator",
+      "accent": "US_General_Midwest",
+      "speaking_rate": "normal",
+      "volume_level": "normal"
+    },
+    "Speaker_B": {
+      "role": "developer", 
+      "accent": "US_General_West_Coast",
+      "speaking_rate": "slightly_fast",
+      "volume_level": "normal"
+    },
+    "Speaker_C": {
+      "role": "backend_engineer",
+      "accent": "US_General_South",
+      "speaking_rate": "normal",
+      "volume_level": "slightly_quiet"
+    }
+  },
+  "audio_characteristics": {
+    "noise_level": "minimal",
+    "echo_present": false,
+    "audio_quality": "high",
+    "recording_environment": "office_conference_room",
+    "microphone_type": "conference_microphone",
+    "sample_rate": "44100",
+    "bit_depth": "16"
+  },
+  "linguistic_features": {
+    "content_domain": "software_development_meeting",
+    "complexity_level": "medium",
+    "technical_terms": ["component", "backend infrastructure", "frontend components", "user interface"],
+    "speaking_style": "professional_conversational",
+    "interruptions": 0,
+    "hesitations": 0
+  },
+  "overlap_analysis": {
+    "total_overlap_time": 0.2,
+    "overlap_percentage": 0.67,
+    "overlap_regions": [
+      {
+        "start": 17.0,
+        "end": 17.2,
+        "speakers": ["Speaker_C", "Speaker_B"],
+        "type": "brief_transition_overlap"
+      }
+    ]
+  },
+  "quality_targets": {
+    "der_expected": 0.08,
+    "wer_expected": 0.05,
+    "speaker_identification_accuracy": 0.95,
+    "timing_accuracy_tolerance": 0.2
+  }
+}

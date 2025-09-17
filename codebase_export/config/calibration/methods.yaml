@@ -1,0 +1,150 @@
+# Calibration Methods Configuration
+# Configuration for score calibration and normalization strategies
+
+# Default calibration method
+default_method: "registry_based"
+
+# Available calibration methods and their parameters
+methods:
+  
+  # Raw Scores (no calibration)
+  raw_scores:
+    enabled: true
+    description: "Pass-through raw scores with simple clipping"
+    clipping:
+      min_value: 0.0
+      max_value: 1.0
+    processing: "clipping_only"
+    
+  # Registry-based Calibration (current system)
+  registry_based:
+    enabled: true
+    description: "Calibration using historical statistics from metrics registry"
+    use_domain_context: true
+    fallback_method: "absolute_ranges"
+    sigmoid_scaling: true
+    robust_normalization: true
+    confidence_threshold: 0.9
+    
+    # Z-score calibration parameters
+    z_score:
+      target_std_min: 0.01     # Minimum std to avoid division by zero
+      sigma_range: 2.0         # Sigma range for sigmoid mapping
+      clipping_range: [-10, 10] # Z-score clipping to prevent overflow
+      
+    # Fallback absolute calibration ranges
+    absolute_ranges:
+      D: {min: 0.15, max: 0.95, median: 0.65}  # Diarization quality
+      A: {min: 0.25, max: 0.98, median: 0.75}  # ASR confidence  
+      L: {min: 0.30, max: 0.92, median: 0.70}  # Linguistic quality
+      R: {min: 0.40, max: 0.90, median: 0.68}  # Cross-run agreement
+      O: {min: 0.35, max: 0.88, median: 0.62}  # Overlap handling
+      
+  # Isotonic Regression Calibration
+  isotonic_regression:
+    enabled: true
+    description: "Calibration using pre-trained isotonic regression models"
+    models_directory: "calibration_models"
+    fallback_method: "platt_scaling"
+    auto_train_models: true
+    confidence_threshold: 0.85
+    
+    # Model training parameters
+    training:
+      synthetic_samples: 1000
+      dimension_bias:
+        D: 0.72  # Diarization baseline
+        A: 0.78  # ASR baseline
+        L: 0.68  # Linguistic baseline  
+        R: 0.65  # Agreement baseline
+        O: 0.70  # Overlap baseline
+      noise_level: 0.1
+      random_seed: 42
+      
+    # Platt scaling fallback
+    platt_scaling:
+      avoid_extreme_probabilities: true
+      min_probability: 0.01
+      max_probability: 0.99
+      
+  # Per-domain Calibration  
+  per_domain:
+    enabled: true
+    description: "Domain-specific calibration with contextual adjustments"
+    base_method: "registry_based"
+    
+    # Domain-specific adjustment factors
+    domain_adjustments:
+      meeting:
+        D: 1.05  # Diarization slightly easier in meetings
+        A: 0.95  # ASR slightly harder with overlaps
+        L: 1.10  # Linguistic coherence higher
+        R: 1.08  # Agreement patterns more consistent
+        O: 0.90  # Overlap handling more challenging
+        
+      interview:  
+        D: 1.02  # Diarization straightforward
+        A: 1.05  # ASR quality typically higher
+        L: 1.05  # Structured conversation
+        R: 0.95  # Less repetitive patterns
+        O: 1.15  # Minimal overlaps expected
+        
+      lecture:
+        D: 0.95  # Single speaker primarily
+        A: 1.08  # Clear speech expected
+        L: 1.15  # Structured, academic language
+        R: 0.90  # Less cross-run variation expected
+        O: 0.85  # Minimal overlaps
+        
+      general:
+        D: 1.00  # Baseline
+        A: 1.00  # Baseline
+        L: 1.00  # Baseline
+        R: 1.00  # Baseline
+        O: 1.00  # Baseline
+    
+    # Adjustment bounds to preserve relative ordering
+    adjustment_bounds:
+      max_scaling: 1.0  # Soft clamping above 1.0
+      min_scaling: 0.0  # Soft clamping below 0.0
+      confidence_preservation: 0.95  # Confidence reduction factor
+
+# A/B Testing Configuration
+ab_testing:
+  enabled: true
+  comparison_methods:
+    - "raw_scores"
+    - "registry_based" 
+    - "isotonic_regression"
+    - "per_domain"
+  record_comparisons: true
+  include_confidence_metrics: true
+
+# Registry Integration
+registry:
+  update_with_results: true
+  backup_before_update: true
+  calibration_update_frequency: "per_run"  # Options: per_run, daily, weekly
+  min_samples_for_update: 5
+
+# Performance Settings
+performance:
+  enable_caching: true
+  vectorizer_cache_size: 100
+  model_loading_timeout: 30
+  parallel_calibration: false
+
+# Quality Assurance
+quality:
+  validate_calibrated_range: true
+  expected_range: [0.0, 1.0]
+  warn_on_extreme_scores: true
+  extreme_threshold: 0.05  # Warn if >5% of scores are extreme
+  
+# Logging and Observability
+logging:
+  log_calibration_details: true
+  log_method_comparisons: true
+  log_model_performance: true
+  structured_logging: true
+  debug_score_distributions: false

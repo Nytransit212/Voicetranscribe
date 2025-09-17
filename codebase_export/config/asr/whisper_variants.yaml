@@ -1,0 +1,68 @@
+# ASR Configuration - OpenAI Whisper Variants
+# Different parameter combinations for ensemble ASR processing
+
+# @package _global_
+asr:
+  model: "whisper-1"
+  base_timeout: 300
+  max_retries: 3
+  
+  # 5 ASR variants with different parameters for ensemble processing
+  variants:
+    conservative:
+      temperature: 0.0
+      language: "en"
+      prompt: "The following is a recording of a meeting with multiple speakers."
+      response_format: "verbose_json"
+      timestamp_granularities: ["segment", "word"]
+      
+    temperature_low:
+      temperature: 0.1
+      language: "en" 
+      prompt: "This is a multi-speaker conversation with clear speaker changes."
+      response_format: "verbose_json"
+      timestamp_granularities: ["segment", "word"]
+      
+    temperature_medium:
+      temperature: 0.2
+      language: "en"
+      prompt: "Transcribe this meeting recording with multiple participants."
+      response_format: "verbose_json"
+      timestamp_granularities: ["segment", "word"]
+      
+    auto_detect:
+      temperature: 0.0
+      language: null  # Auto-detect
+      prompt: ""
+      response_format: "verbose_json"
+      timestamp_granularities: ["segment", "word"]
+      
+    temperature_high:
+      temperature: 0.3
+      language: "en"
+      prompt: "This recording contains multiple speakers in a meeting discussion."
+      response_format: "verbose_json"
+      timestamp_granularities: ["segment", "word"]
+
+  # Language support
+  supported_languages:
+    auto: "Auto-detect"
+    en: "English"
+    es: "Spanish"
+    fr: "French"
+    de: "German"
+    it: "Italian"
+    pt: "Portuguese"
+    ru: "Russian"
+    ja: "Japanese"
+    zh: "Chinese"
+    ko: "Korean"
+    ar: "Arabic"
+
+  # API configuration
+  api:
+    chunk_size_limit: 25_000_000  # 25MB per chunk
+    request_timeout: 300
+    max_concurrent_requests: 3
+    retry_backoff_multiplier: 2.0
+    max_backoff_delay: 60.0

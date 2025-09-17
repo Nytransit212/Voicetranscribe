@@ -1,0 +1,204 @@
+# Punctuation Model Configuration
+# Configuration for post-fusion punctuation restoration models and settings
+
+# Default punctuation model settings
+default_model: "oliverguhr/fullstop-punctuation-multilang-large"
+fallback_enabled: true
+confidence_threshold: 0.5
+
+# Available punctuation models
+models:
+  meeting_optimized:
+    name: "oliverguhr/fullstop-punctuation-multilang-large"
+    description: "Large multilingual punctuation model optimized for meeting contexts"
+    max_length: 512
+    batch_size: 8
+    confidence_threshold: 0.6
+    meeting_optimized: true
+    supports_languages: ["en", "de", "fr", "es", "it"]
+    
+  general_purpose:
+    name: "felflare/bert-restore-punctuation"
+    description: "BERT-based punctuation restoration for general text"
+    max_length: 256
+    batch_size: 16
+    confidence_threshold: 0.5
+    meeting_optimized: false
+    supports_languages: ["en"]
+    
+  lightweight:
+    name: "kredor/punctuate-all"
+    description: "Lightweight punctuation model for fast processing"
+    max_length: 128
+    batch_size: 32
+    confidence_threshold: 0.4
+    meeting_optimized: false
+    supports_languages: ["en"]
+
+# Disfluency normalization settings
+disfluency_normalization:
+  default_level: "light"
+  
+  levels:
+    light:
+      description: "Remove only obvious disfluencies and excessive fillers"
+      remove_patterns:
+        - excessive_fillers: true  # 3+ consecutive um/uh/er
+        - clear_false_starts: true  # obvious word restarts
+        - multiple_pause_markers: true  # [pause][pause] -> [pause]
+      preserve_natural_speech: true
+      confidence_threshold: 0.8
+      
+    moderate:
+      description: "More aggressive disfluency removal while preserving meaning"
+      remove_patterns:
+        - moderate_fillers: true  # 2+ consecutive um/uh/er
+        - word_repetitions: true  # word word -> word
+        - context_fillers: true  # um/uh in formal contexts
+      preserve_natural_speech: true
+      confidence_threshold: 0.7
+      
+    aggressive:
+      description: "Maximum disfluency removal for highly polished transcripts"
+      remove_patterns:
+        - all_fillers: true  # all um/uh/er/like
+        - discourse_markers: true  # excessive basically/actually
+        - partial_words: true  # par- partial -> partial
+        - hesitation_sounds: true  # all hesitation markers
+      preserve_natural_speech: false
+      confidence_threshold: 0.6
+
+# Meeting-specific vocabulary settings
+meeting_vocabulary:
+  enabled: true
+  
+  formal_indicators:
+    - "agenda"
+    - "minutes" 
+    - "action items"
+    - "next steps"
+    - "quarterly"
+    - "revenue"
+    - "budget"
+    - "strategy"
+    - "decision"
+    - "approved"
+    
+  informal_indicators:
+    - "yeah"
+    - "okay"
+    - "gonna"
+    - "wanna"
+    - "basically"
+    - "actually"
+    - "totally"
+    
+  technical_terms:
+    api: "API"
+    ui: "UI" 
+    ux: "UX"
+    qa: "QA"
+    ai: "AI"
+    ml: "ML"
+    sql: "SQL"
+    javascript: "JavaScript"
+    python: "Python"
+    nodejs: "Node.js"
+    
+  business_acronyms:
+    ceo: "CEO"
+    cfo: "CFO"
+    cto: "CTO"
+    vp: "VP"
+    kpi: "KPI"
+    roi: "ROI"
+    mvp: "MVP"
+    poc: "POC"
+
+# Capitalization rules
+capitalization:
+  enabled: true
+  sentence_boundaries: true
+  proper_nouns: true
+  technical_terms: true
+  business_acronyms: true
+  
+  # Sentence boundary markers
+  sentence_markers: [".", "!", "?", ":", ";"]
+  
+  # Words that should always be capitalized
+  always_capitalize:
+    - "I"
+    - "Monday"
+    - "Tuesday" 
+    - "Wednesday"
+    - "Thursday"
+    - "Friday"
+    - "Saturday"
+    - "Sunday"
+    - "January"
+    - "February"
+    - "March" 
+    - "April"
+    - "May"
+    - "June"
+    - "July"
+    - "August"
+    - "September"
+    - "October"
+    - "November"
+    - "December"
+
+# Performance and quality settings
+performance:
+  batch_processing: true
+  parallel_segments: 4
+  timeout_seconds: 30
+  max_segment_length: 1000
+  
+quality:
+  punctuation_confidence_threshold: 0.5
+  disfluency_confidence_threshold: 0.7
+  minimum_improvement_threshold: 0.1  # Only apply if improvement > 10%
+  preserve_speaker_boundaries: true
+  preserve_timing_accuracy: true
+
+# Domain-specific presets
+presets:
+  business_meeting:
+    model: "meeting_optimized"
+    disfluency_level: "light"
+    meeting_vocabulary: true
+    capitalization: true
+    confidence_threshold: 0.6
+    
+  technical_meeting:
+    model: "meeting_optimized" 
+    disfluency_level: "moderate"
+    meeting_vocabulary: true
+    capitalization: true
+    technical_terms: true
+    confidence_threshold: 0.7
+    
+  casual_meeting:
+    model: "general_purpose"
+    disfluency_level: "light"
+    meeting_vocabulary: true
+    capitalization: true
+    preserve_informal_speech: true
+    confidence_threshold: 0.5
+    
+  presentation:
+    model: "meeting_optimized"
+    disfluency_level: "aggressive"
+    meeting_vocabulary: true
+    capitalization: true
+    formal_style: true
+    confidence_threshold: 0.8
+
+# Experimental features (disabled by default)
+experimental:
+  enabled: false
+  semantic_punctuation: false  # Use semantic understanding for punctuation
+  speaker_style_adaptation: false  # Adapt punctuation to speaker patterns
+  context_aware_disfluency: false  # Use conversation context for disfluency detection

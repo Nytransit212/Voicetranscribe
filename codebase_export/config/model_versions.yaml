@@ -1,0 +1,189 @@
+# Model Version Pinning Configuration
+# Defines exact model versions and configurations for deterministic processing
+
+# @package _global_
+model_versions:
+  # Configuration schema version for backwards compatibility
+  schema_version: "1.0.0"
+  
+  # ASR Models - OpenAI Whisper
+  asr:
+    openai_whisper:
+      # Exact model specification
+      model_name: "whisper-1"
+      api_version: "v1"
+      provider: "openai"
+      version_lock: "2024-04-01"  # Stable API version
+      
+      # Configuration fingerprint components
+      supported_formats: ["flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm"]
+      max_file_size: 25000000  # 25MB
+      context_length: 448  # Whisper context length
+      
+      # Decode strategy configurations
+      decode_presets:
+        conservative:
+          temperature: 0.0
+          best_of: 1
+          beam_size: 1
+          patience: 1.0
+          length_penalty: 1.0
+          suppress_tokens: [-1]
+          
+        temperature_low:
+          temperature: 0.1
+          best_of: 1
+          beam_size: 1
+          patience: 1.0
+          length_penalty: 1.0
+          suppress_tokens: [-1]
+          
+        temperature_medium:
+          temperature: 0.2
+          best_of: 1
+          beam_size: 1
+          patience: 1.0
+          length_penalty: 1.0
+          suppress_tokens: [-1]
+          
+        auto_detect:
+          temperature: 0.0
+          best_of: 1
+          beam_size: 1
+          patience: 1.0
+          length_penalty: 1.0
+          suppress_tokens: [-1]
+          language: null  # Auto-detect
+          
+        temperature_high:
+          temperature: 0.3
+          best_of: 1
+          beam_size: 1
+          patience: 1.0
+          length_penalty: 1.0
+          suppress_tokens: [-1]
+
+  # Diarization Models
+  diarization:
+    assemblyai:
+      # API version and model specification
+      api_version: "v2"
+      provider: "assemblyai"
+      service_version: "2024-03-15"  # Stable service version
+      
+      # Model configuration fingerprint
+      speaker_detection_model: "universal-speaker-detection-v1"
+      clustering_algorithm: "spectral"
+      voice_activity_detection: "webrtcvad-v2"
+      
+      # Configuration parameters
+      min_speakers: 1
+      max_speakers: 10
+      min_segment_length: 0.3
+      
+    pyannote:
+      # Exact model specification
+      model_name: "pyannote/speaker-diarization-3.1"
+      model_version: "3.1.1"
+      provider: "huggingface"
+      
+      # Model configuration
+      embedding_model: "pyannote/embedding"
+      embedding_version: "3.1"
+      segmentation_model: "pyannote/segmentation-3.0"
+      
+      # Pipeline configuration
+      pipeline_version: "3.1.1"
+      batch_size: 1
+      device: "cpu"  # Force CPU for determinism
+      
+      # Clustering parameters
+      clustering_method: "AgglomerativeClustering"
+      distance_threshold: 0.7
+      
+  # Source Separation Models
+  source_separation:
+    demucs:
+      # Exact model specification
+      model_name: "htdemucs"
+      model_version: "v4"
+      provider: "facebook_research"
+      
+      # Model configuration
+      sample_rate: 44100
+      channels: 2
+      segment_length: 10.0
+      overlap: 0.25
+      device: "cpu"  # Force CPU for determinism
+      
+      # Processing parameters
+      shifts: 1  # No test-time augmentation for determinism
+      split: true
+      
+  # Punctuation Models
+  punctuation:
+    default:
+      # Model specification
+      model_name: "punctuation_restoration"
+      model_version: "1.0"
+      provider: "internal"
+      
+      # Configuration
+      supported_languages: ["en"]
+      max_sequence_length: 512
+      
+  # Normalization Models
+  normalization:
+    text_normalizer:
+      # Configuration specification
+      version: "1.0.0"
+      provider: "internal"
+      
+      # Normalization profiles
+      profiles:
+        verbatim:
+          level: "minimal"
+          preserve_numbers: true
+          preserve_punctuation: true
+          
+        readable:
+          level: "moderate"
+          expand_contractions: true
+          normalize_numbers: true
+          
+        executive:
+          level: "aggressive"
+          remove_fillers: true
+          capitalize_sentences: true
+
+# Model Resolution Rules
+resolution:
+  # Fallback behavior when models are unavailable
+  fallback_strategy: "fail_fast"  # Options: fail_fast, use_previous, mock
+  
+  # Validation requirements
+  require_version_match: true
+  require_config_match: true
+  
+  # Cache behavior for model loading
+  cache_resolved_models: true
+  cache_ttl_hours: 24
+  
+  # Fingerprint computation
+  fingerprint_algorithm: "sha256"
+  include_parameters: true
+  include_presets: true
+
+# Environment Compatibility
+compatibility:
+  # Minimum required versions
+  python_version: "3.8.0"
+  numpy_version: "1.21.0"
+  torch_version: "1.12.0"  # If using PyTorch models
+  
+  # System requirements
+  required_packages:
+    - "openai>=1.0.0"
+    - "librosa>=0.9.0"
+    - "numpy>=1.21.0"
+    - "scipy>=1.7.0"

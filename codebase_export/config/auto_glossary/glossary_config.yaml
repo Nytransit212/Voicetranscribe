@@ -1,0 +1,119 @@
+# Auto-Glossary System Configuration
+# Automatic term discovery and adaptive biasing for ensemble transcription
+
+# @package _global_
+auto_glossary:
+  # Global system configuration
+  enable_auto_glossary: true
+  storage_base_path: "term_bases"  # Base directory for project term bases
+  
+  # Term Mining Configuration
+  term_mining:
+    mining_sensitivity: 0.6              # Sensitivity for term candidate discovery (0.0-1.0)
+    min_frequency_threshold: 2           # Minimum occurrence frequency for candidates
+    max_candidates_per_session: 200      # Maximum candidates to extract per session
+    enable_variant_clustering: true      # Enable clustering of visually similar variants
+    
+    # Scoring weights for term candidates
+    scoring_weights:
+      frequency_weight: 0.25             # TF-IDF based frequency scoring
+      case_pattern_weight: 0.20          # Mixed case pattern bonus (proper nouns, acronyms)
+      technical_pattern_weight: 0.15     # Digit/hyphenation pattern bonus
+      multi_speaker_weight: 0.20         # Multi-speaker agreement bonus
+      unit_proximity_weight: 0.10        # Proximity to unit markers (mg, ml, SKU)
+      background_penalty: 0.10           # Penalty for common background terms
+    
+    # Pattern matching configuration
+    patterns:
+      mixed_case_bonus: 0.3              # Bonus for mixed case patterns
+      digit_pattern_bonus: 0.25          # Bonus for terms with digits
+      hyphen_pattern_bonus: 0.2          # Bonus for hyphenated terms
+      acronym_bonus: 0.35               # Bonus for all-caps acronyms
+      technical_suffix_bonus: 0.2       # Bonus for technical suffixes (.com, -ware, etc.)
+    
+    # Unit markers for proximity scoring
+    unit_markers:
+      - "mg"
+      - "ml" 
+      - "kg"
+      - "lb"
+      - "SKU"
+      - "model"
+      - "version"
+      - "v."
+      - "rev"
+      - "build"
+      - "API"
+      - "URL"
+      - "ID"
+  
+  # Term Store Configuration
+  term_store:
+    decay_sessions_threshold: 10         # Sessions before applying exponential decay
+    minimum_support_threshold: 2         # Minimum support count for term inclusion
+    decay_factor: 0.85                  # Exponential decay factor per session
+    max_variants_per_term: 5            # Maximum variants to store per canonical term
+    confidence_merge_threshold: 0.7     # Minimum confidence for variant merging
+    
+    # Project scoping
+    enable_project_scoping: true         # Enable project-level term base isolation
+    cross_project_sharing: false        # Disable cross-project term sharing
+    
+    # Denylist configuration
+    enable_denylist: true               # Enable denylist filtering
+    denylist_sources:
+      - "profanity"                     # Common profanity filter
+      - "stopwords"                     # English stopwords
+      - "client_specific"               # Client-specific sensitive terms
+  
+  # Adaptive Biasing Configuration
+  adaptive_biasing:
+    default_bias_strength: 0.7          # Default bias strength (0.0-1.0)
+    max_bias_terms_per_session: 50      # Maximum terms in session bias list
+    min_term_confidence: 0.5            # Minimum confidence for term inclusion
+    
+    # Biasing application points
+    enable_asr_bias: true               # Enable ASR provider biasing
+    enable_fusion_bias: true            # Enable fusion-level biasing
+    enable_repair_constraints: true     # Enable repair operation constraints
+    
+    # ASR biasing configuration
+    asr_biasing:
+      max_hint_terms: 25                # Maximum terms to send as ASR hints
+      hint_weight_multiplier: 1.2       # Weight multiplier for ASR hints
+      context_window_size: 30           # Context window for term selection
+    
+    # Fusion biasing configuration
+    fusion_biasing:
+      prior_bonus_factor: 0.1           # Prior bonus for exact term matches
+      tie_breaking_enabled: true        # Enable term-based tie breaking
+      confidence_boost_factor: 0.05     # Confidence boost for term matches
+    
+    # Repair constraints configuration
+    repair_constraints:
+      restrict_proper_nouns: true       # Restrict proper noun edits to observed variants
+      allow_term_base_variants: true    # Allow variants from term base
+      hallucination_prevention: true    # Prevent invention of new terms
+      max_edit_distance: 2              # Maximum edit distance for repairs
+  
+  # Performance and caching
+  performance:
+    enable_caching: true                # Enable term base caching
+    cache_ttl_seconds: 3600            # Cache time-to-live (1 hour)
+    max_cache_size_mb: 100             # Maximum cache size in MB
+    background_decay_interval: 86400   # Background decay interval (24 hours)
+  
+  # Metrics and monitoring
+  metrics:
+    enable_metrics: true               # Enable metrics collection
+    metrics_retention_days: 30         # Metrics retention period
+    track_entity_accuracy: true       # Track entity accuracy improvements
+    track_bias_effectiveness: true    # Track bias application effectiveness
+    track_discovery_rate: true        # Track term discovery rate
+  
+  # Development and debugging
+  debug:
+    export_session_candidates: true    # Export session candidates for debugging
+    export_path: "/tmp/auto_glossary_debug"  # Debug export path
+    log_mining_decisions: false       # Log detailed mining decisions
+    log_bias_applications: false      # Log bias application details
