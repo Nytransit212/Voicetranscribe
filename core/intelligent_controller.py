@@ -16,8 +16,12 @@ from collections import Counter
 from .asr_providers.base import ASRProvider, ASRResult, ASRSegment, DecodeMode
 from .asr_providers.factory import ASRProviderFactory
 from .alignment_fusion import TemporalAligner, WordAlignment
-from .fusion_engine import FusionEngine, FusionResult
 from utils.enhanced_structured_logger import create_enhanced_logger
+
+# Use delayed import to avoid circular dependency
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .fusion_engine import FusionEngine, FusionResult
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +49,7 @@ class SegmentAnalysis:
     best_candidate: Optional[SegmentCandidate]
     expansion_decision: str  # "stop_early", "expand_standard", "expand_maximum"
     total_decodes_run: int
-    fusion_result: Optional[FusionResult] = None
+    fusion_result: Optional['FusionResult'] = None
     analysis_metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
@@ -121,6 +125,8 @@ class IntelligentController:
         self.fusion_engine = None
         if self.enable_fusion:
             fusion_config = fusion_config or {}
+            # Delayed import to avoid circular dependency
+            from .fusion_engine import FusionEngine
             self.fusion_engine = FusionEngine(
                 engine_weights=fusion_config.get('engine_weights'),
                 temporal_coherence_config=fusion_config.get('temporal_coherence_config'),

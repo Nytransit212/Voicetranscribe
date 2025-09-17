@@ -13,6 +13,7 @@ from utils.transcript_formatter import TranscriptFormatter
 from utils.streamlit_drive_uploader import get_drive_uploader
 from utils.google_drive_handler import download_file_from_drive
 from utils.session_state_validator import SessionStateValidator, require_processing_results
+from core.stage_completion_manager import get_stage_completion_manager
 import traceback
 
 # Page config with cleaner branding
@@ -186,6 +187,17 @@ def initialize_session_state():
     # Initialize with validated defaults
     SessionStateValidator.initialize_defaults()
     
+    # Detect incomplete runs for crash-safe resume
+    if 'incomplete_runs_detected' not in st.session_state:
+        try:
+            stage_completion_manager = get_stage_completion_manager()
+            incomplete_runs = stage_completion_manager.detect_incomplete_runs()
+            st.session_state.incomplete_runs = incomplete_runs
+            st.session_state.incomplete_runs_detected = True
+        except Exception as e:
+            st.session_state.incomplete_runs = []
+            st.session_state.incomplete_runs_detected = True
+    
     # Auto-repair any session state issues
     repairs = SessionStateValidator.auto_repair_session_state()
     if repairs:
@@ -201,6 +213,66 @@ def render_landing_screen():
         <p style="color: #666; font-size: 1.1rem;">Upload your audio or video file to get started</p>
     </div>
     """, unsafe_allow_html=True)
+    
+    # Resume Section - Show incomplete runs
+    if st.session_state.get('incomplete_runs', []):
+        st.markdown("### 🔄 Resume Incomplete Processing")
+        st.markdown("**Detected incomplete runs that can be resumed:**")
+        
+        for i, run_info in enumerate(st.session_state.incomplete_runs):
+            with st.container():
+                col1, col2, col3 = st.columns([3, 1, 1])
+                
+                with col1:
+                    last_time = datetime.fromisoformat(run_info['last_completion_time'].replace('Z', '+00:00'))
+                    time_ago = datetime.now(last_time.tzinfo) - last_time
+                    
+                    if time_ago.days > 0:
+                        time_str = f"{time_ago.days}d ago"
+                    elif time_ago.seconds > 3600:
+                        time_str = f"{time_ago.seconds // 3600}h ago"
+                    else:
+                        time_str = f"{time_ago.seconds // 60}m ago"
+                    
+                    st.markdown(f"""
+                    **Run ID:** `{run_info['run_id'][:12]}...`  
+                    **Progress:** {run_info['progress_percent']:.0f}% ({len(run_info['completed_stages'])}/{run_info['total_stages']} stages)  
+                    **Last Stage:** {run_info['last_completed_stage']} → {run_info['next_stage']}  
+                    **Started:** {time_str}
+                    """)
+                
+                with col2:
+                    # Progress indicator
+                    progress_color = "#28a745" if run_info['progress_percent'] > 66 else "#ffc107" if run_info['progress_percent'] > 33 else "#dc3545"
+                    st.markdown(f"""
+                    <div style="background-color: #f0f0f0; border-radius: 10px; padding: 8px; text-align: center;">
+                        <div style="background-color: {progress_color}; width: {run_info['progress_percent']}%; height: 20px; border-radius: 5px; margin-bottom: 5px;"></div>
+                        <small>{run_info['progress_percent']:.0f}% Complete</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col3:
+                    if st.button(f"🚀 Resume", key=f"resume_{i}", type="primary"):
+                        st.session_state.resume_run_id = run_info['run_id']
+                        st.session_state.resume_from_stage = run_info['next_stage']
+                        if SessionStateValidator.safe_navigate_to_screen('processing'):
+                            st.session_state.processing_stage = int(run_info['progress_percent'] / 100 * len(st.session_state.processing_stages))
+                            st.session_state.start_time = time.time()
+                            st.session_state.processing_error = None
+                            st.rerun()
+                    
+                    if st.button(f"🗑️", key=f"delete_{i}", help="Delete this incomplete run"):
+                        try:
+                            stage_completion_manager = get_stage_completion_manager()
+                            stage_completion_manager.cleanup_run_markers(run_info['run_id'])
+                            st.session_state.incomplete_runs = [r for r in st.session_state.incomplete_runs if r['run_id'] != run_info['run_id']]
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to delete run: {e}")
+                
+                st.divider()
+        
+        st.markdown("---")
     
     # Main upload area
     with st.container():
@@ -279,11 +351,22 @@ def render_processing_screen():
     elif st.session_state.file_url:
         file_name = Path(st.session_state.file_url).name or "URL File"
     
-    st.markdown(f"""
-    <div style="text-align: center; margin-bottom: 2rem;">
-        <h2 style="color: #333;">Processing: {file_name}</h2>
-    </div>
-    """, unsafe_allow_html=True)
+    # Check if this is a resumed processing
+    is_resume = st.session_state.get('resume_run_id') is not None
+    
+    if is_resume:
+        st.markdown(f"""
+        <div style="text-align: center; margin-bottom: 2rem;">
+            <h2 style="color: #333;">🔄 Resuming Processing: {file_name}</h2>
+            <p style="color: #666;">Run ID: <code>{st.session_state.resume_run_id[:12]}...</code></p>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div style="text-align: center; margin-bottom: 2rem;">
+            <h2 style="color: #333;">Processing: {file_name}</h2>
+        </div>
+        """, unsafe_allow_html=True)
     
     # Progress bar
     stages = st.session_state.processing_stages
