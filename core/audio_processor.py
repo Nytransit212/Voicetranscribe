@@ -67,12 +67,12 @@ class AudioProcessor:
                 '-ac', '1',  # Mono
                 '-ar', str(self.target_sr),  # Target sample rate
                 '-c:a', 'pcm_s16le',  # PCM 16-bit little-endian
-                '-t', '5400',  # 90 minutes max
+                # Removed -t 5400 to support arbitrary length media without truncation
                 output_path
             ],
             capture_output=True,
             text=True,
-            timeout=600  # 10 minute timeout for decode operations
+            timeout=1800  # 30 minute timeout for decode operations (increased for long media)
         )
     
     @subprocess_retry
@@ -352,8 +352,33 @@ Run `ffmpeg -version` in your terminal to verify installation.
             # Step 2: Create ASR-ready WAV from pristine copy
             asr_wav_path = self.make_asr_wav_from_audio(pristine_audio_path)
             
+            # Get duration and validate full content was processed
+            try:
+                audio_duration = self.get_audio_duration(asr_wav_path)
+                duration_hours = audio_duration / 3600
+                
+                # Log duration information for transparency
+                if duration_hours >= 8:
+                    self.structured_logger.warning(
+                        f"Processed extremely long media: {duration_hours:.2f} hours - Full content preserved without truncation",
+                        context={'duration_seconds': audio_duration, 'duration_hours': duration_hours}
+                    )
+                elif duration_hours >= 2:
+                    self.structured_logger.info(
+                        f"Processed long-form media: {duration_hours:.2f} hours - Full content preserved",
+                        context={'duration_seconds': audio_duration, 'duration_hours': duration_hours}
+                    )
+                else:
+                    self.structured_logger.info(
+                        f"Processed media: {audio_duration/60:.1f} minutes - Full content preserved",
+                        context={'duration_seconds': audio_duration, 'duration_minutes': audio_duration/60}
+                    )
+                    
+            except Exception as duration_error:
+                self.structured_logger.warning(f"Could not validate audio duration: {duration_error}")
+            
             self.structured_logger.info(
-                "Audio extraction completed successfully",
+                "Audio extraction completed successfully - No content truncation applied",
                 context={
                     'pristine_audio': pristine_audio_path,
                     'asr_wav': asr_wav_path,

@@ -1467,9 +1467,12 @@ class EnsembleManager:
             if audio_duration < 5.0:
                 if progress_callback:
                     progress_callback("WARN", 15, f"Very short audio ({audio_duration:.1f}s) - results may be limited")
-            elif audio_duration > 5400:  # 90 minutes
+            elif audio_duration > 28800:  # 8 hours - warn for extremely long content
                 if progress_callback:
-                    progress_callback("WARN", 15, f"Very long audio ({audio_duration/60:.1f}min) - processing may take extended time")
+                    progress_callback("WARN", 15, f"Extremely long audio ({audio_duration/3600:.1f}hrs) - consider chunking for optimal processing")
+            elif audio_duration > 7200:  # 2 hours - info for long content but don't truncate
+                if progress_callback:
+                    progress_callback("INFO", 15, f"Long-form audio ({audio_duration/3600:.1f}hrs) - processing will take extended time")
             
             # Check for silent content
             if self._is_mostly_silent(clean_audio_path):

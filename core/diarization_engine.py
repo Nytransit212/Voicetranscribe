@@ -109,9 +109,9 @@ class DiarizationEngine:
             'fallback_enabled': True,
             'assemblyai': {
                 'max_file_size_mb': 512,
-                'max_duration_seconds': 7200,  # 2 hours
+                'max_duration_seconds': 28800,  # 8 hours - supports long-form content
                 'poll_interval': 5,
-                'max_wait_time': 1800,
+                'max_wait_time': 3600,  # 1 hour wait time for long content
                 'default_speakers': None
             }
         }
