@@ -68,32 +68,18 @@ class ObservabilityManager:
                    profiling_enabled=enable_profiling)
     
     def _setup_loguru(self, log_level: str):
-        """Configure loguru with structured JSON logging and orjson serialization"""
+        """Configure loguru with simple, robust logging that won't fail"""
         
         # Remove default handler
         logger.remove()
         
-        # Custom JSON serializer using orjson for performance
-        def json_serializer(record):
-            subset = {
-                "timestamp": record["time"].isoformat(),
-                "level": record["level"].name,
-                "message": record["message"],
-                "module": record["name"],
-                "function": record["function"],
-                "line": record["line"]
-            }
-            
-            # Add extra fields from record["extra"]
-            if record["extra"]:
-                subset.update(record["extra"])
-            
-            return orjson.dumps(subset).decode()
+        # Use simple string format that's guaranteed to work
+        simple_format = "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
         
-        # Console handler with JSON format
+        # Console handler with simple format
         logger.add(
             sink=lambda msg: print(msg, end=""),
-            format=lambda record: json_serializer(record) + "\n",
+            format=simple_format,
             level=log_level,
             enqueue=True  # Thread-safe logging
         )
@@ -104,7 +90,7 @@ class ObservabilityManager:
         
         logger.add(
             sink=log_dir / "ensemble_{time:YYYY-MM-DD}.log",
-            format=lambda record: json_serializer(record) + "\n",
+            format=simple_format,
             level=log_level,
             rotation="1 day",
             retention="30 days",
@@ -112,7 +98,7 @@ class ObservabilityManager:
             enqueue=True
         )
         
-        # Add session context to all logs
+        # Add session context to all logs (using configure method correctly)
         logger.configure(extra={"session_id": self.session_id})
     
     def _setup_opentelemetry(self):
@@ -214,26 +200,32 @@ class EnhancedLogger:
         self.context_data = {"component": component}
     
     def _log_with_context(self, level: str, message: str, **kwargs):
-        """Log with enhanced context and optional span correlation"""
+        """Log with simplified approach to avoid formatting errors"""
         
-        # Merge context data
-        log_data = {**self.context_data, **kwargs}
-        
-        # Add span context if available
-        current_span = trace.get_current_span()
-        if current_span and current_span.is_recording():
-            span_context = current_span.get_span_context()
-            log_data.update({
-                "trace_id": format(span_context.trace_id, "032x"),
-                "span_id": format(span_context.span_id, "016x"),
-            })
-        
-        # Add system metrics if requested
-        if kwargs.get("include_system_metrics", False):
-            log_data["system_metrics"] = self.obs_manager.get_system_metrics()
-        
-        # Log with loguru
-        getattr(logger, level.lower())(message, **log_data)
+        try:
+            # Build a simple context string for the message
+            context_parts = [f"component={self.component}"]
+            
+            # Add important context data safely
+            for key, value in kwargs.items():
+                if key not in ['include_system_metrics'] and isinstance(value, (str, int, float, bool)):
+                    context_parts.append(f"{key}={value}")
+            
+            # Create enhanced message with context
+            if context_parts:
+                enhanced_message = f"{message} | {' | '.join(context_parts)}"
+            else:
+                enhanced_message = message
+            
+            # Use simple loguru logging - no complex formatting
+            getattr(logger, level.lower())(enhanced_message)
+            
+        except Exception:
+            # Ultimate fallback to print if everything fails
+            try:
+                print(f"{level}: {message}")
+            except:
+                pass  # If even print fails, silently continue
     
     def info(self, message: str, **kwargs):
         self._log_with_context("INFO", message, **kwargs)

@@ -339,20 +339,61 @@ def render_processing_screen():
     # Run actual processing logic
     if current_stage < len(stages):
         if 'ensemble_manager' not in st.session_state:
-            # Initialize ensemble manager with safe defaults for Streamlit
-            try:
-                st.session_state.ensemble_manager = EnsembleManager(
-                    expected_speakers=5,  # Reasonable default
-                    noise_level='medium',
-                    enable_versioning=False,  # Simplify for web app
-                    enable_speaker_mapping=True,
-                    enable_dialect_handling=False  # Simplify for web app
-                )
-            except Exception as e:
-                st.error(f"Failed to initialize transcription system: {str(e)}")
-                st.session_state.current_screen = 'error'
-                st.session_state.processing_error = f"Initialization failed: {str(e)}"
-                st.rerun()
+            # Initialize ensemble manager with robust error handling
+            initialization_success = False
+            initialization_warnings = []
+            
+            with st.spinner("🔧 Initializing transcription system..."):
+                try:
+                    # Use the safe factory method that handles failures gracefully
+                    st.session_state.ensemble_manager = EnsembleManager.create_safe(
+                        expected_speakers=5,  # Reasonable default for web app
+                        noise_level='medium',
+                        enable_versioning=False,  # Simplify for web app
+                        enable_speaker_mapping=True,
+                        enable_dialect_handling=False,  # Simplify for web app
+                        enable_auto_glossary=False,  # Simplify for web app
+                        enable_long_horizon_tracking=False,  # Simplify for web app
+                        domain="general"
+                    )
+                    initialization_success = True
+                    
+                    # Check if there were any initialization warnings
+                    if hasattr(st.session_state.ensemble_manager, '_initialization_warnings'):
+                        initialization_warnings = st.session_state.ensemble_manager._initialization_warnings
+                    
+                except Exception as e:
+                    # This should rarely happen with the safe factory method
+                    st.error("⚠️ **System Initialization Failed**")
+                    st.markdown(f"""
+                    **Error:** {str(e)}
+                    
+                    **Possible causes:**
+                    - Missing required dependencies
+                    - Insufficient system resources
+                    - Configuration issues
+                    
+                    **Solutions:**
+                    - Try refreshing the page
+                    - Contact support if the issue persists
+                    """)
+                    
+                    st.session_state.current_screen = 'error'
+                    st.session_state.processing_error = f"Critical initialization failure: {str(e)}"
+                    st.rerun()
+            
+            # Show initialization status to user
+            if initialization_success:
+                if initialization_warnings:
+                    # Show warnings but continue
+                    with st.expander("⚠️ System Notifications", expanded=False):
+                        st.warning("Some advanced features are disabled:")
+                        for warning in initialization_warnings:
+                            st.write(f"• {warning}")
+                        st.info("Basic transcription functionality is available.")
+                else:
+                    st.success("✅ Transcription system ready!")
+                    time.sleep(0.5)  # Brief pause to show success message
         
         try:
             # Execute current stage

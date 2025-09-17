@@ -92,8 +92,293 @@ from utils.metrics_alerts import (
     track_performance
 )
 
+class EnsembleManagerInitializationError(Exception):
+    """Raised when EnsembleManager fails to initialize properly"""
+    def __init__(self, message: str, component: str = "unknown", original_error: Exception = None):
+        self.component = component
+        self.original_error = original_error
+        super().__init__(f"EnsembleManager initialization failed in {component}: {message}")
+
 class EnsembleManager:
     """Orchestrates the entire ensemble transcription pipeline"""
+    
+    @classmethod
+    def create_safe(cls, 
+                    expected_speakers: int = 10, 
+                    noise_level: str = 'medium', 
+                    target_language: Optional[str] = None, 
+                    scoring_weights: Optional[Dict[str, float]] = None, 
+                    enable_versioning: bool = True, 
+                    domain: str = "general", 
+                    consensus_strategy: str = "best_single_candidate", 
+                    calibration_method: str = "registry_based", 
+                    enable_speaker_mapping: bool = True, 
+                    speaker_mapping_config: Optional[Dict[str, Any]] = None, 
+                    chunked_processing_threshold: float = 900.0, 
+                    enable_dialect_handling: bool = True, 
+                    dialect_similarity_threshold: float = 0.7, 
+                    dialect_confidence_boost: float = 0.05, 
+                    supported_dialects: Optional[List[str]] = None, 
+                    enable_auto_glossary: bool = True, 
+                    auto_glossary_config: Optional[Dict[str, Any]] = None, 
+                    project_id: Optional[str] = None, 
+                    enable_long_horizon_tracking: bool = True, 
+                    long_horizon_config: Optional[Dict[str, Any]] = None) -> 'EnsembleManager':
+        """
+        Safe factory method that gracefully handles initialization failures
+        
+        Returns:
+            EnsembleManager instance with minimal working configuration if full init fails
+            
+        Raises:
+            EnsembleManagerInitializationError: Only for critical failures that prevent basic operation
+        """
+        # Store initialization status for user feedback
+        initialization_warnings = []
+        initialization_errors = []
+        
+        try:
+            # First attempt: Full initialization
+            manager = cls.__new__(cls)
+            manager._safe_init(
+                expected_speakers=expected_speakers,
+                noise_level=noise_level,
+                target_language=target_language,
+                scoring_weights=scoring_weights,
+                enable_versioning=enable_versioning,
+                domain=domain,
+                consensus_strategy=consensus_strategy,
+                calibration_method=calibration_method,
+                enable_speaker_mapping=enable_speaker_mapping,
+                speaker_mapping_config=speaker_mapping_config,
+                chunked_processing_threshold=chunked_processing_threshold,
+                enable_dialect_handling=enable_dialect_handling,
+                dialect_similarity_threshold=dialect_similarity_threshold,
+                dialect_confidence_boost=dialect_confidence_boost,
+                supported_dialects=supported_dialects,
+                enable_auto_glossary=enable_auto_glossary,
+                auto_glossary_config=auto_glossary_config,
+                project_id=project_id,
+                enable_long_horizon_tracking=enable_long_horizon_tracking,
+                long_horizon_config=long_horizon_config
+            )
+            return manager
+            
+        except Exception as e:
+            # If full initialization fails, try minimal configuration
+            print(f"Warning: Full EnsembleManager initialization failed ({e}), attempting minimal configuration...")
+            try:
+                manager = cls.__new__(cls)
+                manager._minimal_init(expected_speakers, noise_level, target_language)
+                manager._initialization_warnings = [f"Reduced functionality due to init error: {str(e)}"]
+                return manager
+            except Exception as minimal_error:
+                raise EnsembleManagerInitializationError(
+                    f"Both full and minimal initialization failed. Full error: {e}. Minimal error: {minimal_error}",
+                    component="factory",
+                    original_error=e
+                )
+    
+    def _minimal_init(self, expected_speakers: int, noise_level: str, target_language: Optional[str]):
+        """Initialize with absolute minimum requirements for basic transcription"""
+        # Only set most basic parameters
+        self.expected_speakers = expected_speakers
+        self.noise_level = noise_level
+        self.target_language = target_language
+        self.domain = "general"
+        
+        # Disable all advanced features for minimal mode
+        self.enable_versioning = False
+        self.enable_speaker_mapping = False
+        self.enable_dialect_handling = False
+        self.enable_auto_glossary = False
+        self.enable_long_horizon_tracking = False
+        self.enable_resource_scheduling = False
+        self.enable_caching = False
+        self.enable_source_separation = False
+        self.enable_overlap_aware_processing = False
+        
+        # Basic logging fallback
+        self.structured_logger = None
+        self.obs_manager = None
+        self.metrics_collector = None
+        
+        # Initialize only essential components
+        self.run_id = None
+        self.consensus_strategy = "best_single_candidate"
+        self.calibration_method = "simple"
+        
+        print("EnsembleManager initialized in minimal mode - advanced features disabled")
+    
+    def _safe_init(self, **kwargs):
+        """Safe initialization wrapper that handles each component separately"""
+        
+        # Initialize basic parameters first (these should never fail)
+        self._init_basic_params(**kwargs)
+        
+        # Initialize logging and observability (with fallbacks)
+        self._init_observability()
+        
+        # Initialize U7 systems (with graceful fallbacks)
+        self._init_u7_systems()
+        
+        # Initialize other components with individual error handling
+        self._init_advanced_systems()
+    
+    def _init_basic_params(self, **kwargs):
+        """Initialize basic parameters that should never fail"""
+        self.expected_speakers = kwargs.get('expected_speakers', 10)
+        self.noise_level = kwargs.get('noise_level', 'medium')
+        self.target_language = kwargs.get('target_language', None)
+        self.domain = kwargs.get('domain', "general")
+        self.enable_versioning = kwargs.get('enable_versioning', True)
+        self.consensus_strategy = kwargs.get('consensus_strategy', "best_single_candidate")
+        self.calibration_method = kwargs.get('calibration_method', "registry_based")
+        
+        # Initialize all other configuration parameters with safe defaults
+        self.enable_speaker_mapping = kwargs.get('enable_speaker_mapping', True)
+        self.chunked_processing_threshold = kwargs.get('chunked_processing_threshold', 900.0)
+        self.enable_dialect_handling = kwargs.get('enable_dialect_handling', True)
+        self.enable_auto_glossary = kwargs.get('enable_auto_glossary', True)
+        self.enable_long_horizon_tracking = kwargs.get('enable_long_horizon_tracking', True)
+        
+        # Configuration objects with safe defaults
+        self.speaker_mapping_config = kwargs.get('speaker_mapping_config', {})
+        self.auto_glossary_config = kwargs.get('auto_glossary_config', {})
+        self.long_horizon_config = kwargs.get('long_horizon_config', {})
+        
+        # Apply safe defaults for all configuration dictionaries
+        self._apply_config_defaults()
+    
+    def _apply_config_defaults(self):
+        """Apply safe defaults to all configuration dictionaries"""
+        # Speaker mapping safe defaults
+        speaker_defaults = {
+            'similarity_threshold': 0.7,
+            'embedding_dim': 192,
+            'min_segment_duration': 1.0,
+            'cache_embeddings': True,
+            'enable_metrics': False,  # Disabled for safety
+            'use_ecapa_tdnn': False,  # Disabled for safety
+            'enable_backtracking': False,  # Disabled for safety
+        }
+        self.speaker_mapping_config = {**speaker_defaults, **self.speaker_mapping_config}
+        
+        # Auto-glossary safe defaults
+        glossary_defaults = {
+            'mining_sensitivity': 0.6,
+            'min_frequency_threshold': 2,
+            'max_candidates_per_session': 200,
+            'enable_variant_clustering': False,  # Disabled for safety
+            'decay_sessions_threshold': 10,
+            'minimum_support_threshold': 2,
+            'storage_base_path': 'term_bases',
+            'default_bias_strength': 0.7,
+            'max_bias_terms_per_session': 50,
+            'min_term_confidence': 0.5,
+        }
+        self.auto_glossary_config = {**glossary_defaults, **self.auto_glossary_config}
+        
+        # Long horizon tracking safe defaults
+        horizon_defaults = {
+            'min_turn_duration': 0.5,
+            'max_turn_duration': 60.0,
+            'embedding_aggregation_method': 'weighted_average',
+            'clustering_method': 'hierarchical',
+            'cluster_margin': 0.15,
+            'min_cluster_size': 2,
+            'enable_human_friendly_names': False,  # Disabled for safety
+        }
+        self.long_horizon_config = {**horizon_defaults, **self.long_horizon_config}
+    
+    def _init_observability(self):
+        """Initialize observability with safe fallbacks"""
+        try:
+            self.obs_manager = initialize_observability(
+                service_name="ensemble-transcription",
+                enable_profiling=False,  # Disabled for safety
+                log_level="INFO"
+            )
+            self.structured_logger = create_enhanced_logger("ensemble_manager", run_id=None)
+        except Exception as e:
+            print(f"Warning: Observability initialization failed ({e}), using basic logging")
+            self.obs_manager = None
+            self.structured_logger = None
+    
+    def _init_u7_systems(self):
+        """Initialize U7 systems with individual error handling"""
+        # Initialize basic U7 tracking
+        self.run_id = None
+        self.manifest_manager = None
+        self.enable_manifest_tracking = False  # Disabled for safety
+        
+        # Try to initialize each U7 system individually
+        systems = [
+            ('cache_manager', get_cache_manager),
+            ('deterministic_processor', get_deterministic_processor),
+            ('worklist_manager', get_worklist_manager),
+            ('selective_asr_processor', get_selective_asr_processor),
+            ('asr_scheduler', get_asr_scheduler)
+        ]
+        
+        for system_name, system_factory in systems:
+            try:
+                setattr(self, system_name, system_factory())
+            except Exception as e:
+                print(f"Warning: {system_name} initialization failed ({e}), using None fallback")
+                setattr(self, system_name, None)
+    
+    def _init_advanced_systems(self):
+        """Initialize advanced systems with graceful degradation"""
+        # Capability manager with fallback
+        try:
+            self.capability_manager = get_capability_manager()
+            self.capability_report = check_system_capabilities()
+        except Exception as e:
+            print(f"Warning: Capability manager failed ({e}), using basic capabilities")
+            self.capability_manager = None
+            self.capability_report = {}
+        
+        # Resource scheduler with fallback
+        try:
+            if self.enable_resource_scheduling:
+                self.resource_scheduler = get_resource_scheduler()
+            else:
+                self.resource_scheduler = None
+        except Exception as e:
+            print(f"Warning: Resource scheduler failed ({e}), disabled")
+            self.resource_scheduler = None
+            self.enable_resource_scheduling = False
+        
+        # Metrics system with fallback  
+        try:
+            metrics_config = {
+                'enabled': True,
+                'aggregation_window_seconds': 300,
+                'enable_background_processing': False,  # Disabled for safety
+                'alerting': {'enabled': False}  # Disabled for safety
+            }
+            self.metrics_collector = initialize_metrics_system(metrics_config, session_id=str(uuid.uuid4())[:8])
+        except Exception as e:
+            print(f"Warning: Metrics system failed ({e}), using None fallback")
+            self.metrics_collector = None
+        
+        # Set safe defaults for other features
+        self.enable_caching = getattr(self, 'cache_manager', None) is not None
+        self.enable_selective_reprocessing = getattr(self, 'selective_asr_processor', None) is not None
+        self.confidence_threshold_for_flagging = 0.65
+        self.max_segments_for_selective_reprocessing = 10
+        
+        # Source separation and overlap processing
+        self.enable_source_separation = False  # Disabled for safety
+        self.enable_overlap_aware_processing = False  # Disabled for safety
+        
+        # Other optional engines (initialized when needed)
+        self.punctuation_engine = None
+        self.text_normalizer = None
+        self.guardrail_verifier = None
+        self.post_fusion_realigner = None
+        self.elastic_chunker = None
     
     def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None, enable_versioning: bool = True, domain: str = "general", consensus_strategy: str = "best_single_candidate", calibration_method: str = "registry_based", enable_speaker_mapping: bool = True, speaker_mapping_config: Optional[Dict[str, Any]] = None, chunked_processing_threshold: float = 900.0, enable_dialect_handling: bool = True, dialect_similarity_threshold: float = 0.7, dialect_confidence_boost: float = 0.05, supported_dialects: Optional[List[str]] = None, enable_auto_glossary: bool = True, auto_glossary_config: Optional[Dict[str, Any]] = None, project_id: Optional[str] = None, enable_long_horizon_tracking: bool = True, long_horizon_config: Optional[Dict[str, Any]] = None) -> None:
         self.expected_speakers = expected_speakers
