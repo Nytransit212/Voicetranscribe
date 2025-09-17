@@ -143,7 +143,7 @@ class ManifestManager:
         # Thread safety for concurrent artifact registration
         self._lock = threading.RLock()
         self._artifacts: Dict[str, ArtifactEntry] = {}
-        self._manifest: Optional[RunManifest] = None
+        self._manifest: RunManifest
         
         # File paths
         self.manifest_path = self.session_dir / "run_manifest.json"
@@ -193,7 +193,12 @@ class ManifestManager:
                 source_separation_models={},
                 fingerprint_sha256=""
             ),
-            started_at=datetime.now(timezone.utc).isoformat()
+            started_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=None,
+            processing_duration_seconds=None,
+            last_validated_at=None,
+            validation_passed=None,
+            manifest_sha256=None
         )
         self.logger.info(f"Created new manifest for run {self.run_id}")
     
@@ -350,10 +355,10 @@ class ManifestManager:
                 f"{self._manifest.total_bytes} bytes, {duration:.1f}s duration"
             )
             
-            # Log completion event for telemetry
-            self.logger.log_event(
+            # Log completion event for telemetry  
+            self.logger.info(
                 "manifest_complete",
-                {
+                extra={
                     "artifact_count": self._manifest.total_artifacts,
                     "total_bytes": self._manifest.total_bytes,
                     "duration_seconds": duration,
@@ -465,11 +470,14 @@ class ManifestManager:
                     self.logger.error(f"  - {error}")
             
             # Log validation metrics
-            self.logger.log_metrics({
-                "manifest_validation_duration": validation_time,
-                "manifest_validation_errors": len(errors),
-                "manifest_artifacts_validated": validated_count
-            })
+            self.logger.info(
+                "manifest_validation_metrics",
+                extra={
+                    "manifest_validation_duration": validation_time,
+                    "manifest_validation_errors": len(errors),
+                    "manifest_artifacts_validated": validated_count
+                }
+            )
             
             return validation_passed, errors
             
@@ -659,7 +667,7 @@ class ManifestManager:
             temp_path = self.manifest_path.with_suffix('.tmp')
             with open(temp_path, 'w') as f:
                 json.dump(
-                    self._manifest.dict(),
+                    self._manifest.model_dump(),
                     f,
                     indent=2,
                     sort_keys=True,

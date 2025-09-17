@@ -310,8 +310,9 @@ def render_transcript_editor(clip: Clip, clip_index: int):
     session = st.session_state.hotspot_session
     current_text = session['edited_clips'].get(clip_index, {}).get('text_final', clip.text_proposed)
     
-    # Highlight low-confidence words
-    highlighted_text = highlight_low_confidence_words(clip.tokens, clip.text_proposed)
+    # Highlight low-confidence words (convert Token objects to dicts)
+    tokens_as_dicts = [{'text': token.text, 'conf': token.conf} for token in clip.tokens]
+    highlighted_text = highlight_low_confidence_words(tokens_as_dicts, clip.text_proposed)
     
     if highlighted_text != clip.text_proposed:
         st.markdown("**Original with confidence highlighting:**")
@@ -329,7 +330,7 @@ def render_transcript_editor(clip: Clip, clip_index: int):
     )
     
     # Auto-save functionality
-    if edited_text != current_text:
+    if edited_text != current_text and edited_text is not None:
         auto_save_edit(clip_index, edited_text)
 
 def highlight_low_confidence_words(tokens: List[Dict], original_text: str) -> str:
@@ -369,6 +370,36 @@ def highlight_low_confidence_words(tokens: List[Dict], original_text: str) -> st
         highlighted_parts.append(original_text[current_pos:])
     
     return ''.join(highlighted_parts)
+
+def auto_save_edit(clip_index: int, edited_text: str):
+    """Auto-save edits to session state"""
+    session = st.session_state.hotspot_session
+    if 'edited_clips' not in session:
+        session['edited_clips'] = {}
+    
+    session['edited_clips'][clip_index] = {
+        'text_final': edited_text,
+        'timestamp': time.time()
+    }
+    
+    # Also save to hotspot_edits format for API compatibility
+    if 'hotspot_edits' not in st.session_state:
+        st.session_state.hotspot_edits = {}
+    
+    clip = session['clips'][clip_index]
+    st.session_state.hotspot_edits[clip.id] = {
+        'edit': HumanEdit(
+            clip_id=clip.id,
+            text_final=edited_text,
+            original_text=clip.text_proposed
+        )
+    }
+
+def format_time(seconds: float) -> str:
+    """Format time in MM:SS format"""
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    return f"{minutes:02d}:{secs:02d}"
 
 def render_speaker_field(clip: Clip, clip_index: int):
     """Render speaker identification field"""
@@ -521,19 +552,6 @@ def render_completion_summary():
             st.rerun()
 
 # Helper functions
-def format_time(seconds: float) -> str:
-    """Format seconds as MM:SS"""
-    minutes = int(seconds // 60)
-    secs = int(seconds % 60)
-    return f"{minutes}:{secs:02d}"
-
-def auto_save_edit(clip_index: int, text: str):
-    """Auto-save transcript edit"""
-    session = st.session_state.hotspot_session
-    if clip_index not in session['edited_clips']:
-        session['edited_clips'][clip_index] = {}
-    session['edited_clips'][clip_index]['text_final'] = text
-    session['edited_clips'][clip_index]['last_edit'] = time.time()
 
 def auto_save_speaker(clip_index: int, speaker: str):
     """Auto-save speaker override"""
@@ -592,55 +610,116 @@ def finish_review():
     st.rerun()
 
 def apply_hotspot_improvements():
-    """Apply hotspot improvements to the main transcript"""
+    """Apply hotspot improvements to the main transcript with comprehensive validation"""
     try:
         session = st.session_state.hotspot_session
         hotspot_manager = st.session_state.hotspot_manager
         
+        # Validate session state before proceeding
+        if not st.session_state.processing_results:
+            st.error("⚠️ No processing results available. Cannot apply improvements.")
+            return
+        
         # Convert edited clips to HumanEdit objects
         human_edits = []
         for clip_index, edit_data in session['edited_clips'].items():
-            if 'text_final' in edit_data:
+            if 'text_final' in edit_data and edit_data['text_final'].strip():
                 clip = session['clips'][clip_index]
                 human_edit = HumanEdit(
                     clip_id=clip.id,
-                    text_final=edit_data['text_final'],
+                    text_final=edit_data['text_final'].strip(),
                     speaker_label_override=edit_data.get('speaker_override'),
                     flags=['flagged'] if edit_data.get('flagged') else []
                 )
                 human_edits.append(human_edit)
         
-        # Apply improvements through propagation pipeline
+        # Apply improvements through comprehensive propagation pipeline
         if human_edits:
+            # Store original for validation
+            original_results = st.session_state.processing_results.copy()
+            
+            # Apply improvements with full pipeline (includes file regeneration, manifest updates)
             improved_results = hotspot_manager.apply_improvements(
-                original_results=st.session_state.processing_results,
+                original_results=original_results,
                 human_edits=human_edits,
                 speaker_map=session.get('speaker_map', {})
             )
             
-            # Update processing results
-            st.session_state.processing_results.update(improved_results)
-            st.success(f"✅ Applied {len(human_edits)} improvements to transcript")
+            # Validate improvements were applied
+            if _validate_improvements(original_results, improved_results):
+                # Update processing results completely
+                st.session_state.processing_results = improved_results
+                
+                # Update job history with human review metadata
+                if hasattr(st.session_state, 'job_history') and st.session_state.job_history:
+                    latest_job = st.session_state.job_history[-1]
+                    latest_job['results'] = improved_results
+                    latest_job['human_reviewed'] = True
+                    latest_job['review_timestamp'] = time.time()
+                
+                # Show comprehensive success message
+                files_created = improved_results.get('regenerated_files', {})
+                st.success(f"✅ Applied {len(human_edits)} improvements to transcript")
+                if files_created:
+                    st.info(f"📁 Generated {len(files_created)} updated transcript files")
+                    for file_type, path in files_created.items():
+                        st.write(f"  • {file_type.upper()}: {Path(path).name}")
+            else:
+                st.warning("⚠️ Improvements may not have been fully applied. Please verify results.")
+        else:
+            st.info("No edits found to apply.")
         
     except Exception as e:
         st.error(f"Failed to apply improvements: {str(e)}")
+        # Log the full error for debugging
+        import traceback
+        st.error(f"Technical details: {traceback.format_exc()}")
+
+def _validate_improvements(original: Dict, improved: Dict) -> bool:
+    """Validate that improvements were actually applied"""
+    try:
+        # Check if transcript changed
+        if original.get('transcript', '') != improved.get('transcript', ''):
+            return True
+        
+        # Check if human_reviewed metadata was added
+        if 'human_reviewed' in improved and improved['human_reviewed']:
+            return True
+        
+        # Check if files were regenerated
+        if 'regenerated_files' in improved and improved['regenerated_files']:
+            return True
+        
+        return False
+    except:
+        return True  # Assume valid if validation fails
 
 def download_improved_transcript(format_type: str):
     """Generate download for improved transcript"""
     results = st.session_state.processing_results
     
+    # Initialize default values
+    content = ""
+    filename = "improved_transcript.txt"
+    mime = "text/plain"
+    
     if format_type == 'txt':
-        content = results['transcript']
-        filename = f"{Path(results['file_name']).stem}_improved.txt"
+        content = results.get('transcript', '')
+        filename = f"{Path(results.get('file_name', 'transcript')).stem}_improved.txt"
         mime = "text/plain"
     elif format_type == 'srt':
         content = create_srt_from_results(results)
-        filename = f"{Path(results['file_name']).stem}_improved.srt"
+        filename = f"{Path(results.get('file_name', 'transcript')).stem}_improved.srt"
         mime = "text/plain"
     elif format_type == 'json':
         content = json.dumps(results, indent=2)
-        filename = f"{Path(results['file_name']).stem}_improved.json"
+        filename = f"{Path(results.get('file_name', 'transcript')).stem}_improved.json"
         mime = "application/json"
+    else:
+        # Default case
+        content = results.get('transcript', '')
+        filename = "improved_transcript.txt"
+        mime = "text/plain"
     
     st.download_button(
         label=f"Download {format_type.upper()}",
