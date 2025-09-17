@@ -22,9 +22,77 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for clean design
+# Custom CSS for clean design with loading screen
 st.markdown("""
 <style>
+    /* Loading screen styling */
+    .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100vh;
+        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        z-index: 9999;
+        color: white;
+    }
+    
+    .loading-logo {
+        font-size: 4rem;
+        font-weight: bold;
+        margin-bottom: 2rem;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    }
+    
+    .ai-power-circle {
+        width: 180px;
+        height: 180px;
+        background: linear-gradient(45deg, #0066ff, #00ccff, #0066ff);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+        animation: lightning-pulse 2s infinite ease-in-out;
+        box-shadow: 0 0 30px rgba(0, 102, 255, 0.5);
+    }
+    
+    .ai-power-circle::before {
+        content: '⚡';
+        font-size: 3rem;
+        position: absolute;
+        animation: lightning-bolt 1.5s infinite;
+    }
+    
+    .ai-power-text {
+        color: white;
+        font-size: 1.1rem;
+        font-weight: 600;
+        text-align: center;
+        margin-top: 1rem;
+        text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+    }
+    
+    @keyframes lightning-pulse {
+        0%, 100% { 
+            transform: scale(1);
+            box-shadow: 0 0 30px rgba(0, 102, 255, 0.5);
+        }
+        50% { 
+            transform: scale(1.05);
+            box-shadow: 0 0 50px rgba(0, 102, 255, 0.8);
+        }
+    }
+    
+    @keyframes lightning-bolt {
+        0%, 80%, 100% { opacity: 1; }
+        40% { opacity: 0.7; }
+    }
+
     /* Main container styling */
     .main .block-container {
         padding-top: 2rem;
@@ -94,8 +162,26 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def show_loading_screen():
+    """Show beautiful loading screen with AI Powering On animation"""
+    st.markdown("""
+    <div class="loading-overlay">
+        <div class="loading-logo">🎯 Transcription Tool</div>
+        <div class="ai-power-circle">
+            <div class="ai-power-text">AI Powering On</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 def initialize_session_state():
     """Initialize session state with simple defaults"""
+    # Show loading screen during first initialization
+    if 'app_initialized' not in st.session_state:
+        show_loading_screen()
+        time.sleep(1.5)  # Brief loading time
+        st.session_state.app_initialized = True
+        st.rerun()
+    
     defaults = {
         'current_screen': 'landing',  # landing, processing, results, hotspot_review, error
         'uploaded_file': None,
