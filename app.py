@@ -268,7 +268,7 @@ def render_landing_screen():
     
     # Start processing button
     st.markdown("<br>", unsafe_allow_html=True)
-    can_start = st.session_state.uploaded_file is not None or st.session_state.file_url.strip()
+    can_start = st.session_state.uploaded_file is not None or (st.session_state.file_url and st.session_state.file_url.strip())
     
     if st.button("🚀 Start Transcription", type="primary", disabled=not can_start):
         if can_start:
