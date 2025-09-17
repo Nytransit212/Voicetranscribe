@@ -145,10 +145,19 @@ class ASREngine:
         
         start_time = time.time()
         
+        # Handle new timeout configuration structure (dict with connect/read/total)
+        timeout_value = self.timeout_config.api_request
+        if isinstance(timeout_value, dict):
+            # Use total timeout for API calls to ensure reasonable limits
+            api_timeout = timeout_value.get('total', 180)
+        else:
+            # Fallback for legacy configuration
+            api_timeout = min(timeout_value, 180) if timeout_value else 180
+        
         with open(audio_file_path, 'rb') as audio_file:
             response = self.client.audio.transcriptions.create(
                 file=audio_file,
-                timeout=self.timeout_config.api_request,
+                timeout=api_timeout,  # Use proper timeout value
                 **transcription_params
             )
         

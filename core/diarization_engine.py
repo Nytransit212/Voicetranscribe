@@ -111,7 +111,7 @@ class DiarizationEngine:
                 'max_file_size_mb': 512,
                 'max_duration_seconds': 10800,  # 3 hours - realistic maximum duration
                 'poll_interval': 5,
-                'max_wait_time': 3600,  # 1 hour wait time for long content
+                'max_wait_time': 600,  # 10 minutes wait time (reduced from dangerous 3600s)
                 'default_speakers': None
             }
         }

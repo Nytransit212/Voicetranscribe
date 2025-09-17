@@ -119,11 +119,17 @@ redecode:
 
 # Reliability Configuration - Centralized timeout, concurrency, and circuit breaker settings
 reliability:
-  # Global timeout settings (seconds)
+  # Global timeout settings with proper separation of concerns
   timeouts:
-    api_request: 600      # Individual API request timeout - appropriate for 3-hour content
-    asr_variant: 450      # Per-ASR variant timeout - appropriate for 3-hour content
-    diarization: 1200     # Diarization pipeline timeout - appropriate for 3-hour content
+    # API-level timeouts (seconds) - realistic values to prevent system hangs
+    api_request:
+      connect: 3          # Connection establishment timeout
+      read: 120           # Response read timeout for long-form audio
+      total: 180          # Total request timeout including retries
+    
+    # Stage-level timeouts (seconds) - must be > API timeouts
+    asr_variant: 300      # Per-ASR variant timeout (5 minutes max)
+    diarization: 600      # Diarization pipeline timeout (10 minutes max)
     file_processing: 120  # File I/O operations
     
   # Concurrency control

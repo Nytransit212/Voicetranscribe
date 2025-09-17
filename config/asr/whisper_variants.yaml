@@ -62,7 +62,9 @@ asr:
   # API configuration
   api:
     chunk_size_limit: 25_000_000  # 25MB per chunk
-    request_timeout: 300
+    request_timeout: 180          # 3 minutes max - reduced from dangerous 300s
+    connect_timeout: 3            # Connection timeout
+    read_timeout: 120             # Read timeout for long-form audio
     max_concurrent_requests: 3
     retry_backoff_multiplier: 2.0
     max_backoff_delay: 60.0

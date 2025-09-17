@@ -99,14 +99,45 @@ class ReliabilityConfigLoader:
             })
     
     def get_timeout_config(self) -> TimeoutConfig:
-        """Get timeout configuration with defaults"""
+        """Get timeout configuration with defaults and validation"""
         timeout_config = self._reliability_config.get('timeouts', {})
         
+        # Handle new API timeout structure (dict with connect/read/total) or legacy single value
+        api_request_config = timeout_config.get('api_request', {'connect': 3, 'read': 120, 'total': 180})
+        if isinstance(api_request_config, dict):
+            api_request_timeout = api_request_config  # Use the dict structure
+        else:
+            # Legacy single timeout value - convert to safe structure
+            api_request_timeout = {
+                'connect': 3,
+                'read': min(api_request_config, 120),  # Cap at 2 minutes
+                'total': min(api_request_config, 180)  # Cap at 3 minutes
+            }
+        
+        # Get other timeouts with safe defaults
+        asr_variant = timeout_config.get('asr_variant', 300)
+        diarization = timeout_config.get('diarization', 600)
+        file_processing = timeout_config.get('file_processing', 120)
+        
+        # Validate timeout hierarchy: API < stage < job wall-time
+        total_api_timeout = api_request_timeout.get('total', 180) if isinstance(api_request_timeout, dict) else api_request_timeout
+        
+        if asr_variant <= total_api_timeout:
+            print(f"⚠️ Warning: ASR variant timeout ({asr_variant}s) should be > API timeout ({total_api_timeout}s)")
+            asr_variant = max(asr_variant, total_api_timeout + 60)  # Add 1 minute buffer
+        
+        if diarization <= asr_variant:
+            print(f"⚠️ Warning: Diarization timeout ({diarization}s) should be > ASR variant timeout ({asr_variant}s)")
+            diarization = max(diarization, asr_variant + 120)  # Add 2 minute buffer
+        
+        # Log timeout configuration for debugging
+        print(f"✓ Timeout hierarchy validated: API={total_api_timeout}s, ASR={asr_variant}s, Diarization={diarization}s")
+        
         return TimeoutConfig(
-            api_request=timeout_config.get('api_request', 300),
-            asr_variant=timeout_config.get('asr_variant', 180),
-            diarization=timeout_config.get('diarization', 600),
-            file_processing=timeout_config.get('file_processing', 120)
+            api_request=api_request_timeout,
+            asr_variant=asr_variant,
+            diarization=diarization,
+            file_processing=file_processing
         )
     
     def get_concurrency_config(self) -> ConcurrencyConfig:

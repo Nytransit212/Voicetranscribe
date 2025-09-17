@@ -21,8 +21,10 @@ diarization:
       
       # Processing configuration
       poll_interval: 5             # Seconds between status checks
-      max_wait_time: 1800          # 30 minutes maximum wait time
-      upload_timeout: 300          # 5 minutes upload timeout
+      max_wait_time: 600           # 10 minutes maximum wait time (reduced from dangerous 1800s)
+      upload_timeout: 120          # 2 minutes upload timeout (reduced from dangerous 300s)
+      connect_timeout: 3           # Connection establishment timeout
+      read_timeout: 180            # Read timeout for processing
       
       # Diarization parameters
       default_speakers: null       # Let API auto-detect if null
