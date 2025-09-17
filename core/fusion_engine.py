@@ -77,6 +77,27 @@ class FusedSegment:
     fusion_metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
+class BoundaryViolation:
+    """Represents a timestamp boundary violation"""
+    chunk_index: int
+    violation_type: str  # 'overlap', 'gap', 'reverse_order'
+    prev_end_time: float
+    curr_start_time: float
+    offset: float
+    severity: str  # 'critical', 'warning', 'minor'
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class BoundaryValidationResult:
+    """Result of boundary validation"""
+    is_valid: bool
+    violations: List[BoundaryViolation]
+    total_violations: int
+    critical_violations: int
+    corrected_boundaries: List[Tuple[int, float, float]]  # (chunk_idx, old_time, new_time)
+    validation_metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
 class FusionResult:
     """Complete fusion result for a segment or full transcript"""
     fused_segments: List[FusedSegment]
@@ -87,6 +108,7 @@ class FusionResult:
     fusion_metrics: Dict[str, Any]
     processing_time: float
     fusion_metadata: Dict[str, Any] = field(default_factory=dict)
+    boundary_validation: Optional[BoundaryValidationResult] = None
 
 class EntityDetector:
     """Detects and classifies entities for special fusion handling"""
@@ -557,6 +579,13 @@ class FusionEngine:
             fusion_results.append(fusion_result)
         
         self.logger.info(f"Controller result fusion complete: {len(fusion_results)} segments fused")
+        
+        # CRITICAL: Validate boundary invariants across chunks
+        boundary_validation = self._validate_chunk_boundaries(fusion_results)
+        if not boundary_validation.is_valid:
+            self.logger.warning(f"Boundary violations detected: {boundary_validation.critical_violations} critical, {boundary_validation.total_violations} total")
+            fusion_results = self._correct_boundary_violations(fusion_results, boundary_validation)
+        
         return fusion_results
     
     def _build_confusion_networks(self,
@@ -894,3 +923,209 @@ class FusionEngine:
         metrics['original_best_candidate_provider'] = segment_analysis.best_candidate.provider if segment_analysis.best_candidate else None
         
         return metrics
+    
+    def _validate_chunk_boundaries(self, fusion_results: List[FusionResult]) -> BoundaryValidationResult:
+        """
+        CRITICAL: Validate that first token of chunk N+1 >= last token of chunk N
+        This prevents off-by-one errors and data loss across chunk boundaries
+        """
+        violations = []
+        corrected_boundaries = []
+        
+        self.logger.info(f"Validating boundary invariants across {len(fusion_results)} chunks")
+        
+        for i in range(len(fusion_results) - 1):
+            current_chunk = fusion_results[i]
+            next_chunk = fusion_results[i + 1]
+            
+            if not current_chunk.fused_segments or not next_chunk.fused_segments:
+                continue
+            
+            # Get the last token of current chunk
+            current_last_segment = current_chunk.fused_segments[-1]
+            current_last_end = current_last_segment.end_time
+            
+            if current_last_segment.words:
+                current_last_token_end = current_last_segment.words[-1]['end']
+            else:
+                current_last_token_end = current_last_end
+            
+            # Get the first token of next chunk
+            next_first_segment = next_chunk.fused_segments[0]
+            next_first_start = next_first_segment.start_time
+            
+            if next_first_segment.words:
+                next_first_token_start = next_first_segment.words[0]['start']
+            else:
+                next_first_token_start = next_first_start
+            
+            # BOUNDARY INVARIANT: next_first_token_start >= current_last_token_end
+            offset = next_first_token_start - current_last_token_end
+            
+            if offset < 0:
+                # Critical violation: overlapping tokens
+                violation = BoundaryViolation(
+                    chunk_index=i + 1,
+                    violation_type='overlap',
+                    prev_end_time=current_last_token_end,
+                    curr_start_time=next_first_token_start,
+                    offset=offset,
+                    severity='critical' if offset < -0.1 else 'warning',
+                    metadata={
+                        'current_chunk_id': i,
+                        'next_chunk_id': i + 1,
+                        'overlap_duration': abs(offset)
+                    }
+                )
+                violations.append(violation)
+                
+            elif offset > 2.0:
+                # Warning: large gap between chunks
+                violation = BoundaryViolation(
+                    chunk_index=i + 1,
+                    violation_type='gap',
+                    prev_end_time=current_last_token_end,
+                    curr_start_time=next_first_token_start,
+                    offset=offset,
+                    severity='warning' if offset < 5.0 else 'minor',
+                    metadata={
+                        'current_chunk_id': i,
+                        'next_chunk_id': i + 1,
+                        'gap_duration': offset
+                    }
+                )
+                violations.append(violation)
+        
+        # Validate internal consistency within each chunk
+        for chunk_idx, result in enumerate(fusion_results):
+            for segment in result.fused_segments:
+                if segment.words:
+                    prev_end = 0.0
+                    for word_idx, word in enumerate(segment.words):
+                        word_start = word.get('start', 0.0)
+                        word_end = word.get('end', 0.0)
+                        
+                        # Check word ordering within segment
+                        if word_start < prev_end - 0.01:  # Small tolerance for rounding
+                            violation = BoundaryViolation(
+                                chunk_index=chunk_idx,
+                                violation_type='reverse_order',
+                                prev_end_time=prev_end,
+                                curr_start_time=word_start,
+                                offset=word_start - prev_end,
+                                severity='critical',
+                                metadata={
+                                    'word_index': word_idx,
+                                    'word': word.get('word', ''),
+                                    'segment_text': segment.text[:50] + "..." if len(segment.text) > 50 else segment.text
+                                }
+                            )
+                            violations.append(violation)
+                        
+                        prev_end = word_end
+        
+        critical_violations = len([v for v in violations if v.severity == 'critical'])
+        total_violations = len(violations)
+        
+        is_valid = critical_violations == 0
+        
+        if violations:
+            self.logger.warning(f"Boundary validation found {total_violations} violations ({critical_violations} critical)")
+            for violation in violations[:5]:  # Log first 5 violations
+                self.logger.warning(f"Violation: {violation.violation_type} at chunk {violation.chunk_index}, "
+                                  f"offset: {violation.offset:.3f}s, severity: {violation.severity}")
+        else:
+            self.logger.info("Boundary validation passed - all chunks are properly ordered")
+        
+        return BoundaryValidationResult(
+            is_valid=is_valid,
+            violations=violations,
+            total_violations=total_violations,
+            critical_violations=critical_violations,
+            corrected_boundaries=corrected_boundaries,
+            validation_metadata={
+                'chunks_validated': len(fusion_results),
+                'validation_timestamp': time.time()
+            }
+        )
+    
+    def _correct_boundary_violations(self, 
+                                   fusion_results: List[FusionResult], 
+                                   validation_result: BoundaryValidationResult) -> List[FusionResult]:
+        """
+        Correct boundary violations by re-stitching overlapping chunks
+        """
+        if not validation_result.violations:
+            return fusion_results
+        
+        self.logger.info(f"Correcting {len(validation_result.violations)} boundary violations")
+        corrected_results = fusion_results.copy()
+        corrections_made = 0
+        
+        # Sort violations by chunk index for sequential processing
+        violations_by_chunk = {}
+        for violation in validation_result.violations:
+            chunk_idx = violation.chunk_index
+            if chunk_idx not in violations_by_chunk:
+                violations_by_chunk[chunk_idx] = []
+            violations_by_chunk[chunk_idx].append(violation)
+        
+        # Process violations in reverse order to avoid index shifting
+        for chunk_idx in sorted(violations_by_chunk.keys(), reverse=True):
+            chunk_violations = violations_by_chunk[chunk_idx]
+            
+            for violation in chunk_violations:
+                if violation.severity == 'critical' and violation.violation_type == 'overlap':
+                    # Fix overlapping chunks by adjusting timestamps
+                    if chunk_idx > 0 and chunk_idx < len(corrected_results):
+                        prev_result = corrected_results[chunk_idx - 1]
+                        curr_result = corrected_results[chunk_idx]
+                        
+                        # Calculate midpoint between overlapping tokens
+                        overlap_midpoint = (violation.prev_end_time + violation.curr_start_time) / 2.0
+                        
+                        # Adjust previous chunk's end time
+                        if prev_result.fused_segments:
+                            last_segment = prev_result.fused_segments[-1]
+                            old_end = last_segment.end_time
+                            last_segment.end_time = overlap_midpoint
+                            
+                            # Adjust last word end time if present
+                            if last_segment.words:
+                                last_word = last_segment.words[-1]
+                                last_word['end'] = overlap_midpoint
+                            
+                            self.logger.info(f"Adjusted chunk {chunk_idx-1} end time: {old_end:.3f} -> {overlap_midpoint:.3f}")
+                        
+                        # Adjust current chunk's start time
+                        if curr_result.fused_segments:
+                            first_segment = curr_result.fused_segments[0]
+                            old_start = first_segment.start_time
+                            first_segment.start_time = overlap_midpoint
+                            
+                            # Adjust first word start time if present
+                            if first_segment.words:
+                                first_word = first_segment.words[0]
+                                first_word['start'] = overlap_midpoint
+                            
+                            self.logger.info(f"Adjusted chunk {chunk_idx} start time: {old_start:.3f} -> {overlap_midpoint:.3f}")
+                        
+                        corrections_made += 1
+                
+                elif violation.violation_type == 'reverse_order':
+                    # Fix word ordering within segments
+                    chunk_result = corrected_results[violation.chunk_index]
+                    if chunk_result.fused_segments:
+                        for segment in chunk_result.fused_segments:
+                            if segment.words:
+                                # Sort words by start time
+                                segment.words.sort(key=lambda w: w.get('start', 0.0))
+                                corrections_made += 1
+                                self.logger.info(f"Reordered words in chunk {violation.chunk_index} segment")
+        
+        # Update boundary validation results in corrected fusion results
+        for result in corrected_results:
+            result.boundary_validation = validation_result
+        
+        self.logger.info(f"Applied {corrections_made} boundary corrections")
+        return corrected_results

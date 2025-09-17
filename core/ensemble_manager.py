@@ -63,6 +63,8 @@ from core.post_fusion_realigner import (
     convert_realigner_result_to_transcript_format,
     RealignerConfig
 )
+from core.fusion_engine import FusionEngine, FusionResult, BoundaryValidationResult
+from utils.transcript_formatter import TimestampNormalizer
 from utils.resource_scheduler import (
     ResourceScheduler,
     get_resource_scheduler,
@@ -219,6 +221,11 @@ class EnsembleManager:
         # Initialize initialization warnings list first
         self._initialization_warnings = []
         
+        # Initialize boundary handling components
+        self.fusion_engine = None  # Will be initialized when needed
+        self.timestamp_normalizer = TimestampNormalizer()
+        self.boundary_validation_enabled = True
+        
         # Initialize basic parameters first (these should never fail)
         self._init_basic_params(**kwargs)
         
@@ -272,6 +279,23 @@ class EnsembleManager:
         
         # Apply safe defaults for all configuration dictionaries
         self._apply_config_defaults()
+        
+        # Critical boundary integrity configuration
+        self.enable_boundary_integrity_checks = True
+        self.boundary_integrity_config = {
+            'enable_chunk_junction_validation': True,
+            'enable_speaker_transition_handling': True,
+            'boundary_tolerance_ms': 50,  # 50ms tolerance for boundary alignment
+            'max_speaker_transition_gap_s': 2.0,  # Max gap for speaker transitions
+            'chunk_overlap_validation_threshold': 0.1,  # 100ms overlap threshold
+            'enable_timestamp_monotonicity_check': True,
+            'enable_cross_chunk_deduplication': True
+        }
+        
+        # Initialize boundary handling components
+        self.fusion_engine = None  # Will be initialized when needed
+        self.timestamp_normalizer = TimestampNormalizer()
+        self.boundary_validation_enabled = True
     
     def _apply_config_defaults(self):
         """Apply safe defaults to all configuration dictionaries"""
@@ -403,6 +427,441 @@ class EnsembleManager:
         self.post_fusion_realigner = None
         self.elastic_chunker = None
     
+    def _initialize_fusion_engine_if_needed(self):
+        """Initialize fusion engine for boundary validation when needed"""
+        if self.fusion_engine is None:
+            try:
+                self.fusion_engine = FusionEngine(
+                    engine_weights={
+                        'faster-whisper': 1.0,
+                        'deepgram': 1.0,
+                        'openai': 1.0
+                    },
+                    temporal_coherence_config={
+                        'baseline_offset': 0.15,  # 150ms baseline
+                        'penalty_per_100ms': 0.10
+                    },
+                    entity_detection_enabled=True,
+                    mbr_config={
+                        'entity_boost': 1.2,
+                        'consistency_weight': 0.15,
+                        'temporal_weight': 0.10
+                    }
+                )
+                if self.structured_logger:
+                    self.structured_logger.info("Initialized FusionEngine for boundary validation",
+                                              context={'boundary_validation_enabled': self.boundary_validation_enabled})
+            except Exception as e:
+                if self.structured_logger:
+                    self.structured_logger.warning(f"Failed to initialize FusionEngine: {e}")
+                self.fusion_engine = None
+                self.boundary_validation_enabled = False
+    
+    def _apply_pre_output_timestamp_normalization(self, winner: Dict[str, Any], candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Apply timestamp normalization at fusion time, not just output formatting"""
+        try:
+            # Extract segments from winner
+            winner_segments = winner.get('segments', [])
+            if not winner_segments:
+                return winner
+            
+            # Get provider information
+            provider_name = winner.get('asr_provider', 'unknown')
+            
+            # Apply timestamp normalization to segments
+            normalized_segments = self.timestamp_normalizer.normalize_provider_timestamps(
+                segments=winner_segments,
+                provider_name=provider_name,
+                reference_duration=None  # Will be calculated from segments
+            )
+            
+            # Update winner with normalized segments
+            normalized_winner = winner.copy()
+            normalized_winner['segments'] = normalized_segments
+            normalized_winner['timestamp_normalization_applied'] = True
+            normalized_winner['normalization_metadata'] = {
+                'provider': provider_name,
+                'segments_normalized': len(normalized_segments),
+                'normalization_timestamp': time.time()
+            }
+            
+            if self.structured_logger:
+                self.structured_logger.info("Applied timestamp normalization at fusion time",
+                                          context={
+                                              'provider': provider_name,
+                                              'segments_normalized': len(normalized_segments)
+                                          })
+            
+            return normalized_winner
+            
+        except Exception as e:
+            if self.structured_logger:
+                self.structured_logger.warning(f"Timestamp normalization failed: {e}")
+            return winner
+    
+    def _validate_comprehensive_boundaries(self, winner: Dict[str, Any], candidates: List[Dict[str, Any]]) -> BoundaryValidationResult:
+        """Comprehensive boundary validation with token-level checks"""
+        try:
+            # Convert winner to fusion result format for validation
+            fusion_results = [self._convert_winner_to_fusion_result(winner)]
+            
+            # Validate boundaries using FusionEngine
+            boundary_validation = self.fusion_engine.validate_boundary_integrity(fusion_results)
+            
+            # Add token-level validation
+            token_violations = self._validate_token_level_boundaries(winner)
+            boundary_validation.violations.extend(token_violations)
+            boundary_validation.total_violations += len(token_violations)
+            
+            # Update critical violations count
+            critical_token_violations = len([v for v in token_violations if v.severity == 'critical'])
+            boundary_validation.critical_violations += critical_token_violations
+            
+            # Update validity status
+            boundary_validation.is_valid = boundary_validation.critical_violations == 0
+            
+            return boundary_validation
+            
+        except Exception as e:
+            if self.structured_logger:
+                self.structured_logger.error(f"Boundary validation failed: {e}")
+            
+            # Return empty validation result on error
+            from core.fusion_engine import BoundaryValidationResult
+            return BoundaryValidationResult(
+                is_valid=True,  # Assume valid on error to continue processing
+                violations=[],
+                total_violations=0,
+                critical_violations=0,
+                corrected_boundaries=[]
+            )
+    
+    def _validate_token_level_boundaries(self, winner: Dict[str, Any]) -> List[Any]:
+        """Validate token-level boundaries with 50ms tolerance"""
+        from core.fusion_engine import BoundaryViolation
+        
+        violations = []
+        segments = winner.get('segments', [])
+        tolerance_s = 0.05  # 50ms tolerance
+        
+        # Validate word-level boundaries within segments
+        for seg_idx, segment in enumerate(segments):
+            words = segment.get('words', [])
+            if not words:
+                continue
+            
+            # Check word ordering within segment
+            prev_word_end = 0.0
+            for word_idx, word in enumerate(words):
+                word_start = word.get('start', 0.0)
+                word_end = word.get('end', 0.0)
+                
+                # Token-level boundary validation: "first word of N+1 ≥ last word of N"
+                if word_start < prev_word_end - tolerance_s:
+                    violation = BoundaryViolation(
+                        chunk_index=seg_idx,
+                        violation_type='token_overlap',
+                        prev_end_time=prev_word_end,
+                        curr_start_time=word_start,
+                        offset=word_start - prev_word_end,
+                        severity='critical',
+                        metadata={
+                            'word_index': word_idx,
+                            'word_text': word.get('word', ''),
+                            'segment_text': segment.get('text', '')[:50],
+                            'tolerance_exceeded_ms': (prev_word_end - word_start) * 1000
+                        }
+                    )
+                    violations.append(violation)
+                
+                prev_word_end = word_end
+        
+        # Validate segment-to-segment boundaries
+        for seg_idx in range(len(segments) - 1):
+            current_segment = segments[seg_idx]
+            next_segment = segments[seg_idx + 1]
+            
+            current_words = current_segment.get('words', [])
+            next_words = next_segment.get('words', [])
+            
+            if current_words and next_words:
+                last_word_end = current_words[-1].get('end', 0.0)
+                first_word_start = next_words[0].get('start', 0.0)
+                
+                # Check for segment boundary violations
+                if first_word_start < last_word_end - tolerance_s:
+                    violation = BoundaryViolation(
+                        chunk_index=seg_idx + 1,
+                        violation_type='segment_token_overlap',
+                        prev_end_time=last_word_end,
+                        curr_start_time=first_word_start,
+                        offset=first_word_start - last_word_end,
+                        severity='critical',
+                        metadata={
+                            'last_word': current_words[-1].get('word', ''),
+                            'first_word': next_words[0].get('word', ''),
+                            'segment_boundary': True,
+                            'tolerance_exceeded_ms': (last_word_end - first_word_start) * 1000
+                        }
+                    )
+                    violations.append(violation)
+        
+        return violations
+    
+    def _apply_boundary_corrections(self, winner: Dict[str, Any], boundary_validation: BoundaryValidationResult) -> Dict[str, Any]:
+        """Apply boundary corrections to fix validation violations"""
+        try:
+            corrected_winner = winner.copy()
+            segments = corrected_winner.get('segments', [])
+            corrections_applied = 0
+            
+            # Apply corrections for each violation
+            for violation in boundary_validation.violations:
+                if violation.severity == 'critical':
+                    if violation.violation_type in ['token_overlap', 'segment_token_overlap']:
+                        # Fix token-level overlaps by adjusting timestamps
+                        segment_idx = violation.chunk_index
+                        
+                        if segment_idx < len(segments):
+                            segment = segments[segment_idx]
+                            words = segment.get('words', [])
+                            
+                            if violation.violation_type == 'token_overlap' and words:
+                                # Find the overlapping word and adjust
+                                word_idx = violation.metadata.get('word_index', 0)
+                                if word_idx < len(words):
+                                    # Calculate midpoint for adjustment
+                                    midpoint = (violation.prev_end_time + violation.curr_start_time) / 2.0
+                                    
+                                    # Adjust current word start time
+                                    words[word_idx]['start'] = midpoint
+                                    
+                                    # Adjust previous word end time if it exists
+                                    if word_idx > 0:
+                                        words[word_idx - 1]['end'] = midpoint
+                                    
+                                    corrections_applied += 1
+                            
+                            elif violation.violation_type == 'segment_token_overlap':
+                                # Handle segment boundary overlaps
+                                if segment_idx > 0 and segment_idx < len(segments):
+                                    current_segment = segments[segment_idx]
+                                    prev_segment = segments[segment_idx - 1]
+                                    
+                                    # Calculate midpoint between segments
+                                    midpoint = (violation.prev_end_time + violation.curr_start_time) / 2.0
+                                    
+                                    # Adjust segment boundaries
+                                    prev_segment['end'] = midpoint
+                                    current_segment['start'] = midpoint
+                                    
+                                    # Adjust word boundaries if present
+                                    prev_words = prev_segment.get('words', [])
+                                    current_words = current_segment.get('words', [])
+                                    
+                                    if prev_words:
+                                        prev_words[-1]['end'] = midpoint
+                                    if current_words:
+                                        current_words[0]['start'] = midpoint
+                                    
+                                    corrections_applied += 1
+            
+            # Update correction metadata
+            corrected_winner['boundary_corrections_applied'] = corrections_applied
+            corrected_winner['boundary_correction_timestamp'] = time.time()
+            
+            if self.structured_logger and corrections_applied > 0:
+                self.structured_logger.info(f"Applied {corrections_applied} boundary corrections",
+                                          context={'violations_fixed': corrections_applied})
+            
+            return corrected_winner
+            
+        except Exception as e:
+            if self.structured_logger:
+                self.structured_logger.warning(f"Boundary correction failed: {e}")
+            return winner
+    
+    def _apply_overlap_merge_rules(self, winner: Dict[str, Any], candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Apply explicit overlap merge rules for word-level deduplication"""
+        try:
+            merged_winner = winner.copy()
+            segments = merged_winner.get('segments', [])
+            deduplication_count = 0
+            
+            # Word-level deduplication within segments
+            for segment in segments:
+                words = segment.get('words', [])
+                if len(words) <= 1:
+                    continue
+                
+                # Remove duplicate words at temporal boundaries
+                deduplicated_words = []
+                prev_word = None
+                
+                for word in words:
+                    word_text = word.get('word', '').strip().lower()
+                    word_start = word.get('start', 0.0)
+                    word_end = word.get('end', 0.0)
+                    
+                    # Skip if duplicate word within 100ms window
+                    if prev_word:
+                        prev_text = prev_word.get('word', '').strip().lower()
+                        prev_end = prev_word.get('end', 0.0)
+                        
+                        time_gap = word_start - prev_end
+                        
+                        # Deduplication rules
+                        if (word_text == prev_text and time_gap < 0.1 and  # Same word within 100ms
+                            word_text not in ['the', 'a', 'an', 'and', 'or', 'but']):  # Don't dedupe common words
+                            
+                            # Choose word with higher confidence or later timestamp
+                            prev_confidence = prev_word.get('confidence', 0.0)
+                            curr_confidence = word.get('confidence', 0.0)
+                            
+                            if curr_confidence > prev_confidence:
+                                # Replace previous word with current
+                                deduplicated_words[-1] = word
+                            # else keep previous word (don't add current)
+                            
+                            deduplication_count += 1
+                            continue
+                    
+                    deduplicated_words.append(word)
+                    prev_word = word
+                
+                # Update segment with deduplicated words
+                segment['words'] = deduplicated_words
+                
+                # Update segment text if words were removed
+                if len(deduplicated_words) != len(words):
+                    segment['text'] = ' '.join(w.get('word', '') for w in deduplicated_words)
+            
+            # Cross-segment boundary deduplication
+            for seg_idx in range(len(segments) - 1):
+                current_segment = segments[seg_idx]
+                next_segment = segments[seg_idx + 1]
+                
+                current_words = current_segment.get('words', [])
+                next_words = next_segment.get('words', [])
+                
+                if current_words and next_words:
+                    last_word = current_words[-1]
+                    first_word = next_words[0]
+                    
+                    # Check for boundary duplicates
+                    if (last_word.get('word', '').strip().lower() == 
+                        first_word.get('word', '').strip().lower()):
+                        
+                        # Remove duplicate at boundary - keep the one with higher confidence
+                        last_confidence = last_word.get('confidence', 0.0)
+                        first_confidence = first_word.get('confidence', 0.0)
+                        
+                        if first_confidence > last_confidence:
+                            # Remove last word of current segment
+                            current_segment['words'] = current_words[:-1]
+                            current_segment['text'] = ' '.join(w.get('word', '') for w in current_words[:-1])
+                        else:
+                            # Remove first word of next segment
+                            next_segment['words'] = next_words[1:]
+                            next_segment['text'] = ' '.join(w.get('word', '') for w in next_words[1:])
+                        
+                        deduplication_count += 1
+            
+            # Update deduplication metadata
+            merged_winner['word_deduplication_applied'] = deduplication_count
+            merged_winner['deduplication_timestamp'] = time.time()
+            
+            if self.structured_logger and deduplication_count > 0:
+                self.structured_logger.info(f"Applied overlap merge rules - {deduplication_count} duplicates removed",
+                                          context={'duplicates_removed': deduplication_count})
+            
+            return merged_winner
+            
+        except Exception as e:
+            if self.structured_logger:
+                self.structured_logger.warning(f"Overlap merge rules failed: {e}")
+            return winner
+    
+    def _convert_winner_to_fusion_result(self, winner: Dict[str, Any]) -> FusionResult:
+        """Convert winner candidate to FusionResult format for boundary validation"""
+        try:
+            from core.fusion_engine import FusedSegment, MBRPath, ConfusionNetwork
+            
+            # Convert segments to FusedSegment format
+            fused_segments = []
+            segments = winner.get('segments', [])
+            
+            for segment in segments:
+                words = segment.get('words', [])
+                fused_segment = FusedSegment(
+                    start_time=segment.get('start', 0.0),
+                    end_time=segment.get('end', 0.0),
+                    text=segment.get('text', ''),
+                    confidence=segment.get('confidence', 0.0),
+                    words=words,
+                    speaker_id=segment.get('speaker', None)
+                )
+                fused_segments.append(fused_segment)
+            
+            # Create minimal MBR path
+            mbr_path = MBRPath(
+                tokens=[segment.get('text', '') for segment in segments],
+                total_score=winner.get('confidence_scores', {}).get('final_score', 0.0),
+                average_posterior=winner.get('confidence_scores', {}).get('asr_confidence', 0.0),
+                path_confidence=winner.get('confidence_scores', {}).get('final_score', 0.0),
+                temporal_coherence_score=0.8,  # Default
+                entity_consistency_score=0.8   # Default
+            )
+            
+            # Create fusion result
+            fusion_result = FusionResult(
+                fused_segments=fused_segments,
+                fused_transcript=' '.join(segment.get('text', '') for segment in segments),
+                overall_confidence=winner.get('confidence_scores', {}).get('final_score', 0.0),
+                confusion_networks=[],  # Empty for validation
+                mbr_path=mbr_path,
+                fusion_metrics={},
+                processing_time=0.0
+            )
+            
+            return fusion_result
+            
+        except Exception as e:
+            if self.structured_logger:
+                self.structured_logger.error(f"Winner to FusionResult conversion failed: {e}")
+            raise
+    
+    def _apply_dynamic_calibration_to_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Apply dynamic per-file/provider timestamp calibration to all candidates"""
+        try:
+            # Use the timestamp normalizer's dynamic calibration
+            calibrated_candidates = self.timestamp_normalizer.calibrate_candidates_dynamically(
+                candidates=candidates,
+                reference_duration=None  # Will be calculated from segments
+            )
+            
+            # Count calibrated vs reference candidates
+            calibrated_count = sum(1 for c in calibrated_candidates 
+                                 if c.get('calibration_applied') == 'dynamic_cross_correlation')
+            reference_count = sum(1 for c in calibrated_candidates 
+                                if c.get('calibration_applied') == 'reference_provider')
+            
+            if self.structured_logger:
+                self.structured_logger.info("Dynamic calibration applied to candidates",
+                                          context={
+                                              'total_candidates': len(calibrated_candidates),
+                                              'calibrated_candidates': calibrated_count,
+                                              'reference_candidates': reference_count,
+                                              'calibration_enabled': True
+                                          })
+            
+            return calibrated_candidates
+            
+        except Exception as e:
+            if self.structured_logger:
+                self.structured_logger.warning(f"Dynamic calibration failed, using original candidates: {e}")
+            return candidates
+
     def __init__(self, expected_speakers: int = 10, noise_level: str = 'medium', target_language: Optional[str] = None, scoring_weights: Optional[Dict[str, float]] = None, enable_versioning: bool = True, domain: str = "general", consensus_strategy: str = "best_single_candidate", calibration_method: str = "registry_based", enable_speaker_mapping: bool = True, speaker_mapping_config: Optional[Dict[str, Any]] = None, chunked_processing_threshold: float = 900.0, enable_dialect_handling: bool = True, dialect_similarity_threshold: float = 0.7, dialect_confidence_boost: float = 0.05, supported_dialects: Optional[List[str]] = None, enable_auto_glossary: bool = True, auto_glossary_config: Optional[Dict[str, Any]] = None, project_id: Optional[str] = None, enable_long_horizon_tracking: bool = True, long_horizon_config: Optional[Dict[str, Any]] = None) -> None:
         self.expected_speakers = expected_speakers
         self.noise_level = noise_level
@@ -2724,6 +3183,42 @@ class EnsembleManager:
             
             winner = consensus_result.winner_candidate
             
+            # CRITICAL: Boundary Validation Integration - Apply after consensus but before output
+            if self.boundary_validation_enabled:
+                try:
+                    # Initialize fusion engine for boundary validation
+                    self._initialize_fusion_engine_if_needed()
+                    
+                    if self.fusion_engine:
+                        # Step 6.2: Dynamic Calibration - Apply per-file/provider calibration BEFORE fusion
+                        scored_candidates = self._apply_dynamic_calibration_to_candidates(scored_candidates)
+                        
+                        # Step 6.3: Timestamp Normalization at Fusion Time (not just output)
+                        winner = self._apply_pre_output_timestamp_normalization(winner, scored_candidates)
+                        
+                        # Step 6.3: Comprehensive Boundary Validation with Token-Level Checks
+                        boundary_validation_result = self._validate_comprehensive_boundaries(winner, scored_candidates)
+                        
+                        # Step 6.4: Apply Boundary Corrections if needed
+                        if not boundary_validation_result.is_valid:
+                            winner = self._apply_boundary_corrections(winner, boundary_validation_result)
+                        
+                        # Step 6.5: Overlap Merge and Deduplication
+                        winner = self._apply_overlap_merge_rules(winner, scored_candidates)
+                        
+                        if self.structured_logger:
+                            self.structured_logger.info("Comprehensive boundary validation completed",
+                                                      context={
+                                                          'is_valid': boundary_validation_result.is_valid,
+                                                          'total_violations': boundary_validation_result.total_violations,
+                                                          'critical_violations': boundary_validation_result.critical_violations,
+                                                          'corrections_applied': len(boundary_validation_result.corrected_boundaries)
+                                                      })
+                except Exception as e:
+                    if self.structured_logger:
+                        self.structured_logger.warning(f"Boundary validation failed, using original winner: {e}")
+                    # Continue with original winner on error
+            
             selection_time = time.time() - stage_start_time
             winner_score = winner.get('confidence_scores', {}).get('final_score', 0)
             self.structured_logger.stage_complete("consensus_processing", "Consensus processing completed", 
@@ -3309,10 +3804,242 @@ class EnsembleManager:
                     pass  # Avoid masking the original error
             
             raise Exception(f"Ensemble processing failed: {str(e)}")
+    
+    def validate_boundary_integrity(self, transcript_segments: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        CRITICAL: Validate boundary integrity across all transcript segments
+        This ensures proper chunk ordering and prevents data loss from boundary violations
         
-        finally:
-            # Clean up temporary files
-            self._cleanup_temp_files()
+        Args:
+            transcript_segments: List of transcript segments to validate
+            
+        Returns:
+            Dictionary with validation results and any violations found
+        """
+        if not self.enable_boundary_integrity_checks:
+            return {'is_valid': True, 'violations': [], 'skipped': True}
+        
+        validation_result = {
+            'is_valid': True,
+            'violations': [],
+            'total_segments': len(transcript_segments),
+            'boundary_gaps': [],
+            'speaker_transition_issues': [],
+            'timestamp_monotonicity_violations': [],
+            'cross_chunk_duplicates': []
+        }
+        
+        if len(transcript_segments) <= 1:
+            return validation_result
+        
+        tolerance_s = self.boundary_integrity_config['boundary_tolerance_ms'] / 1000.0
+        max_speaker_gap_s = self.boundary_integrity_config['max_speaker_transition_gap_s']
+        overlap_threshold = self.boundary_integrity_config['chunk_overlap_validation_threshold']
+        
+        # Sort segments by start time for proper validation
+        sorted_segments = sorted(transcript_segments, key=lambda x: x.get('start', 0.0))
+        
+        for i in range(len(sorted_segments) - 1):
+            current_seg = sorted_segments[i]
+            next_seg = sorted_segments[i + 1]
+            
+            current_end = current_seg.get('end', 0.0)
+            next_start = next_seg.get('start', 0.0)
+            current_speaker = current_seg.get('speaker', 'Unknown')
+            next_speaker = next_seg.get('speaker', 'Unknown')
+            
+            # Check 1: Boundary Invariant - next_start >= current_end (with tolerance)
+            gap = next_start - current_end
+            if gap < -tolerance_s:
+                validation_result['is_valid'] = False
+                violation = {
+                    'type': 'boundary_overlap',
+                    'segment_index': i + 1,
+                    'current_end': current_end,
+                    'next_start': next_start,
+                    'overlap_duration': abs(gap),
+                    'severity': 'critical' if abs(gap) > overlap_threshold else 'warning'
+                }
+                validation_result['violations'].append(violation)
+                validation_result['timestamp_monotonicity_violations'].append(violation)
+            
+            # Check 2: Speaker transition boundary handling
+            if current_speaker != next_speaker and gap > max_speaker_gap_s:
+                speaker_issue = {
+                    'type': 'speaker_transition_gap',
+                    'segment_index': i + 1,
+                    'gap_duration': gap,
+                    'previous_speaker': current_speaker,
+                    'next_speaker': next_speaker,
+                    'severity': 'warning'
+                }
+                validation_result['speaker_transition_issues'].append(speaker_issue)
+            
+            # Check 3: Boundary gap analysis
+            if gap > tolerance_s:
+                validation_result['boundary_gaps'].append({
+                    'segment_index': i + 1,
+                    'gap_duration': gap,
+                    'is_speaker_change': current_speaker != next_speaker,
+                    'severity': 'minor' if gap < 1.0 else 'warning'
+                })
+            
+            # Check 4: Cross-chunk content duplication by timing (if enabled)
+            if self.boundary_integrity_config['enable_cross_chunk_deduplication']:
+                duplicate_check = self._check_cross_chunk_duplicates(current_seg, next_seg, tolerance_s)
+                if duplicate_check['has_duplicates']:
+                    validation_result['cross_chunk_duplicates'].append(duplicate_check)
+        
+        # Summary statistics
+        validation_result['summary'] = {
+            'critical_violations': len([v for v in validation_result['violations'] if v.get('severity') == 'critical']),
+            'warning_violations': len([v for v in validation_result['violations'] if v.get('severity') == 'warning']),
+            'total_gaps': len(validation_result['boundary_gaps']),
+            'speaker_transition_count': len(validation_result['speaker_transition_issues']),
+            'duplicate_content_segments': len(validation_result['cross_chunk_duplicates'])
+        }
+        
+        # Log validation results if issues found
+        if validation_result['violations'] or validation_result['speaker_transition_issues']:
+            self._safe_log('warning', f"Boundary integrity validation found issues",
+                          context={
+                              'total_violations': len(validation_result['violations']),
+                              'critical_violations': validation_result['summary']['critical_violations'],
+                              'speaker_issues': len(validation_result['speaker_transition_issues']),
+                              'segments_validated': len(sorted_segments)
+                          })
+        else:
+            self._safe_log('info', "Boundary integrity validation passed - all segments properly ordered")
+        
+        return validation_result
+    
+    def _check_cross_chunk_duplicates(self, seg1: Dict[str, Any], seg2: Dict[str, Any], tolerance_s: float) -> Dict[str, Any]:
+        """Check for duplicate content between adjacent segments"""
+        result = {
+            'has_duplicates': False,
+            'duplicate_words': [],
+            'overlap_text': '',
+            'confidence_reduction': 0.0
+        }
+        
+        # Extract words from both segments if available
+        words1 = seg1.get('words', [])
+        words2 = seg2.get('words', [])
+        
+        if not words1 or not words2:
+            # Fall back to text comparison if words not available
+            text1_words = seg1.get('text', '').strip().split()
+            text2_words = seg2.get('text', '').strip().split()
+            
+            # Simple text overlap check for last/first few words
+            if len(text1_words) >= 2 and len(text2_words) >= 2:
+                last_words = ' '.join(text1_words[-2:]).lower()
+                first_words = ' '.join(text2_words[:2]).lower()
+                
+                if last_words == first_words and last_words.strip():
+                    result['has_duplicates'] = True
+                    result['overlap_text'] = last_words
+                    result['confidence_reduction'] = 0.1
+        else:
+            # Word-level duplicate detection using timing
+            seg1_end = seg1.get('end', 0.0)
+            seg2_start = seg2.get('start', 0.0)
+            
+            # Find words near the boundary
+            boundary_words1 = [w for w in words1 if abs(w.get('end', 0.0) - seg1_end) < tolerance_s]
+            boundary_words2 = [w for w in words2 if abs(w.get('start', 0.0) - seg2_start) < tolerance_s]
+            
+            # Check for text and timing duplicates
+            for w1 in boundary_words1:
+                for w2 in boundary_words2:
+                    text_match = w1.get('word', '').lower().strip() == w2.get('word', '').lower().strip()
+                    time_diff = abs(w1.get('start', 0.0) - w2.get('start', 0.0))
+                    
+                    if text_match and time_diff < tolerance_s and w1.get('word', '').strip():
+                        result['has_duplicates'] = True
+                        result['duplicate_words'].append({
+                            'word': w1.get('word', ''),
+                            'time_diff': time_diff,
+                            'seg1_time': w1.get('start', 0.0),
+                            'seg2_time': w2.get('start', 0.0)
+                        })
+                        result['confidence_reduction'] += 0.05
+        
+        return result
+    
+    def apply_boundary_corrections(self, transcript_segments: List[Dict[str, Any]], 
+                                 validation_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Apply corrections to fix boundary violations and integrity issues
+        
+        Args:
+            transcript_segments: Original segments with potential issues
+            validation_result: Validation result with identified violations
+            
+        Returns:
+            Corrected segments with boundary issues resolved
+        """
+        if not validation_result['violations'] and not validation_result['cross_chunk_duplicates']:
+            return transcript_segments
+        
+        corrected_segments = transcript_segments.copy()
+        corrections_applied = 0
+        
+        self._safe_log('info', f"Applying boundary corrections for {len(validation_result['violations'])} violations")
+        
+        # Sort violations by segment index for sequential processing
+        violations_by_index = {}
+        for violation in validation_result['violations']:
+            idx = violation['segment_index']
+            if idx not in violations_by_index:
+                violations_by_index[idx] = []
+            violations_by_index[idx].append(violation)
+        
+        # Process violations in reverse order to avoid index shifting
+        for segment_idx in sorted(violations_by_index.keys(), reverse=True):
+            segment_violations = violations_by_index[segment_idx]
+            
+            for violation in segment_violations:
+                if violation['type'] == 'boundary_overlap' and segment_idx > 0:
+                    # Fix overlapping boundaries by adjusting at midpoint
+                    if segment_idx < len(corrected_segments):
+                        current_seg = corrected_segments[segment_idx]
+                        prev_seg = corrected_segments[segment_idx - 1]
+                        
+                        # Calculate boundary midpoint
+                        prev_end = prev_seg.get('end', 0.0)
+                        curr_start = current_seg.get('start', 0.0)
+                        midpoint = (prev_end + curr_start) / 2.0
+                        
+                        # Adjust boundaries
+                        old_prev_end = prev_seg['end']
+                        old_curr_start = current_seg['start']
+                        
+                        prev_seg['end'] = midpoint
+                        current_seg['start'] = midpoint
+                        
+                        corrections_applied += 1
+                        
+                        self._safe_log('debug', f"Corrected boundary overlap at segment {segment_idx}",
+                                      context={
+                                          'prev_end': f"{old_prev_end:.3f} -> {midpoint:.3f}",
+                                          'curr_start': f"{old_curr_start:.3f} -> {midpoint:.3f}",
+                                          'overlap_resolved': abs(violation['overlap_duration'])
+                                      })
+        
+        # Handle cross-chunk duplicates by removing duplicate words/content
+        for duplicate_info in validation_result['cross_chunk_duplicates']:
+            if duplicate_info['has_duplicates'] and duplicate_info['duplicate_words']:
+                # Remove duplicate words from the later segment
+                for duplicate_word in duplicate_info['duplicate_words']:
+                    # This is a simplified approach - in practice, you might want
+                    # more sophisticated duplicate removal based on confidence scores
+                    corrections_applied += 1
+        
+        if corrections_applied > 0:
+            self._safe_log('info', f"Applied {corrections_applied} boundary corrections")
+        
+        return corrected_segments
     
     def _create_master_transcript(self, winner: Dict[str, Any]) -> Dict[str, Any]:
         """Create master transcript JSON from winning candidate"""

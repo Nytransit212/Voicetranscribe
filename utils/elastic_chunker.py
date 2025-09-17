@@ -999,6 +999,242 @@ class ElasticChunker:
             'natural_boundaries': natural_boundaries
         }
     
+    def merge_overlapping_chunks(self, chunk_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        CRITICAL: Merge overlapping chunks using explicit merge rules and token-time deduplication
+        This prevents boundary violations and data loss from overlapping chunks
+        
+        Args:
+            chunk_results: List of chunk processing results with timestamps and tokens
+            
+        Returns:
+            Merged chunk results with resolved overlaps and deduplicated tokens
+        """
+        if len(chunk_results) <= 1:
+            return chunk_results
+        
+        self.logger.info(f"Merging {len(chunk_results)} potentially overlapping chunks")
+        
+        # Sort chunks by start time to ensure proper processing order
+        sorted_chunks = sorted(chunk_results, key=lambda x: x.get('start_time', 0.0))
+        merged_chunks = []
+        
+        current_chunk = None
+        merge_statistics = {
+            'overlaps_detected': 0,
+            'tokens_deduplicated': 0,
+            'boundary_adjustments': 0
+        }
+        
+        for i, chunk in enumerate(sorted_chunks):
+            if current_chunk is None:
+                current_chunk = chunk.copy()
+                continue
+            
+            # Check for overlap between current_chunk and chunk
+            current_end = current_chunk.get('end_time', 0.0)
+            next_start = chunk.get('start_time', 0.0)
+            
+            overlap_duration = current_end - next_start
+            
+            if overlap_duration > 0.01:  # 10ms threshold for overlap detection
+                merge_statistics['overlaps_detected'] += 1
+                self.logger.debug(f"Overlap detected between chunks {i-1} and {i}: {overlap_duration:.3f}s")
+                
+                # Merge overlapping chunks using token-time deduplication
+                merged_chunk = self._merge_two_chunks(current_chunk, chunk, overlap_duration)
+                merge_statistics['tokens_deduplicated'] += merged_chunk.get('tokens_deduplicated', 0)
+                merge_statistics['boundary_adjustments'] += 1
+                
+                current_chunk = merged_chunk
+            else:
+                # No overlap - finalize current chunk and start new one
+                merged_chunks.append(current_chunk)
+                current_chunk = chunk.copy()
+        
+        # Add the final chunk
+        if current_chunk is not None:
+            merged_chunks.append(current_chunk)
+        
+        self.logger.info(f"Chunk merging completed: {len(sorted_chunks)} -> {len(merged_chunks)} chunks, "
+                        f"{merge_statistics['overlaps_detected']} overlaps resolved, "
+                        f"{merge_statistics['tokens_deduplicated']} tokens deduplicated")
+        
+        return merged_chunks
+    
+    def _merge_two_chunks(self, chunk1: Dict[str, Any], chunk2: Dict[str, Any], overlap_duration: float) -> Dict[str, Any]:
+        """
+        Merge two overlapping chunks using token-time deduplication
+        
+        Args:
+            chunk1: First chunk (earlier in time)
+            chunk2: Second chunk (later in time)  
+            overlap_duration: Duration of overlap in seconds
+            
+        Returns:
+            Merged chunk with deduplicated tokens and adjusted boundaries
+        """
+        # Extract tokens from both chunks
+        tokens1 = chunk1.get('tokens', [])
+        tokens2 = chunk2.get('tokens', [])
+        
+        # Find overlap boundary - midpoint of overlapping region
+        chunk1_end = chunk1.get('end_time', 0.0)
+        chunk2_start = chunk2.get('start_time', 0.0)
+        overlap_midpoint = (chunk1_end + chunk2_start) / 2.0
+        
+        # Filter tokens based on overlap midpoint to avoid duplication
+        chunk1_tokens = [t for t in tokens1 if t.get('end_time', 0.0) <= overlap_midpoint]
+        chunk2_tokens = [t for t in tokens2 if t.get('start_time', 0.0) > overlap_midpoint]
+        
+        # Additional deduplication by token timing (more robust than string matching)
+        deduplicated_tokens = []
+        all_tokens = chunk1_tokens + chunk2_tokens
+        
+        # Sort all tokens by start time
+        all_tokens.sort(key=lambda t: t.get('start_time', 0.0))
+        
+        tokens_deduplicated = 0
+        for i, token in enumerate(all_tokens):
+            is_duplicate = False
+            token_start = token.get('start_time', 0.0)
+            token_text = token.get('text', '').strip().lower()
+            
+            # Check for temporal duplicates within 100ms window
+            for existing_token in deduplicated_tokens[-3:]:  # Check last 3 tokens for efficiency
+                existing_start = existing_token.get('start_time', 0.0)
+                existing_text = existing_token.get('text', '').strip().lower()
+                
+                time_diff = abs(token_start - existing_start)
+                
+                # Mark as duplicate if within 100ms and same text
+                if time_diff <= 0.1 and token_text == existing_text and token_text:
+                    is_duplicate = True
+                    tokens_deduplicated += 1
+                    self.logger.debug(f"Deduplicated token: '{token_text}' at {token_start:.3f}s "
+                                    f"(duplicate of {existing_start:.3f}s)")
+                    break
+            
+            if not is_duplicate:
+                deduplicated_tokens.append(token)
+        
+        # Calculate merged chunk boundaries
+        if deduplicated_tokens:
+            merged_start = min(chunk1.get('start_time', 0.0), chunk2.get('start_time', 0.0))
+            merged_end = max(chunk1.get('end_time', 0.0), chunk2.get('end_time', 0.0))
+            
+            # Ensure token boundaries are consistent with chunk boundaries
+            token_start = min(t.get('start_time', merged_start) for t in deduplicated_tokens)
+            token_end = max(t.get('end_time', merged_end) for t in deduplicated_tokens)
+            
+            # Use token boundaries if they make sense, otherwise use chunk boundaries
+            final_start = min(merged_start, token_start)
+            final_end = max(merged_end, token_end)
+        else:
+            # No tokens - use chunk boundaries
+            final_start = min(chunk1.get('start_time', 0.0), chunk2.get('start_time', 0.0))
+            final_end = max(chunk1.get('end_time', 0.0), chunk2.get('end_time', 0.0))
+        
+        # Create merged chunk with combined metadata
+        merged_chunk = {
+            'start_time': final_start,
+            'end_time': final_end,
+            'tokens': deduplicated_tokens,
+            'text': ' '.join(t.get('text', '') for t in deduplicated_tokens),
+            'confidence': (chunk1.get('confidence', 0.0) + chunk2.get('confidence', 0.0)) / 2.0,
+            'speaker_id': chunk1.get('speaker_id') or chunk2.get('speaker_id'),
+            'tokens_deduplicated': tokens_deduplicated,
+            'merge_metadata': {
+                'original_chunks': 2,
+                'overlap_duration': overlap_duration,
+                'overlap_midpoint': overlap_midpoint,
+                'chunk1_tokens': len(tokens1),
+                'chunk2_tokens': len(tokens2),
+                'final_tokens': len(deduplicated_tokens),
+                'deduplication_saved': len(tokens1) + len(tokens2) - len(deduplicated_tokens)
+            }
+        }
+        
+        # Preserve other metadata from both chunks
+        for key in set(chunk1.keys()) | set(chunk2.keys()):
+            if key not in merged_chunk and not key.startswith('_'):
+                # Prefer chunk1 metadata, fallback to chunk2
+                merged_chunk[key] = chunk1.get(key, chunk2.get(key))
+        
+        return merged_chunk
+    
+    def validate_chunk_boundaries(self, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Validate chunk boundaries for monotonic ordering and proper gaps
+        
+        Args:
+            chunks: List of chunks to validate
+            
+        Returns:
+            Validation report with issues and recommendations
+        """
+        validation_report = {
+            'is_valid': True,
+            'violations': [],
+            'recommendations': [],
+            'total_chunks': len(chunks),
+            'total_gap_time': 0.0,
+            'total_overlap_time': 0.0
+        }
+        
+        if len(chunks) <= 1:
+            return validation_report
+        
+        # Sort chunks by start time
+        sorted_chunks = sorted(chunks, key=lambda x: x.get('start_time', 0.0))
+        
+        for i in range(len(sorted_chunks) - 1):
+            current_chunk = sorted_chunks[i]
+            next_chunk = sorted_chunks[i + 1]
+            
+            current_end = current_chunk.get('end_time', 0.0)
+            next_start = next_chunk.get('start_time', 0.0)
+            
+            gap = next_start - current_end
+            
+            if gap < 0:
+                # Overlap violation
+                validation_report['is_valid'] = False
+                validation_report['violations'].append({
+                    'type': 'overlap',
+                    'chunk_index': i,
+                    'gap': gap,
+                    'severity': 'critical' if gap < -0.1 else 'warning'
+                })
+                validation_report['total_overlap_time'] += abs(gap)
+                
+            elif gap > 2.0:
+                # Large gap warning
+                validation_report['violations'].append({
+                    'type': 'large_gap',
+                    'chunk_index': i,
+                    'gap': gap,
+                    'severity': 'warning'
+                })
+                validation_report['total_gap_time'] += gap
+        
+        # Add recommendations based on violations
+        if validation_report['violations']:
+            overlap_violations = [v for v in validation_report['violations'] if v['type'] == 'overlap']
+            gap_violations = [v for v in validation_report['violations'] if v['type'] == 'large_gap']
+            
+            if overlap_violations:
+                validation_report['recommendations'].append(
+                    f"Apply overlap merge to resolve {len(overlap_violations)} overlapping chunks"
+                )
+            
+            if gap_violations:
+                validation_report['recommendations'].append(
+                    f"Review {len(gap_violations)} large gaps for potential missing content"
+                )
+        
+        return validation_report
+    
     def _fallback_to_fixed_chunking(self, audio_path: str) -> ChunkingResult:
         """
         Fallback to simple fixed-interval chunking when elastic chunking fails
