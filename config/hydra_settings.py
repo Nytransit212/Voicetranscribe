@@ -247,7 +247,7 @@ try:
 except Exception as e:
     # Fallback values if config loading fails
     AUDIO_SAMPLE_RATE = 16000
-    MAX_AUDIO_DURATION = 28800  # 8 hours - supports long-form content
+    MAX_AUDIO_DURATION = 10800  # 3 hours - realistic maximum duration
     ASR_MODEL = 'whisper-1'
     CONFIDENCE_WEIGHTS = {'D': 0.28, 'A': 0.32, 'L': 0.18, 'R': 0.12, 'O': 0.10}
     SPEAKER_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']

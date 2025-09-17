@@ -120,8 +120,8 @@ class TestDurationValidation:
                 max_duration = int(duration_match.group(1))
                 # Should support at least 2 hours (7200 seconds)
                 assert max_duration >= 7200, f"Max duration too short: {max_duration}s (need ≥7200s for 2+ hours)"
-                # Current config should support 8 hours
-                assert max_duration >= 28800, f"Expected 8-hour support: {max_duration}s"
+                # Current config should support 3 hours
+                assert max_duration >= 10800, f"Expected 3-hour support: {max_duration}s"
         else:
             pytest.skip("Config file not found")
     

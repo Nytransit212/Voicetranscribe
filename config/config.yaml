@@ -24,7 +24,7 @@ app:
 audio:
   sample_rate: 16000
   channels: 1  # Mono
-  max_duration_seconds: 28800  # 8 hours - supports long-form content
+  max_duration_seconds: 10800  # 3 hours - realistic maximum duration
   target_format: "wav"
   bit_depth: 16
 
@@ -121,9 +121,9 @@ redecode:
 reliability:
   # Global timeout settings (seconds)
   timeouts:
-    api_request: 900      # Individual API request timeout - increased for long-form content
-    asr_variant: 600      # Per-ASR variant timeout - increased for long-form content
-    diarization: 1800     # Diarization pipeline timeout - increased for long-form content
+    api_request: 600      # Individual API request timeout - appropriate for 3-hour content
+    asr_variant: 450      # Per-ASR variant timeout - appropriate for 3-hour content
+    diarization: 1200     # Diarization pipeline timeout - appropriate for 3-hour content
     file_processing: 120  # File I/O operations
     
   # Concurrency control
@@ -197,7 +197,7 @@ reliability:
 # Resource-Aware Scheduler with RTF Budgets and Auto-Downgrade Rules
 scheduler:
   enabled: true                      # Enable resource-aware scheduling
-  global_timeout_minutes: 240.0      # Maximum total processing time - increased for long-form content
+  global_timeout_minutes: 90.0       # Maximum total processing time - appropriate for 3-hour content
   downgrade_strategy: "balanced"     # conservative, balanced, aggressive
   enable_predictive_scheduling: true # Enable audio complexity prediction
   enable_resource_monitoring: true   # Enable system resource monitoring

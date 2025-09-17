@@ -682,11 +682,11 @@ class TestLongVideoErrorHandling:
         """Test graceful handling of extremely long videos"""
         
         # Test with video that exceeds reasonable limits
-        extreme_duration = 8 * 3600  # 8 hours (config limit)
+        extreme_duration = 3 * 3600  # 3 hours (config limit)
         
         # Should either process successfully or fail gracefully
         try:
-            result = mock_long_video_processor("/fake/8hour_video.mp4")
+            result = mock_long_video_processor("/fake/3hour_video.mp4")
             
             # If processing succeeds, validate it's complete
             actual_duration = result['master_transcript']['metadata']['total_duration']

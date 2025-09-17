@@ -11,7 +11,7 @@ class Settings:
     # Audio Processing Settings
     AUDIO_SAMPLE_RATE = 16000
     AUDIO_CHANNELS = 1  # Mono
-    MAX_AUDIO_DURATION = 28800  # 8 hours in seconds - supports long-form content
+    MAX_AUDIO_DURATION = 10800  # 3 hours in seconds - realistic maximum duration
     
     # Diarization Settings
     DEFAULT_EXPECTED_SPEAKERS = 10
@@ -95,8 +95,8 @@ class Settings:
     
     # Processing Settings
     MAX_CONCURRENT_ASR_REQUESTS = 3
-    ASR_TIMEOUT_SECONDS = 900  # 15 minutes - increased for long-form content
-    DIARIZATION_TIMEOUT_SECONDS = 1800  # 30 minutes - increased for long-form content
+    ASR_TIMEOUT_SECONDS = 600  # 10 minutes - appropriate for 3-hour content
+    DIARIZATION_TIMEOUT_SECONDS = 1200  # 20 minutes - appropriate for 3-hour content
     
     @classmethod
     def get_diarization_config(cls, variant: str, expected_speakers: int) -> Dict[str, Any]:

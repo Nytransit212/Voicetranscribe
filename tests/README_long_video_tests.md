@@ -118,7 +118,7 @@ The tests require:
 
 ### Configuration Validation
 Tests validate these configuration aspects:
-- `audio.max_duration_seconds`: Should be ≥28800 (8 hours)
+- `audio.max_duration_seconds`: Should be ≥10800 (3 hours)
 - `chunking.enabled`: Should be true for long content
 - `reliability.timeouts`: Should support long processing
 - Chunking thresholds and parameters

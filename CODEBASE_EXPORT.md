@@ -32,7 +32,7 @@ This is a sophisticated video processing application that generates highly accur
 ### Core Application
 - `app.py` - Main Streamlit application with hardened initialization
 - `core/ensemble_manager.py` - Central orchestrator with robust error handling
-- `core/audio_processor.py` - Audio extraction and processing (8+ hour support)
+- `core/audio_processor.py` - Audio extraction and processing (3-hour support)
 - `core/asr_engine.py` - Speech recognition with comprehensive retry logic
 - `core/diarization_engine.py` - Speaker identification with fallback providers
 - `core/hotspot_manager.py` - Human feedback integration system
@@ -45,7 +45,7 @@ This is a sophisticated video processing application that generates highly accur
 - `pages/qc_dashboard.py` - Quality control dashboard
 
 ### Configuration System
-- `config/config.yaml` - Main configuration (supports 8-hour processing)
+- `config/config.yaml` - Main configuration (supports 3-hour processing)
 - `config/settings.py` - Application settings
 - `config/hydra_settings.py` - Hydra configuration management
 - Multiple specialized config files for ASR, diarization, scoring
@@ -58,7 +58,7 @@ This is a sophisticated video processing application that generates highly accur
 - 30+ additional utility modules for robust operation
 
 ### Testing Framework
-- `tests/test_long_video_integration.py` - 8+ hour video processing validation
+- `tests/test_long_video_integration.py` - 3-hour video processing validation
 - `tests/test_duration_validation.py` - No-truncation verification
 - `tests/test_memory_monitoring.py` - Resource management testing
 - Comprehensive test suite with 20+ test files
