@@ -101,13 +101,35 @@ class HotspotAPI:
                 flags=edit_data.get('flags', [])
             )
             
+            # CRITICAL: Persist to session state for finalize_hotspot_review
+            if hasattr(st, 'session_state') and st.session_state is not None:
+                if not hasattr(st.session_state, 'hotspot_edits'):
+                    st.session_state.hotspot_edits = {}
+                
+                # Store edit in canonical session state location
+                hotspot_edits = getattr(st.session_state, 'hotspot_edits', {})
+                if hotspot_edits is not None:
+                    hotspot_edits[clip_id] = {
+                        'edit': human_edit,
+                        'timestamp': time.time(),
+                        'edit_data': edit_data  # Keep original data for UI reference
+                    }
+                    st.session_state.hotspot_edits = hotspot_edits
+                
+                edits_dict = getattr(st.session_state, 'hotspot_edits', {})
+                self.logger.info("Edit persisted to session state", extra={
+                    'clip_id': clip_id,
+                    'total_edits': len(edits_dict) if edits_dict else 0
+                })
+            
             # Return the edit object for use by calling code
             return {
                 'status': 'success',
                 'clip_id': clip_id,
                 'human_edit': human_edit,
                 'edit_saved': True,
-                'timestamp': time.time()
+                'timestamp': time.time(),
+                'persisted_to_session': hasattr(st, 'session_state')
             }
             
         except Exception as e:

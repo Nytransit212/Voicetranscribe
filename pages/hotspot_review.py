@@ -9,6 +9,8 @@ import base64
 from core.hotspot_manager import HotspotManager, Clip, HumanEdit, SpeakerMap
 from utils.audio_format_validator import AudioFormatValidator
 from utils.transcript_formatter import TranscriptFormatter
+from utils.session_state_validator import SessionStateValidator, require_hotspot_access
+from api.hotspot_endpoints import HotspotAPI
 
 # Custom CSS for hotspot review interface
 HOTSPOT_REVIEW_CSS = """
@@ -126,20 +128,39 @@ HOTSPOT_REVIEW_CSS = """
 </style>
 """
 
+@require_hotspot_access
 def render_hotspot_review():
-    """Render the hotspot review interface"""
+    """Render the hotspot review interface with comprehensive validation"""
     st.markdown(HOTSPOT_REVIEW_CSS, unsafe_allow_html=True)
     
-    # Initialize hotspot manager
-    if 'hotspot_manager' not in st.session_state:
-        st.session_state.hotspot_manager = HotspotManager()
-    
-    # Check if we have results to review
-    if 'processing_results' not in st.session_state or not st.session_state.processing_results:
-        st.warning("⚠️ No transcript results available. Please process a video first.")
-        if st.button("← Back to Main"):
-            st.session_state.current_screen = 'results'
+    try:
+        # Initialize hotspot manager with validation
+        if 'hotspot_manager' not in st.session_state:
+            st.session_state.hotspot_manager = HotspotManager()
+        
+        # Double-check results are valid (decorator should handle this, but extra safety)
+        if not SessionStateValidator.validate_processing_results():
+            st.error("⚠️ Processing results are incomplete or corrupted.")
+            st.info("Redirecting to a safe location...")
+            
+            # Try to go back to results if they exist, otherwise landing
+            if SessionStateValidator.validate_for_results_screen()[0]:
+                SessionStateValidator.safe_navigate_to_screen('results')
+            else:
+                SessionStateValidator.safe_navigate_to_screen('landing')
             st.rerun()
+            return
+            
+    except Exception as e:
+        st.error(f"⚠️ Failed to initialize hotspot review: {str(e)}")
+        st.info("Returning to previous screen...")
+        
+        # Safe fallback navigation
+        if SessionStateValidator.validate_for_results_screen()[0]:
+            SessionStateValidator.safe_navigate_to_screen('results')
+        else:
+            SessionStateValidator.safe_navigate_to_screen('landing')
+        st.rerun()
         return
     
     # Initialize hotspot review session if not started
@@ -175,12 +196,15 @@ def initialize_hotspot_session():
         st.session_state.hotspot_session = {
             'clips': clips,
             'current_clip_index': 0,
-            'edited_clips': {},
             'speaker_map': {},
             'start_time': time.time(),
             'status': 'reviewing',  # reviewing, completed
             'auto_save_data': {}
         }
+        
+        # Initialize unified hotspot_edits for API
+        if 'hotspot_edits' not in st.session_state:
+            st.session_state.hotspot_edits = {}
         
         # Show initialization message
         st.success(f"✅ Found {len(clips)} hotspots for review (estimated 5 minutes)")
@@ -190,24 +214,48 @@ def initialize_hotspot_session():
         st.session_state.hotspot_session = {
             'clips': [],
             'current_clip_index': 0,
-            'edited_clips': {},
             'speaker_map': {},
             'start_time': time.time(),
             'status': 'completed',
             'auto_save_data': {}
         }
+        
+        # Initialize unified hotspot_edits for API
+        if 'hotspot_edits' not in st.session_state:
+            st.session_state.hotspot_edits = {}
 
 def render_review_interface():
-    """Render the main review interface"""
+    """Render the main review interface with validation"""
+    # Validate hotspot session exists and is properly structured
+    if not SessionStateValidator.validate_hotspot_session():
+        st.error("⚠️ Hotspot session is invalid or corrupted.")
+        st.info("Attempting to reinitialize...")
+        initialize_hotspot_session()
+        return
+    
     session = st.session_state.hotspot_session
-    clips = session['clips']
+    
+    # Additional safety check for session initialization
+    if not session.get('initialized', False):
+        st.warning("Hotspot session was not properly initialized.")
+        initialize_hotspot_session()
+        return
+    
+    clips = session.get('clips', [])
     
     if not clips:
         st.warning("No hotspots found for review.")
         render_completion_summary()
         return
     
-    current_index = session['current_clip_index']
+    current_index = session.get('current_clip_index', 0)
+    
+    # Validate current index is within bounds
+    if current_index < 0 or current_index >= len(clips):
+        st.error(f"Invalid clip index: {current_index} (total clips: {len(clips)})")
+        session['current_clip_index'] = 0
+        current_index = 0
+    
     current_clip = clips[current_index] if current_index < len(clips) else None
     
     if not current_clip:
@@ -219,7 +267,7 @@ def render_review_interface():
     render_header(current_index + 1, len(clips))
     
     # Progress dots
-    render_progress_dots(current_index, len(clips), session['edited_clips'])
+    render_progress_dots(current_index, len(clips), st.session_state.hotspot_edits, clips)
     
     # Main clip review area
     render_clip_review(current_clip, current_index)
@@ -237,14 +285,14 @@ def render_header(current_clip, total_clips):
     </div>
     """, unsafe_allow_html=True)
 
-def render_progress_dots(current_index, total_clips, edited_clips):
+def render_progress_dots(current_index, total_clips, hotspot_edits, clips):
     """Render progress indicator dots"""
     dots_html = '<div class="progress-dots">'
     
     for i in range(total_clips):
         if i == current_index:
             dot_class = "progress-dot current"
-        elif i in edited_clips:
+        elif i < len(clips) and clips[i].id in hotspot_edits:
             dot_class = "progress-dot completed"
         else:
             dot_class = "progress-dot"
@@ -308,7 +356,9 @@ def render_transcript_editor(clip: Clip, clip_index: int):
     
     # Get current text (edited or original)
     session = st.session_state.hotspot_session
-    current_text = session['edited_clips'].get(clip_index, {}).get('text_final', clip.text_proposed)
+    # Get current text from unified session state
+    clip_edit = st.session_state.hotspot_edits.get(clip.id, {})
+    current_text = clip_edit.get('edit_data', {}).get('text_final', clip.text_proposed)
     
     # Highlight low-confidence words (convert Token objects to dicts)
     tokens_as_dicts = [{'text': token.text, 'conf': token.conf} for token in clip.tokens]
@@ -372,27 +422,31 @@ def highlight_low_confidence_words(tokens: List[Dict], original_text: str) -> st
     return ''.join(highlighted_parts)
 
 def auto_save_edit(clip_index: int, edited_text: str):
-    """Auto-save edits to session state"""
+    """Auto-save edits to unified session state"""
     session = st.session_state.hotspot_session
-    if 'edited_clips' not in session:
-        session['edited_clips'] = {}
     
-    session['edited_clips'][clip_index] = {
-        'text_final': edited_text,
-        'timestamp': time.time()
-    }
+    # Get the clip to save edit for
+    if clip_index >= len(session['clips']):
+        return
     
-    # Also save to hotspot_edits format for API compatibility
+    clip = session['clips'][clip_index]
+    
+    # Use unified hotspot_edits schema only
     if 'hotspot_edits' not in st.session_state:
         st.session_state.hotspot_edits = {}
     
-    clip = session['clips'][clip_index]
+    # Store in canonical session state location
     st.session_state.hotspot_edits[clip.id] = {
         'edit': HumanEdit(
             clip_id=clip.id,
             text_final=edited_text,
             original_text=clip.text_proposed
-        )
+        ),
+        'timestamp': time.time(),
+        'edit_data': {
+            'text_final': edited_text,
+            'clip_index': clip_index  # Keep for UI reference
+        }
     }
 
 def format_time(seconds: float) -> str:
@@ -410,7 +464,9 @@ def render_speaker_field(clip: Clip, clip_index: int):
     st.markdown("### 👥 Speaker")
     
     session = st.session_state.hotspot_session
-    current_speaker = session['edited_clips'].get(clip_index, {}).get('speaker_override')
+    # Get speaker from unified session state
+    clip_edit = st.session_state.hotspot_edits.get(clip.id, {})
+    current_speaker = clip_edit.get('edit_data', {}).get('speaker_override')
     
     # Speaker options
     speaker_options = ["Keep current"] + clip.speakers + ["Name this speaker..."]
@@ -496,7 +552,7 @@ def render_completion_summary():
     
     # Calculate summary stats
     total_clips = len(session['clips'])
-    reviewed_clips = len(session['edited_clips'])
+    reviewed_clips = len(st.session_state.hotspot_edits)
     elapsed_time = time.time() - session['start_time']
     
     # Estimated improvement (simplified calculation)
@@ -512,9 +568,9 @@ def render_completion_summary():
     </div>
     """, unsafe_allow_html=True)
     
-    # Apply improvements and regenerate outputs
+    # Apply improvements and regenerate outputs via proper API
     if 'improvements_applied' not in st.session_state.hotspot_session:
-        apply_hotspot_improvements()
+        apply_improvements_via_api()
         st.session_state.hotspot_session['improvements_applied'] = True
     
     # Download options
@@ -556,38 +612,81 @@ def render_completion_summary():
 def auto_save_speaker(clip_index: int, speaker: str):
     """Auto-save speaker override"""
     session = st.session_state.hotspot_session
-    if clip_index not in session['edited_clips']:
-        session['edited_clips'][clip_index] = {}
-    session['edited_clips'][clip_index]['speaker_override'] = speaker
+    # Update speaker in unified session state
+    clip = session['clips'][clip_index]
+    if 'hotspot_edits' not in st.session_state:
+        st.session_state.hotspot_edits = {}
+    
+    if clip.id not in st.session_state.hotspot_edits:
+        st.session_state.hotspot_edits[clip.id] = {'edit_data': {}}
+    elif 'edit_data' not in st.session_state.hotspot_edits[clip.id]:
+        st.session_state.hotspot_edits[clip.id]['edit_data'] = {}
+    
+    st.session_state.hotspot_edits[clip.id]['edit_data']['speaker_override'] = speaker
 
 def approve_clip(clip_index: int):
     """Approve current clip without changes"""
     session = st.session_state.hotspot_session
-    session['edited_clips'][clip_index] = {'approved': True, 'timestamp': time.time()}
+    # Mark approved in unified session state
+    clip = session['clips'][clip_index]
+    if 'hotspot_edits' not in st.session_state:
+        st.session_state.hotspot_edits = {}
+    
+    if clip.id not in st.session_state.hotspot_edits:
+        st.session_state.hotspot_edits[clip.id] = {'edit_data': {}}
+    elif 'edit_data' not in st.session_state.hotspot_edits[clip.id]:
+        st.session_state.hotspot_edits[clip.id]['edit_data'] = {}
+    
+    st.session_state.hotspot_edits[clip.id]['edit_data']['approved'] = True
+    st.session_state.hotspot_edits[clip.id]['timestamp'] = time.time()
     next_clip()
 
 def save_and_next(clip_index: int):
     """Save current edits and move to next clip"""
     session = st.session_state.hotspot_session
-    if clip_index not in session['edited_clips']:
-        session['edited_clips'][clip_index] = {}
-    session['edited_clips'][clip_index]['saved'] = True
-    session['edited_clips'][clip_index]['timestamp'] = time.time()
+    # Mark saved in unified session state
+    clip = session['clips'][clip_index]
+    if 'hotspot_edits' not in st.session_state:
+        st.session_state.hotspot_edits = {}
+    
+    if clip.id not in st.session_state.hotspot_edits:
+        st.session_state.hotspot_edits[clip.id] = {'edit_data': {}}
+    elif 'edit_data' not in st.session_state.hotspot_edits[clip.id]:
+        st.session_state.hotspot_edits[clip.id]['edit_data'] = {}
+    
+    st.session_state.hotspot_edits[clip.id]['edit_data']['saved'] = True
+    st.session_state.hotspot_edits[clip.id]['timestamp'] = time.time()
     next_clip()
 
 def skip_clip(clip_index: int):
     """Skip current clip"""
     session = st.session_state.hotspot_session
-    session['edited_clips'][clip_index] = {'skipped': True, 'timestamp': time.time()}
+    # Mark skipped in unified session state
+    clip = session['clips'][clip_index]
+    if 'hotspot_edits' not in st.session_state:
+        st.session_state.hotspot_edits = {}
+    
+    st.session_state.hotspot_edits[clip.id] = {
+        'edit_data': {'skipped': True},
+        'timestamp': time.time()
+    }
     next_clip()
 
 def flag_clip(clip_index: int):
     """Flag current clip for follow-up"""
     session = st.session_state.hotspot_session
-    if clip_index not in session['edited_clips']:
-        session['edited_clips'][clip_index] = {}
-    session['edited_clips'][clip_index]['flagged'] = True
-    session['edited_clips'][clip_index]['timestamp'] = time.time()
+    # Mark flagged in unified session state
+    clip = session['clips'][clip_index]
+    if 'hotspot_edits' not in st.session_state:
+        st.session_state.hotspot_edits = {}
+    
+    if clip.id not in st.session_state.hotspot_edits:
+        st.session_state.hotspot_edits[clip.id] = {'edit_data': {}}
+    elif 'edit_data' not in st.session_state.hotspot_edits[clip.id]:
+        st.session_state.hotspot_edits[clip.id]['edit_data'] = {}
+    
+    st.session_state.hotspot_edits[clip.id]['edit_data']['flagged'] = True
+    st.session_state.hotspot_edits[clip.id]['timestamp'] = time.time()
     st.success("🚩 Clip flagged for follow-up")
 
 def next_clip():
@@ -609,68 +708,73 @@ def finish_review():
     session['end_time'] = time.time()
     st.rerun()
 
-def apply_hotspot_improvements():
-    """Apply hotspot improvements to the main transcript with comprehensive validation"""
+def apply_improvements_via_api():
+    """Apply hotspot improvements via proper HotspotAPI to ensure data flow integrity"""
     try:
         session = st.session_state.hotspot_session
-        hotspot_manager = st.session_state.hotspot_manager
         
-        # Validate session state before proceeding
-        if not st.session_state.processing_results:
-            st.error("⚠️ No processing results available. Cannot apply improvements.")
-            return
+        # Initialize HotspotAPI
+        if 'hotspot_api' not in st.session_state:
+            st.session_state.hotspot_api = HotspotAPI()
         
-        # Convert edited clips to HumanEdit objects
-        human_edits = []
-        for clip_index, edit_data in session['edited_clips'].items():
-            if 'text_final' in edit_data and edit_data['text_final'].strip():
-                clip = session['clips'][clip_index]
-                human_edit = HumanEdit(
-                    clip_id=clip.id,
-                    text_final=edit_data['text_final'].strip(),
-                    speaker_label_override=edit_data.get('speaker_override'),
-                    flags=['flagged'] if edit_data.get('flagged') else []
-                )
-                human_edits.append(human_edit)
+        hotspot_api = st.session_state.hotspot_api
         
-        # Apply improvements through comprehensive propagation pipeline
-        if human_edits:
-            # Store original for validation
-            original_results = st.session_state.processing_results.copy()
+        # Call the robust API finalize method
+        review_data = {
+            'speaker_map': session.get('speaker_map', {}),
+            'review_metadata': {
+                'total_clips': len(session.get('clips', [])),
+                'reviewed_clips': len(st.session_state.hotspot_edits),
+                'elapsed_time': time.time() - session['start_time']
+            }
+        }
+        
+        # Use a dummy job_id for now since this is session-based
+        job_id = f"hotspot_review_{int(time.time())}"
+        
+        # Call the comprehensive finalize method
+        response = hotspot_api.finalize_hotspot_review(job_id, review_data)
+        
+        # Handle the response
+        if response['status'] == 'success':
+            improvements_applied = response.get('improvements_applied', False)
+            edits_count = response.get('edits_count', 0)
             
-            # Apply improvements with full pipeline (includes file regeneration, manifest updates)
-            improved_results = hotspot_manager.apply_improvements(
-                original_results=original_results,
-                human_edits=human_edits,
-                speaker_map=session.get('speaker_map', {})
-            )
-            
-            # Validate improvements were applied
-            if _validate_improvements(original_results, improved_results):
-                # Update processing results completely
-                st.session_state.processing_results = improved_results
+            if improvements_applied:
+                # Show success message with details
+                st.success(f"✅ Applied {edits_count} improvements to transcript")
                 
-                # Update job history with human review metadata
-                if hasattr(st.session_state, 'job_history') and st.session_state.job_history:
-                    latest_job = st.session_state.job_history[-1]
-                    latest_job['results'] = improved_results
-                    latest_job['human_reviewed'] = True
-                    latest_job['review_timestamp'] = time.time()
+                # Show file regeneration details
+                if response.get('files_regenerated', 0) > 0:
+                    st.info(f"📁 Generated {response['files_regenerated']} updated transcript files")
                 
-                # Show comprehensive success message
-                files_created = improved_results.get('regenerated_files', {})
-                st.success(f"✅ Applied {len(human_edits)} improvements to transcript")
-                if files_created:
-                    st.info(f"📁 Generated {len(files_created)} updated transcript files")
-                    for file_type, path in files_created.items():
-                        st.write(f"  • {file_type.upper()}: {Path(path).name}")
+                # Show improvement estimate
+                improvement_pct = response.get('estimated_improvement_pct', 0)
+                if improvement_pct > 0:
+                    st.info(f"📈 Estimated improvement: {improvement_pct:.1f}%")
             else:
-                st.warning("⚠️ Improvements may not have been fully applied. Please verify results.")
+                st.info("✅ Review completed successfully, but no edits required application")
+        
+        elif response['status'] == 'warning':
+            # Handle warning cases (like no edits to apply)
+            st.warning(f"⚠️ {response.get('message', 'Review completed with warnings')}")
+        
+        elif response['status'] == 'error':
+            # Handle error cases
+            error_msg = response.get('message', 'Unknown error occurred')
+            if response.get('validation_failed'):
+                st.error(f"❌ Validation failed: {error_msg}")
+            else:
+                st.error(f"❌ Error applying improvements: {error_msg}")
+        
         else:
-            st.info("No edits found to apply.")
+            st.error(f"❌ Unexpected response status: {response.get('status', 'unknown')}")
+        
+        # Log the response for debugging
+        st.session_state.hotspot_session['finalize_response'] = response
         
     except Exception as e:
-        st.error(f"Failed to apply improvements: {str(e)}")
+        st.error(f"Failed to apply improvements via API: {str(e)}")
         # Log the full error for debugging
         import traceback
         st.error(f"Technical details: {traceback.format_exc()}")

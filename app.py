@@ -12,6 +12,7 @@ from utils.file_handler import FileHandler
 from utils.transcript_formatter import TranscriptFormatter
 from utils.streamlit_drive_uploader import get_drive_uploader
 from utils.google_drive_handler import download_file_from_drive
+from utils.session_state_validator import SessionStateValidator, require_processing_results
 import traceback
 
 # Page config with cleaner branding
@@ -174,7 +175,7 @@ def show_loading_screen():
     """, unsafe_allow_html=True)
 
 def initialize_session_state():
-    """Initialize session state with simple defaults"""
+    """Initialize session state with comprehensive validation and safe defaults"""
     # Show loading screen during first initialization
     if 'app_initialized' not in st.session_state:
         show_loading_screen()
@@ -182,32 +183,15 @@ def initialize_session_state():
         st.session_state.app_initialized = True
         st.rerun()
     
-    defaults = {
-        'current_screen': 'landing',  # landing, processing, results, hotspot_review, error
-        'uploaded_file': None,
-        'file_url': '',
-        'processing_stage': 0,
-        'processing_stages': [
-            'Upload',
-            'Chunking', 
-            'Transcription',
-            'Speaker Diarization',
-            'Consensus',
-            'Finalizing'
-        ],
-        'difficulty_mode': 'Standard',  # Standard or Messy Audio
-        'output_formats': ['Transcript (.txt)', 'Subtitles (.srt)', 'Report (.json)'],
-        'selected_formats': ['Transcript (.txt)'],
-        'processing_results': None,
-        'processing_error': None,
-        'job_history': [],
-        'estimated_time': None,
-        'start_time': None
-    }
+    # Initialize with validated defaults
+    SessionStateValidator.initialize_defaults()
     
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
+    # Auto-repair any session state issues
+    repairs = SessionStateValidator.auto_repair_session_state()
+    if repairs:
+        # Show subtle notification if repairs were made
+        with st.sidebar:
+            st.info(f"🔧 Auto-repaired session state: {len(repairs)} issue(s) fixed")
 
 def render_landing_screen():
     """Render the main landing/upload screen"""
@@ -272,16 +256,20 @@ def render_landing_screen():
     
     if st.button("🚀 Start Transcription", type="primary", disabled=not can_start):
         if can_start:
-            st.session_state.current_screen = 'processing'
-            st.session_state.processing_stage = 0
-            st.session_state.start_time = time.time()
-            # Estimate processing time based on file size or duration
-            if st.session_state.uploaded_file:
-                size_mb = st.session_state.uploaded_file.size / 1024 / 1024
-                st.session_state.estimated_time = max(60, size_mb * 30)  # Rough estimate
+            # Validate we can start processing
+            if SessionStateValidator.safe_navigate_to_screen('processing'):
+                st.session_state.processing_stage = 0
+                st.session_state.start_time = time.time()
+                st.session_state.processing_error = None  # Clear any previous errors
+                # Estimate processing time based on file size or duration
+                if st.session_state.uploaded_file:
+                    size_mb = st.session_state.uploaded_file.size / 1024 / 1024
+                    st.session_state.estimated_time = max(60, size_mb * 30)  # Rough estimate
+                else:
+                    st.session_state.estimated_time = 180  # Default for URLs
+                st.rerun()
             else:
-                st.session_state.estimated_time = 180  # Default for URLs
-            st.rerun()
+                st.error("Cannot start processing. Please check your file upload.")
 
 def render_processing_screen():
     """Render the processing progress screen with real processing"""
@@ -332,8 +320,10 @@ def render_processing_screen():
     
     # Cancel button
     if st.button("❌ Cancel Processing"):
-        st.session_state.current_screen = 'landing'
+        # Reset processing state safely
         st.session_state.processing_stage = 0
+        st.session_state.processing_error = None
+        SessionStateValidator.safe_navigate_to_screen('landing')
         st.rerun()
     
     # Run actual processing logic
@@ -378,8 +368,8 @@ def render_processing_screen():
                     - Contact support if the issue persists
                     """)
                     
-                    st.session_state.current_screen = 'error'
                     st.session_state.processing_error = f"Critical initialization failure: {str(e)}"
+                    SessionStateValidator.safe_navigate_to_screen('error')
                     st.rerun()
             
             # Show initialization status to user
@@ -421,16 +411,25 @@ def render_processing_screen():
             elif current_stage == 5:  # Finalizing
                 st.session_state.processing_stage += 1
                 finalize_processing()
-                st.session_state.current_screen = 'results'
+                SessionStateValidator.safe_navigate_to_screen('results')
                 st.rerun()
                 
         except Exception as e:
             st.session_state.processing_error = str(e)
-            st.session_state.current_screen = 'error'
+            SessionStateValidator.safe_navigate_to_screen('error')
             st.rerun()
 
+@require_processing_results
 def render_results_screen():
     """Render the results and download screen"""
+    # Additional validation for results structure
+    if not SessionStateValidator.validate_processing_results():
+        st.error("⚠️ Processing results are incomplete or corrupted.")
+        if st.button("🏠 Return to Home"):
+            SessionStateValidator.safe_navigate_to_screen('landing')
+            st.rerun()
+        return
+    
     results = st.session_state.processing_results
     
     st.markdown(f"""
@@ -448,8 +447,11 @@ def render_results_screen():
     
     with col1:
         if st.button("🎯 Review Hard Spots (5 min)", type="primary"):
-            st.session_state.current_screen = 'hotspot_review'
-            st.rerun()
+            # Validate access to hotspot review
+            if SessionStateValidator.safe_navigate_to_screen('hotspot_review'):
+                st.rerun()
+            else:
+                st.error("Cannot access hotspot review. Please ensure transcription is complete.")
     
     with col2:
         st.markdown("*Fix the toughest parts, we improve the rest automatically*")
@@ -510,10 +512,9 @@ def render_results_screen():
     # Start new transcription
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 Transcribe Another File", type="primary"):
-        st.session_state.current_screen = 'landing'
-        st.session_state.processing_stage = 0
-        st.session_state.uploaded_file = None
-        st.session_state.file_url = ''
+        # Use safe navigation with state cleanup
+        SessionStateValidator.reset_session_state(preserve_keys=['app_initialized'])
+        SessionStateValidator.safe_navigate_to_screen('landing')
         st.rerun()
 
 def render_error_screen():
@@ -536,16 +537,17 @@ def render_error_screen():
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔄 Try Again", type="primary"):
-            st.session_state.current_screen = 'processing'
+            # Clear error and retry processing
+            st.session_state.processing_error = None
             st.session_state.processing_stage = 0
+            SessionStateValidator.safe_navigate_to_screen('processing')
             st.rerun()
     
     with col2:
         if st.button("🏠 Start Over"):
-            st.session_state.current_screen = 'landing'
-            st.session_state.processing_stage = 0
-            st.session_state.uploaded_file = None
-            st.session_state.file_url = ''
+            # Complete reset to landing page
+            SessionStateValidator.reset_session_state(preserve_keys=['app_initialized'])
+            SessionStateValidator.safe_navigate_to_screen('landing')
             st.rerun()
 
 def render_sidebar_history():
@@ -806,26 +808,158 @@ def format_time_for_srt(seconds):
     millisecs = int((seconds % 1) * 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millisecs:03d}"
 
+def validate_and_route():
+    """Validate session state and route to appropriate screen with comprehensive error handling"""
+    try:
+        # Auto-repair any issues
+        repairs = SessionStateValidator.auto_repair_session_state()
+        if repairs and len(repairs) > 0:
+            st.toast(f"🔧 Fixed {len(repairs)} session state issue(s)", icon="🔧")
+        
+        # Get and validate current screen
+        screen = st.session_state.get('current_screen', 'landing')
+        
+        # Validate screen access permissions with enhanced feedback
+        if screen == 'results':
+            is_valid, error_msg = SessionStateValidator.validate_for_results_screen()
+            if not is_valid:
+                st.warning(f"⚠️ {error_msg}")
+                st.info("💡 **Next Steps**: Upload and process an audio/video file to access results.")
+                SessionStateValidator.safe_navigate_to_screen('landing')
+                st.rerun()
+                return
+        
+        elif screen == 'hotspot_review':
+            is_valid, error_msg = SessionStateValidator.validate_for_hotspot_review()
+            if not is_valid:
+                st.warning(f"⚠️ {error_msg}")
+                # Enhanced fallback with clear user guidance
+                if SessionStateValidator.validate_for_results_screen()[0]:
+                    st.info("💡 **Redirecting**: Taking you back to your results.")
+                    SessionStateValidator.safe_navigate_to_screen('results')
+                else:
+                    st.info("💡 **Next Steps**: Upload and process an audio/video file first, then access hotspot review from the results page.")
+                    SessionStateValidator.safe_navigate_to_screen('landing')
+                st.rerun()
+                return
+        
+        elif screen == 'processing':
+            # Validate we have something to process
+            if not st.session_state.get('uploaded_file') and not st.session_state.get('file_url', '').strip():
+                st.warning("⚠️ No file to process. Please upload a file first.")
+                st.info("💡 **Next Steps**: Upload an audio or video file to start processing.")
+                SessionStateValidator.safe_navigate_to_screen('landing')
+                st.rerun()
+                return
+        
+        # Route to appropriate screen with comprehensive error handling
+        try:
+            if screen == 'landing':
+                render_landing_screen()
+            elif screen == 'processing':
+                render_processing_screen()
+            elif screen == 'results':
+                render_results_screen()
+            elif screen == 'hotspot_review':
+                render_hotspot_review_screen()
+            elif screen == 'error':
+                render_error_screen()
+            else:
+                st.error(f"⚠️ Unknown screen: {screen}. Redirecting to home.")
+                st.info("💡 **Recovery**: Taking you to the main page.")
+                SessionStateValidator.safe_navigate_to_screen('landing')
+                st.rerun()
+        
+        except Exception as render_error:
+            st.error(f"⚠️ **Screen Render Error**: {str(render_error)}")
+            st.info("💡 **Recovery**: Attempting to load a safe screen...")
+            
+            # Try to render a safe fallback screen
+            try:
+                if screen != 'landing':
+                    SessionStateValidator.safe_navigate_to_screen('landing')
+                    st.rerun()
+                else:
+                    # Even landing failed, show minimal recovery interface
+                    render_emergency_fallback()
+            except Exception:
+                render_emergency_fallback()
+    
+    except Exception as e:
+        st.error(f"⚠️ **Critical Application Error**: {str(e)}")
+        render_emergency_fallback()
+
+def render_emergency_fallback():
+    """Render emergency fallback interface when all else fails"""
+    st.markdown("""
+    <div style="text-align: center; padding: 2rem; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 8px; margin: 1rem;">
+        <h2 style="color: #721c24;">🚨 System Recovery Mode</h2>
+        <p style="color: #721c24;">The application encountered a critical error and is in recovery mode.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("### 🛠️ Recovery Options")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🔄 Reset Application", type="primary"):
+            try:
+                SessionStateValidator.reset_session_state(preserve_keys=[])
+                st.success("✅ Application reset successfully!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Reset failed: {str(e)}")
+    
+    with col2:
+        if st.button("🏠 Go Home"):
+            try:
+                SessionStateValidator.initialize_defaults()
+                SessionStateValidator.safe_navigate_to_screen('landing')
+                st.rerun()
+            except Exception as e:
+                st.error(f"Navigation failed: {str(e)}")
+    
+    with col3:
+        if st.button("🔍 Debug Info"):
+            try:
+                st.subheader("Debug Information")
+                validation_report = SessionStateValidator.get_validation_report()
+                st.json(validation_report)
+            except Exception as e:
+                st.error(f"Debug info failed: {str(e)}")
+    
+    st.markdown("---")
+    st.info("💡 **If the issue persists**: Try refreshing your browser or contact support.")
+    
+    # Show minimal session state for debugging
+    with st.expander("🔍 Current Session State", expanded=False):
+        try:
+            st.json({k: str(v) for k, v in st.session_state.items()})
+        except Exception:
+            st.text("Session state unavailable")
+
 def main():
-    """Main application entry point"""
+    """Main application entry point with comprehensive validation"""
+    # Initialize session state first
     initialize_session_state()
     
-    # Render sidebar history
+    # Show validation debug info in development (optional)
+    try:
+        debug_mode = st.secrets.get("DEBUG_SESSION_STATE", False)
+    except:
+        debug_mode = False
+        
+    if debug_mode:
+        with st.expander("🔍 Session State Debug", expanded=False):
+            validation_report = SessionStateValidator.get_validation_report()
+            st.json(validation_report)
+    
+    # Render sidebar
     render_sidebar_history()
     
-    # Route to appropriate screen
-    screen = st.session_state.current_screen
-    
-    if screen == 'landing':
-        render_landing_screen()
-    elif screen == 'processing':
-        render_processing_screen()
-    elif screen == 'results':
-        render_results_screen()
-    elif screen == 'hotspot_review':
-        render_hotspot_review_screen()
-    elif screen == 'error':
-        render_error_screen()
+    # Validate and route with comprehensive error handling
+    validate_and_route()
 
 def render_hotspot_review_screen():
     """Render the hotspot review screen"""
