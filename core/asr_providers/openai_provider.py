@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Union, Any
 import logging
 
 from .base import ASRProvider, ASRResult, ASRSegment, DecodeMode
+from utils.resilient_api import openai_retry
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +21,8 @@ class OpenAIProvider(ASRProvider):
     with good general quality across various audio types.
     """
     
-    def __init__(self, provider_name: str = "openai", model_name: str = "whisper-1", config: Dict[str, Any] = None):
-        super().__init__(provider_name, model_name, config)
+    def __init__(self, provider_name: str = "openai", model_name: str = "whisper-1", config: Optional[Dict[str, Any]] = None):
+        super().__init__(provider_name, model_name, config or {})
         self.api_key = self._get_api_key()
         self.client = None
         self._initialize_client()
@@ -58,6 +59,7 @@ class OpenAIProvider(ASRProvider):
             logger.error(f"Failed to initialize OpenAI client: {e}")
             self.client = None
     
+    @openai_retry
     def transcribe(
         self,
         audio_path: Union[str, Path],

@@ -37,6 +37,7 @@ from core.asr_engine import ASREngine
 from core.confidence_scorer import ConfidenceScorer
 from utils.audio_format_validator import ensure_audio_format
 from utils.deterministic_processing import get_deterministic_processor
+from utils.resilient_api import openai_retry
 
 
 class UncertaintyDetectionMethod(Enum):
@@ -1253,6 +1254,7 @@ class DisagreementRedecodeEngine:
             self.logger.error(f"Alternative decode execution failed: {e}")
             return "", 0.0
     
+    @openai_retry
     def _decode_with_openai(self, audio_path: str, config: Dict[str, Any]) -> Tuple[str, float]:
         """
         Decode using OpenAI Whisper with alternative configuration
