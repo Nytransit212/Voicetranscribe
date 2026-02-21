@@ -48,4 +48,10 @@ artifacts/inputs/
 artifacts/20min_processing/
 
 # Test outputs
-test_outputs/
+test_outputs/artifacts/
+attached_assets/
+logs/
+*.mp4
+*.wav
+*.m4a
+*.tar.gz
